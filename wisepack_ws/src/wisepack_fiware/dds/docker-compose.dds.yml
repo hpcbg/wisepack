@@ -1,0 +1,62 @@
+# DDS-capable Orion-LD for the WISEPACK audit path.
+#
+# ADAPTED FROM HARMONY — ros2-xarm-pack-bottle/ros2_ws/src/fiware_bridge/dds/
+# docker-compose.dds.yml (MIT, Copyright (c) 2026 Kaloyan Yovchev), which is
+# itself derived from the known-good ARISE ros2_fiware_basic_app example.
+#
+# Orion-LD speaks DDS directly (`-wip dds -mongocOnly`) and maps `rt/*` topics to
+# NGSI-LD entities from the mounted context_broker_config.json, so NO custom
+# bridge node runs on this path.
+#
+#   1. generate the mapping:  python3 generate_config.py
+#   2. start the broker:      docker compose -f docker-compose.dds.yml up -d
+#   3. verify:                curl -s http://localhost:1026/version
+#
+# host networking + host IPC are REQUIRED, not a convenience: Fast DDS discovery
+# and its shared-memory transport must reach the ROS 2 nodes, and a bridged
+# Docker network silently prevents that (the entities appear but every value
+# stays "uninitialized").
+#
+# The broker is NGSI-LD only and returns HTTP 501 for NGSI-v2. Do not run it at
+# the same time as an NGSI-v2 Orion stack — both bind host port 1026.
+
+services:
+  mongodb:
+    image: mongo:7.0
+    container_name: wisepack-mongo-dds
+    privileged: true
+    ipc: host
+    network_mode: host
+    command: --bind_ip_all
+    volumes:
+      - wisepack_mongo_dds:/data/db
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping')"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
+  orion:
+    image: fiware/orion-ld:1.13.0-PRE-1835
+    container_name: wisepack-orion-ld
+    privileged: true
+    ipc: host
+    network_mode: host
+    depends_on:
+      - mongodb
+    restart: always
+    command: -dbhost localhost -wip dds -mongocOnly
+    environment:
+      - ORIONLD_MONGO_HOST=localhost
+    volumes:
+      # The bridge reads its DDS->NGSI-LD mapping from this exact path.
+      - ./context_broker_config.json:/root/.orionld
+    healthcheck:
+      test: ["CMD-SHELL", "curl --fail -s http://localhost:1026/version || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 15
+      start_period: 20s
+
+volumes:
+  wisepack_mongo_dds:

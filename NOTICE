@@ -1,0 +1,157 @@
+WISEPACK — Intelligent Robotic Sorting and Volume-Optimized Packaging of
+Nuclear Waste with Human-in-the-Loop AI
+
+Copyright (c) 2026 High Performance Creators Ltd (HPC)
+Licensed under the MIT License (see LICENSE).
+
+================================================================================
+REUSE AND ATTRIBUTION
+================================================================================
+
+This demonstrator deliberately reuses proven patterns from three earlier HPC
+repositories rather than reinventing them. What follows states exactly what was
+taken from each, and in what form, so a reviewer can verify the claim.
+
+--------------------------------------------------------------------------------
+1. HARMONY — https://github.com/hpcbg/harmony
+   Licence: MIT. The reused modules ship their own LICENSE files,
+            "Copyright (c) 2026 Kaloyan Yovchev".
+   HARMONY is HPC's ARISE demonstrator.
+
+ADAPTED CODE (derived work, substantially modified):
+
+  wisepack_ws/src/wisepack_fiware/dds/generate_config.py
+      Adapted from  ros2-xarm-pack-bottle/ros2_ws/src/fiware_bridge/dds/
+                    generate_config.py
+      Reused: the DDS-eligibility rules for scalar std_msgs, the
+      ROS `/a/b` -> DDS `rt/a/b` naming rule, the reserved-`status`-leaf
+      exclusion, the NGSI-LD id derivation, and the output document shape.
+      These encode end-to-end-validated knowledge about what Orion-LD's DDS
+      bridge actually accepts, which is why they were reused rather than
+      re-derived.
+      Changed: WISEPACK has no NGSI-v2 node backend to fall back to, so an
+      unbridgeable topic is a hard error here instead of a warning.
+
+  wisepack_ws/src/wisepack_fiware/dds/docker-compose.dds.yml
+      Adapted from  .../fiware_bridge/dds/docker-compose.dds.yml
+      (itself derived from the ARISE ros2_fiware_basic_app example).
+      Reused: the `-wip dds -mongocOnly` invocation, host networking + host
+      IPC, and the context_broker_config.json mount point.
+      Changed: WISEPACK container names, an added MongoDB health check.
+
+  scripts/measure_dds_fiware_latency.py
+      Adapted from  scripts/measure_dds_fiware_latency.py
+      Reused: the whole measurement method — the t0..t3 timestamp model, the
+      correction that references FIWARE->ROS from PATCH *initiation* because
+      Orion writes to DDS while still processing the PATCH, the percentile
+      helpers and the report/artefact shape.
+      Changed: WISEPACK topics and entities; the PRIMARY metric is the one-way
+      ROS->FIWARE audit hop rather than the closed loop.
+
+  wisepack_ws/src/wisepack_fiware/config/bridge_config.yaml
+      Structure (fiware:/ros_to_fiware:/fiware_to_ros:) adapted from
+      .../fiware_bridge/config/bridge_config.yaml so HARMONY's generator could
+      be reused. All entities, topics and attributes are WISEPACK's.
+
+  wisepack_ws/src/wisepack_fiware/wisepack_fiware/verify.py
+      The `orion_classify` REAL / UNINITIALIZED / MISSING rule and the
+      explanation of what "uninitialized" means are taken from HARMONY's
+      validate_dds_native_demo.sh.
+
+REUSED KNOWLEDGE (documented, not copied as code):
+  - Vulcanexus is REQUIRED, not preferred: the FIWARE DDS Enabler only fills a
+    value once the publisher propagates the std_msgs TypeObject, which plain
+    ROS 2 Jazzy does not do reliably. (harmony/.../dds/README.md)
+  - Orion-LD's DDS module reserves the topic leaf `status`.
+  - Every bridged value is read as `<attribute>.value.data`, for String and
+    numeric types alike. (harmony/docs/dds_native_contract.md)
+  - The py_trees behaviour-tree task pattern (task_pack_bottle.py) informed the
+    shape of wisepack_orchestration/hitl_orchestrator.py. No code was copied.
+
+DELIBERATELY NOT USED: HARMONY's custom `configurable_fiware_bridge` node. The
+brief specifies the DDS-native Orion-LD bridge, and WISEPACK uses that path only.
+Also unused: the xArm robot control, bottle detection, voice, gesture and React
+dashboard modules — none apply here.
+
+--------------------------------------------------------------------------------
+2. TEMPO — https://github.com/hpcbg/tempo
+   Licence: MIT (declared in TEMPO's README; the repository ships no LICENSE
+            file, so the README declaration is the authority relied on here).
+
+ADAPTED CODE (derived work, substantially modified):
+
+  wisepack_ws/src/wisepack_bringup/topics.py and qos.py
+      Adapted from tempo_ws/src/tempo_bringup/{topics,qos}.py.
+      Reused: the "one canonical contract module" pattern, the argument that
+      DDS QoS *is* the robustness layer rather than application heartbeat code,
+      the single-writer discipline, and the profile-selection helper that makes
+      requested/offered QoS mismatches impossible by construction.
+      All topics, types and profiles are WISEPACK's.
+
+  scripts/lib_validate.sh, scripts/clean_dds_shm.sh
+      Adapted from TEMPO's scripts of the same names. The orphaned-shared-memory
+      problem under `--ipc=host` and the `ros2 topic echo` QoS traps are TEMPO's
+      findings.
+
+  Dockerfile.wisepack, build_wisepack_ws.sh, run_vulcanexus_wisepack.sh,
+  run_wisepack_dashboard.sh
+      Adapted from Dockerfile.tempo, build_tempo_ws.sh, run_vulcanexus_tempo.sh
+      and run_tempo_dashboard.sh. Reused: Docker-only operation, mounting the
+      repo at its own absolute path, the apt-vs-pip pytest/pluggy workaround,
+      baking fastapi into the image against venue wifi, and the live/sim
+      dashboard split.
+
+  web/app.py, web/ros_observer.py, web/index.html
+      Adapted from tempo/web/{app.py,ros_observer.py,index.html}.
+      Reused: the FastAPI + in-memory cache + REST/WebSocket structure, the
+      position-free topology graph whose coordinates are derived in the
+      frontend, the "KPI read from the newest results/ artefact, shown as
+      'not measured' until it exists" pattern, and the two-theme design-token
+      set. WISEPACK's dashboard additionally COMMANDS (approval is the point of
+      the project), which TEMPO's deliberately does not.
+
+--------------------------------------------------------------------------------
+3. HARVEST — https://github.com/hpcbg/harvest
+   Licence: the repository ships NO licence file and its README declares none.
+
+   NO HARVEST CODE IS PRESENT IN THIS REPOSITORY. Because the licence is
+   unstated, only *concepts* were taken, and every one was re-implemented from
+   scratch against a different domain:
+
+     - a deterministic seeded task generator producing dataclasses from weighted
+       templates (harvest/task_generator.py) -> wisepack_core/generator.py
+     - a YAML `dynamic_events:` list of scripted plan-change disturbances
+       (harvest/config.yaml) -> wisepack_core/events.py + config/scenarios/
+     - scenario comparison and KPI summary tables (harvest/server.py,
+       harvest/main.py) -> wisepack_core/kpi.py::compare_strategies
+     - map-style rendering of a scene with event markers
+       (harvest/farmview/_renderer.py) -> the SVG Digital Twin view in
+       web/index.html and scripts/generate_demo_artifacts.py
+
+   One deliberate divergence: HARVEST triggers dynamic events on a simulated
+   wall clock, which suits a day-long farm simulation. WISEPACK triggers on
+   workflow stage or placement index so a demonstration is identical on a fast
+   laptop and a loaded CI runner.
+
+================================================================================
+THIRD-PARTY RUNTIME DEPENDENCIES
+================================================================================
+
+  Vulcanexus Jazzy (eProsima)      Apache-2.0   docker image, base of the runtime
+  ROS 2 Jazzy                      Apache-2.0   via Vulcanexus
+  eProsima Fast DDS                Apache-2.0   the DDS implementation
+  py_trees                         BSD-3-Clause behaviour-tree engine
+  FastAPI                          MIT          dashboard backend
+  Uvicorn                          BSD-3-Clause ASGI server
+  PyYAML                           MIT          scenario configuration
+  pytest                           MIT          test runner
+  FIWARE Orion-LD                  AGPL-3.0     context broker, run as an
+                                                UNMODIFIED Docker image and
+                                                communicated with over DDS and
+                                                HTTP only. No Orion-LD source is
+                                                included, linked or modified by
+                                                this repository.
+  MongoDB (mongo:7.0)              SSPL-1.0     Orion-LD's datastore, run as an
+                                                unmodified Docker image.
+
+No source from any of the above is vendored into this repository.

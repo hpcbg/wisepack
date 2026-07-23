@@ -1,0 +1,49 @@
+# WISEPACK default configuration.
+#
+# EVERYTHING HERE IS OPTIONAL. Every preset is defined in Python
+# (wisepack_core/generator.py) and the acceptance demo runs with this directory
+# absent. A demo that cannot start because a config file is missing is a demo
+# that fails on the reviewer's machine.
+#
+# YAML overrides the built-in preset; the CLI and the dashboard override YAML.
+
+scenario:
+  preset: mixed_pipes_dense       # see config/scenarios/ for the full set
+  seed: 42
+  strategy: max_density           # max_density | retrievability | segregation
+
+optimizer:
+  restarts: 6                     # seeded multi-start orderings
+  time_budget_ms: 4000            # on expiry the best COMPLETE solution is kept
+  improve: true                   # container-consolidation improvement pass
+  improve_rounds: 3
+
+robot:
+  # SIMULATED. There is no robot, no kinematics and no grasp model — this is a
+  # seeded coin flip, and the resulting rate is labelled `simulated` everywhere.
+  pick_failure_probability: 0.08
+  max_pick_retries: 2
+  pick_duration_ms: 900
+  place_duration_ms: 1100
+  detection_confidence_min: 0.82
+  detection_confidence_max: 0.99
+  detection_miss_probability: 0.0
+
+validation:
+  # Fraction of a placement's bottom face that must rest on the floor, a shelf
+  # plate or other items. 0 disables the check (and the report says so).
+  min_support_fraction: 0.70
+  # Required gap between neighbouring items, mm. 0 by default so the density
+  # figures stay comparable with textbook bin-packing results; raise it to model
+  # real gripper finger clearance and watch the KPIs move.
+  min_clearance_mm: 0
+
+# Approve without a human. ONLY for headless acceptance runs — the audit trail
+# attributes such an approval to `system`, never to an operator.
+auto_approve: false
+
+fiware:
+  broker: http://localhost:1026
+  # ROS_DOMAIN_ID and the DDS domain in context_broker_config.json MUST match or
+  # nothing bridges at all.
+  ros_domain_id: 0

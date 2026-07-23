@@ -1,0 +1,223 @@
+# WISEPACK ROS 2 <-> FIWARE mapping — the single source of truth.
+#
+# Adapted from HARMONY's fiware_bridge/config/bridge_config.yaml. The structure
+# is HARMONY's (fiware:, ros_to_fiware:, fiware_to_ros:) so its generator can be
+# reused; the entities and topics are WISEPACK's.
+#
+# `generate_config.py` reads THIS file and emits `dds/context_broker_config.json`,
+# the file Orion-LD reads when started with `-wip dds -mongocOnly`. There is no
+# custom bridge node on this path: Orion-LD speaks DDS directly.
+#
+#     ROS 2 topic  /wisepack/action/event
+#       -> DDS topic  rt/wisepack/action/event
+#       -> NGSI-LD    urn:ngsi-ld:WISEPACKActionStream:main  .actionJson.value.data
+#
+# THREE CONSTRAINTS INHERITED FROM THE BRIDGE, each validated in HARMONY:
+#
+#   1. Only single-member scalar std_msgs bridge (String/Bool/Int32/Int64/
+#      Float32/Float64). Custom messages are not representable, which is why
+#      WISEPACK has no wisepack_interfaces package.
+#   2. A topic whose final segment is exactly `status` is silently dropped
+#      (it collides with ROS 2 actions' status/GoalStatusArray). Our plan-status
+#      topic therefore uses the leaf `status_json`; the FIWARE attribute is still
+#      called `status`, so NGSI consumers are unaffected.
+#   3. Every value arrives nested: read `<attr>.value.data`, for strings and
+#      numbers alike. A plain `"value": "APPROVE"` does NOT reach DDS — an
+#      inbound PATCH must be `{"value": {"data": "APPROVE"}}`.
+#
+# ROS_DOMAIN_ID must equal the `domain` in the generated JSON (both default 0).
+
+fiware:
+  host: "localhost"
+  port: 1026
+  # The DDS Orion-LD broker runs -mongocOnly and is NGSI-LD only; no
+  # Fiware-Service / Fiware-ServicePath headers are required or accepted.
+  ngsi_ld: true
+
+# --------------------------------------------------------------------------- #
+# ROS 2 -> FIWARE  (WISEPACK publishes, Orion-LD reflects)
+# --------------------------------------------------------------------------- #
+ros_to_fiware:
+
+  # ---- the audit trail --------------------------------------------------- #
+  # THE core requirement. Every workflow action is published here first and is
+  # then observable in FIWARE. There is no parallel direct-HTTP path.
+  - ros_topic: "/wisepack/action/event"
+    ros_msg_type: "std_msgs/String"
+    fiware_entity: "WISEPACKActionStream:main"
+    fiware_entity_type: "WISEPACKActionStream"
+    fiware_attribute: "actionJson"
+    ros_field: "data"
+
+  - ros_topic: "/wisepack/action/sequence"
+    ros_msg_type: "std_msgs/Int32"
+    fiware_entity: "WISEPACKActionStream:main"
+    fiware_entity_type: "WISEPACKActionStream"
+    fiware_attribute: "sequence"
+
+  - ros_topic: "/wisepack/dynamic_event"
+    ros_msg_type: "std_msgs/String"
+    fiware_entity: "WISEPACKActionStream:main"
+    fiware_entity_type: "WISEPACKActionStream"
+    fiware_attribute: "dynamicEvent"
+    ros_field: "data"
+
+  # ---- system and scenario ----------------------------------------------- #
+  - ros_topic: "/wisepack/execution/state"
+    ros_msg_type: "std_msgs/String"
+    fiware_entity: "WISEPACKSystem:main"
+    fiware_entity_type: "WISEPACKSystem"
+    fiware_attribute: "stage"
+    ros_field: "data"
+
+  - ros_topic: "/wisepack/system/readiness"
+    ros_msg_type: "std_msgs/Bool"
+    fiware_entity: "WISEPACKSystem:main"
+    fiware_entity_type: "WISEPACKSystem"
+    fiware_attribute: "readiness"
+
+  - ros_topic: "/wisepack/scenario/state"
+    ros_msg_type: "std_msgs/String"
+    fiware_entity: "WISEPACKScenario:current"
+    fiware_entity_type: "WISEPACKScenario"
+    fiware_attribute: "summary"
+    ros_field: "data"
+
+  - ros_topic: "/wisepack/scenario/config"
+    ros_msg_type: "std_msgs/String"
+    fiware_entity: "WISEPACKScenario:current"
+    fiware_entity_type: "WISEPACKScenario"
+    fiware_attribute: "config"
+    ros_field: "data"
+
+  - ros_topic: "/wisepack/waste/detected_count"
+    ros_msg_type: "std_msgs/Int32"
+    fiware_entity: "WISEPACKScenario:current"
+    fiware_entity_type: "WISEPACKScenario"
+    fiware_attribute: "detectedCount"
+
+  # ---- plans -------------------------------------------------------------- #
+  - ros_topic: "/wisepack/plan/baseline"
+    ros_msg_type: "std_msgs/String"
+    fiware_entity: "WISEPACKPackingPlan:current"
+    fiware_entity_type: "WISEPACKPackingPlan"
+    fiware_attribute: "baseline"
+    ros_field: "data"
+
+  - ros_topic: "/wisepack/plan/optimized"
+    ros_msg_type: "std_msgs/String"
+    fiware_entity: "WISEPACKPackingPlan:current"
+    fiware_entity_type: "WISEPACKPackingPlan"
+    fiware_attribute: "optimized"
+    ros_field: "data"
+
+  - ros_topic: "/wisepack/plan/selected"
+    ros_msg_type: "std_msgs/String"
+    fiware_entity: "WISEPACKPackingPlan:current"
+    fiware_entity_type: "WISEPACKPackingPlan"
+    fiware_attribute: "selected"
+    ros_field: "data"
+
+  # NOTE the `status_json` leaf — see constraint 2 in the header. The FIWARE
+  # attribute is still `status`.
+  - ros_topic: "/wisepack/plan/status_json"
+    ros_msg_type: "std_msgs/String"
+    fiware_entity: "WISEPACKPackingPlan:current"
+    fiware_entity_type: "WISEPACKPackingPlan"
+    fiware_attribute: "status"
+    ros_field: "data"
+
+  # ---- robot -------------------------------------------------------------- #
+  - ros_topic: "/wisepack/execution/current_item"
+    ros_msg_type: "std_msgs/String"
+    fiware_entity: "WISEPACKRobot:arm-01"
+    fiware_entity_type: "WISEPACKRobot"
+    fiware_attribute: "currentItem"
+    ros_field: "data"
+
+  - ros_topic: "/wisepack/execution/current_container"
+    ros_msg_type: "std_msgs/String"
+    fiware_entity: "WISEPACKRobot:arm-01"
+    fiware_entity_type: "WISEPACKRobot"
+    fiware_attribute: "currentContainer"
+    ros_field: "data"
+
+  - ros_topic: "/wisepack/execution/progress_pct"
+    ros_msg_type: "std_msgs/Float32"
+    fiware_entity: "WISEPACKRobot:arm-01"
+    fiware_entity_type: "WISEPACKRobot"
+    fiware_attribute: "progressPct"
+
+  # ---- KPIs --------------------------------------------------------------- #
+  - ros_topic: "/wisepack/kpi/containers_baseline"
+    ros_msg_type: "std_msgs/Int32"
+    fiware_entity: "WISEPACKKPI:current"
+    fiware_entity_type: "WISEPACKKPI"
+    fiware_attribute: "containersBaseline"
+
+  - ros_topic: "/wisepack/kpi/containers_optimized"
+    ros_msg_type: "std_msgs/Int32"
+    fiware_entity: "WISEPACKKPI:current"
+    fiware_entity_type: "WISEPACKKPI"
+    fiware_attribute: "containersOptimized"
+
+  - ros_topic: "/wisepack/kpi/utilization_baseline_pct"
+    ros_msg_type: "std_msgs/Float32"
+    fiware_entity: "WISEPACKKPI:current"
+    fiware_entity_type: "WISEPACKKPI"
+    fiware_attribute: "utilizationBaselinePct"
+
+  - ros_topic: "/wisepack/kpi/utilization_optimized_pct"
+    ros_msg_type: "std_msgs/Float32"
+    fiware_entity: "WISEPACKKPI:current"
+    fiware_entity_type: "WISEPACKKPI"
+    fiware_attribute: "utilizationOptimizedPct"
+
+  - ros_topic: "/wisepack/kpi/volume_reduction_pct"
+    ros_msg_type: "std_msgs/Float32"
+    fiware_entity: "WISEPACKKPI:current"
+    fiware_entity_type: "WISEPACKKPI"
+    fiware_attribute: "volumeReductionPct"
+
+  - ros_topic: "/wisepack/kpi/optimization_ms"
+    ros_msg_type: "std_msgs/Float32"
+    fiware_entity: "WISEPACKKPI:current"
+    fiware_entity_type: "WISEPACKKPI"
+    fiware_attribute: "optimizationMs"
+
+  - ros_topic: "/wisepack/kpi/pick_success_pct"
+    ros_msg_type: "std_msgs/Float32"
+    fiware_entity: "WISEPACKKPI:current"
+    fiware_entity_type: "WISEPACKKPI"
+    fiware_attribute: "pickSuccessPct"
+
+  - ros_topic: "/wisepack/kpi/end_to_end_success_pct"
+    ros_msg_type: "std_msgs/Float32"
+    fiware_entity: "WISEPACKKPI:current"
+    fiware_entity_type: "WISEPACKKPI"
+    fiware_attribute: "endToEndSuccessPct"
+
+# --------------------------------------------------------------------------- #
+# FIWARE -> ROS 2  (an operator or external HMI drives the workflow)
+# --------------------------------------------------------------------------- #
+# A PATCH of one of these attributes republishes on the DDS topic, which the
+# orchestrator is subscribed to. This is the documented command path: the
+# bundled dashboard uses exactly the same route in live mode rather than
+# mutating engine state in-process.
+#
+#   curl -X PATCH \
+#     'http://localhost:1026/ngsi-ld/v1/entities/urn:ngsi-ld:WISEPACKSystem:main/attrs/approval' \
+#     -H 'Content-Type: application/json' \
+#     -d '{"type":"Property","value":{"data":"APPROVE"}}'
+fiware_to_ros:
+  - fiware_entity: "WISEPACKSystem:main"
+    fiware_entity_type: "WISEPACKSystem"
+    fiware_attribute: "approval"
+    ros_topic: "/wisepack/operator/approval"
+    ros_msg_type: "std_msgs/String"
+
+  - fiware_entity: "WISEPACKSystem:main"
+    fiware_entity_type: "WISEPACKSystem"
+    fiware_attribute: "command"
+    ros_topic: "/wisepack/operator/command"
+    ros_msg_type: "std_msgs/String"

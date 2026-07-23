@@ -1,0 +1,28 @@
+# A valid plan is executing when a high-priority component arrives.
+#
+# The trigger is `placement:4` — fire before the 5th placement — rather than a
+# wall-clock time, so the demonstration is identical on a fast laptop and a
+# loaded CI runner. HARVEST times its events on a simulated clock, which suits a
+# day-long farm simulation and not a 30-second packing cycle.
+scenario:
+  preset: late_arrival_replan
+  seed: 42
+  strategy: max_density
+
+generator:
+  item_count: 18
+  container_spec: compact_box
+
+dynamic_events:
+  - event_type: item_inject
+    trigger: "placement:4"
+    label: "High-priority ILW component arrives late"
+    payload:
+      item:
+        length_mm: 1200
+        outer_diameter_mm: 220
+        inner_diameter_mm: 186
+        material: stainless_316L
+        segregation_group: B
+        priority: 9
+        dose_class: ILW

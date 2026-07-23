@@ -1,0 +1,46 @@
+# WISEPACK runtime image — Vulcanexus Jazzy + pinned WISEPACK Python deps.
+#
+# Adapted from TEMPO's Dockerfile.tempo. The host needs Docker and nothing else:
+# no host ROS 2, no host rclpy, no host fastapi.
+#
+# WHY VULCANEXUS AND NOT PLAIN ROS 2 JAZZY. It is a hard requirement of the
+# FIWARE audit path, not a preference. Orion-LD's DDS Enabler only fills an
+# NGSI-LD value once the publisher propagates the `std_msgs::msg::dds_::*`
+# TypeObject. Plain ROS 2 Jazzy announces the topic (so Orion-LD creates the
+# entity) but does not reliably propagate the type, so every attribute stays
+# `"uninitialized"` forever with no error anywhere. HARMONY validated this
+# end-to-end; WISEPACK inherits the conclusion.
+FROM eprosima/vulcanexus:jazzy-desktop
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+# py_trees is the behaviour-tree engine behind the HitL orchestrator — the same
+# dependency HARMONY's task_pack_bottle declares (ros-jazzy-py-trees).
+#
+# pytest comes from apt, not pip: pip's pytest wants a newer pluggy, and the
+# Debian-installed pluggy has no RECORD file, so pip cannot uninstall it and the
+# whole install aborts. The system pytest runs these tests fine. (TEMPO hit and
+# documented exactly this.)
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        python3-pip \
+        python3-pytest \
+        python3-yaml \
+        ros-jazzy-py-trees \
+        curl \
+        jq \
+    && rm -rf /var/lib/apt/lists/*
+
+# Ubuntu 24.04 marks the system interpreter as externally managed (PEP 668);
+# this image IS the environment, so install into it directly.
+#
+# fastapi/uvicorn back the dashboard. They are baked into the image rather than
+# pip-installed at launch: the dashboard has to come up on venue wifi — or none
+# at all — and a first-run download is exactly what fails there.
+RUN pip3 install --no-cache-dir --break-system-packages \
+        "fastapi" \
+        "uvicorn[standard]"
+
+WORKDIR /wisepack
+
+CMD ["/bin/bash"]

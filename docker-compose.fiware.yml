@@ -1,0 +1,28 @@
+# WISEPACK FIWARE stack — convenience wrapper.
+#
+# The authoritative definition lives with the bridge configuration it depends on:
+#     wisepack_ws/src/wisepack_fiware/dds/docker-compose.dds.yml
+# because the broker mounts context_broker_config.json from that same directory
+# and a compose file that is not next to its config is a compose file that gets
+# run with a stale mapping.
+#
+# Use it directly:
+#
+#     cd wisepack_ws/src/wisepack_fiware/dds
+#     python3 generate_config.py --domain 0     # regenerate the mapping first
+#     docker compose -f docker-compose.dds.yml up -d
+#     curl -s http://localhost:1026/version
+#
+# ...or from the repository root, which is what this file is for:
+#
+#     docker compose -f docker-compose.fiware.yml up -d
+#
+# NOTE: this file does NOT regenerate the mapping. If you changed
+# bridge_config.yaml, run generate_config.py before starting the broker, or the
+# broker will silently use the previous mapping.
+#
+# The stack is NGSI-LD only (`-wip dds -mongocOnly`) and returns HTTP 501 for
+# NGSI-v2. Do not run it alongside an NGSI-v2 Orion — both bind host port 1026.
+
+include:
+  - path: ./wisepack_ws/src/wisepack_fiware/dds/docker-compose.dds.yml

@@ -1,0 +1,29 @@
+# Three segregation groups that may not share a container.
+#
+# Containers use `segregation_locking`: an unrestricted box commits to the group
+# of the FIRST item placed in it, which is how segregated waste packaging
+# actually works. The independent validator then rejects any container holding
+# more than one group (H4), so segregation is a binding hard constraint rather
+# than a label.
+#
+# EXPECT ~0% container reduction here. Segregation dominates the container count
+# — one box per group is already the floor — and the honest result is that
+# geometry-aware packing cannot beat it. That is why this scenario exists.
+scenario:
+  preset: segregated_materials
+  seed: 42
+  strategy: segregation
+
+generator:
+  item_count: 28
+  materials: [carbon_steel, stainless_316L, zircaloy_4]
+  container_spec: standard_box
+
+dynamic_events:
+  - event_type: item_reclassified
+    trigger: "placement:5"
+    label: "Characterisation re-assigns a component to another group"
+    payload:
+      item_id: item-003
+      segregation_group: C
+      dose_class: ILW

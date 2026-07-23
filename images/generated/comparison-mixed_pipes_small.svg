@@ -1,0 +1,82 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 980 500" width="980" height="500" role="img" aria-label="Baseline vs optimized — mixed_pipes_small-s42" font-family="ui-sans-serif,system-ui,Arial">
+<rect width="980" height="500" fill="#ffffff"/>
+<text x="16" y="26" font-size="16" font-weight="700" fill="#12222f">Baseline vs optimized — mixed_pipes_small-s42</text>
+<text x="16" y="44" font-size="11" fill="#5b7185">Measured: 2 -> 1 containers, utilization 30.1% -> 60.1%, volume requirement reduction 50.0%</text>
+<text x="20" y="76" font-size="12" font-weight="700" fill="#12222f">BASELINE  arrival_order_shelf</text>
+<text x="20" y="93.0" font-size="9" fill="#5b7185">CNT-01 · 1250×800×400 mm</text>
+<rect x="20.0" y="98.0" width="162.5" height="104.0" fill="#f7f9fb" stroke="#d8e0ea" stroke-width="1"/>
+<rect x="20.0" y="208.0" width="162.5" height="52.0" fill="#f7f9fb" stroke="#d8e0ea" stroke-width="1"/>
+<line x1="20.0" y1="236.6" x2="182.5" y2="236.6" stroke="#c05a11" stroke-width="1" stroke-dasharray="3 3" opacity="0.75"/>
+<rect x="20.0" y="98.0" width="52.0" height="13.0" fill="#1266d1" fill-opacity="0.55" stroke="#1266d1" stroke-width="0.8"/>
+<rect x="20.0" y="247.0" width="52.0" height="13.0" fill="#1266d1" fill-opacity="0.55" stroke="#1266d1" stroke-width="0.8"/>
+<rect x="72.0" y="98.0" width="58.5" height="11.7" fill="#1266d1" fill-opacity="0.55" stroke="#1266d1" stroke-width="0.8"/>
+<rect x="72.0" y="248.3" width="58.5" height="11.7" fill="#1266d1" fill-opacity="0.55" stroke="#1266d1" stroke-width="0.8"/>
+<rect x="20.0" y="111.0" width="117.0" height="7.8" fill="#b06d00" fill-opacity="0.55" stroke="#b06d00" stroke-width="0.8"/>
+<rect x="20.0" y="252.2" width="117.0" height="7.8" fill="#b06d00" fill-opacity="0.55" stroke="#b06d00" stroke-width="0.8"/>
+<rect x="20.0" y="118.8" width="84.5" height="14.3" fill="#1266d1" fill-opacity="0.55" stroke="#1266d1" stroke-width="0.8"/>
+<rect x="20.0" y="245.7" width="84.5" height="14.3" fill="#1266d1" fill-opacity="0.55" stroke="#1266d1" stroke-width="0.8"/>
+<rect x="20.0" y="133.1" width="91.0" height="23.4" fill="#1266d1" fill-opacity="0.55" stroke="#1266d1" stroke-width="0.8"/>
+<rect x="20.0" y="236.6" width="91.0" height="23.4" fill="#1266d1" fill-opacity="0.55" stroke="#1266d1" stroke-width="0.8"/>
+<rect x="20.0" y="156.5" width="143.0" height="23.4" fill="#b06d00" fill-opacity="0.55" stroke="#b06d00" stroke-width="0.8"/>
+<rect x="20.0" y="236.6" width="143.0" height="23.4" fill="#b06d00" fill-opacity="0.55" stroke="#b06d00" stroke-width="0.8"/>
+<rect x="20.0" y="179.9" width="104.0" height="20.8" fill="#b06d00" fill-opacity="0.55" stroke="#b06d00" stroke-width="0.8"/>
+<rect x="20.0" y="239.2" width="104.0" height="20.8" fill="#b06d00" fill-opacity="0.55" stroke="#b06d00" stroke-width="0.8"/>
+<rect x="20.0" y="98.0" width="71.5" height="14.3" fill="#8e44ad" fill-opacity="0.55" stroke="#8e44ad" stroke-width="0.8"/>
+<rect x="20.0" y="222.3" width="71.5" height="14.3" fill="#8e44ad" fill-opacity="0.55" stroke="#8e44ad" stroke-width="0.8"/>
+<rect x="20.0" y="112.3" width="123.5" height="13.0" fill="#8e44ad" fill-opacity="0.55" stroke="#8e44ad" stroke-width="0.8"/>
+<rect x="20.0" y="223.6" width="123.5" height="13.0" fill="#8e44ad" fill-opacity="0.55" stroke="#8e44ad" stroke-width="0.8"/>
+<rect x="20.0" y="125.3" width="91.0" height="20.8" fill="#8e44ad" fill-opacity="0.55" stroke="#8e44ad" stroke-width="0.8"/>
+<rect x="20.0" y="215.8" width="91.0" height="20.8" fill="#8e44ad" fill-opacity="0.55" stroke="#8e44ad" stroke-width="0.8"/>
+<rect x="20.0" y="146.1" width="123.5" height="10.4" fill="#1266d1" fill-opacity="0.55" stroke="#1266d1" stroke-width="0.8"/>
+<rect x="20.0" y="226.2" width="123.5" height="10.4" fill="#1266d1" fill-opacity="0.55" stroke="#1266d1" stroke-width="0.8"/>
+<rect x="20.0" y="156.5" width="143.0" height="23.4" fill="#b06d00" fill-opacity="0.55" stroke="#b06d00" stroke-width="0.8"/>
+<rect x="20.0" y="213.2" width="143.0" height="23.4" fill="#b06d00" fill-opacity="0.55" stroke="#b06d00" stroke-width="0.8"/>
+<rect x="20.0" y="179.9" width="78.0" height="10.4" fill="#1266d1" fill-opacity="0.55" stroke="#1266d1" stroke-width="0.8"/>
+<rect x="20.0" y="226.2" width="78.0" height="10.4" fill="#1266d1" fill-opacity="0.55" stroke="#1266d1" stroke-width="0.8"/>
+<text x="20" y="283.0" font-size="9" fill="#5b7185">CNT-02 · 1250×800×400 mm</text>
+<rect x="20.0" y="288.0" width="162.5" height="104.0" fill="#f7f9fb" stroke="#d8e0ea" stroke-width="1"/>
+<rect x="20.0" y="398.0" width="162.5" height="52.0" fill="#f7f9fb" stroke="#d8e0ea" stroke-width="1"/>
+<rect x="20.0" y="288.0" width="123.5" height="13.0" fill="#1266d1" fill-opacity="0.55" stroke="#1266d1" stroke-width="0.8"/>
+<rect x="20.0" y="437.0" width="123.5" height="13.0" fill="#1266d1" fill-opacity="0.55" stroke="#1266d1" stroke-width="0.8"/>
+<rect x="20.0" y="301.0" width="130.0" height="18.2" fill="#8e44ad" fill-opacity="0.55" stroke="#8e44ad" stroke-width="0.8"/>
+<rect x="20.0" y="431.8" width="130.0" height="18.2" fill="#8e44ad" fill-opacity="0.55" stroke="#8e44ad" stroke-width="0.8"/>
+<rect x="20.0" y="319.2" width="123.5" height="24.7" fill="#1266d1" fill-opacity="0.55" stroke="#1266d1" stroke-width="0.8"/>
+<rect x="20.0" y="425.3" width="123.5" height="24.7" fill="#1266d1" fill-opacity="0.55" stroke="#1266d1" stroke-width="0.8"/>
+<text x="510" y="76" font-size="12" font-weight="700" fill="#12222f">OPTIMIZED  geometry_aware_ep_bfd / max_density</text>
+<text x="510" y="93.0" font-size="9" fill="#5b7185">CNT-01 · 1250×800×400 mm</text>
+<rect x="510.0" y="98.0" width="162.5" height="104.0" fill="#f7f9fb" stroke="#d8e0ea" stroke-width="1"/>
+<rect x="510.0" y="208.0" width="162.5" height="52.0" fill="#f7f9fb" stroke="#d8e0ea" stroke-width="1"/>
+<rect x="510.0" y="98.0" width="143.0" height="23.4" fill="#b06d00" fill-opacity="0.55" stroke="#b06d00" stroke-width="0.8"/>
+<rect x="510.0" y="236.6" width="143.0" height="23.4" fill="#b06d00" fill-opacity="0.55" stroke="#b06d00" stroke-width="0.8"/>
+<rect x="653.0" y="98.0" width="14.3" height="84.5" fill="#1266d1" fill-opacity="0.55" stroke="#1266d1" stroke-width="0.8"/>
+<rect x="653.0" y="245.7" width="14.3" height="14.3" fill="#1266d1" fill-opacity="0.55" stroke="#1266d1" stroke-width="0.8"/>
+<rect x="510.0" y="121.4" width="143.0" height="23.4" fill="#b06d00" fill-opacity="0.55" stroke="#b06d00" stroke-width="0.8"/>
+<rect x="510.0" y="236.6" width="143.0" height="23.4" fill="#b06d00" fill-opacity="0.55" stroke="#b06d00" stroke-width="0.8"/>
+<rect x="510.0" y="144.8" width="123.5" height="24.7" fill="#1266d1" fill-opacity="0.55" stroke="#1266d1" stroke-width="0.8"/>
+<rect x="510.0" y="235.3" width="123.5" height="24.7" fill="#1266d1" fill-opacity="0.55" stroke="#1266d1" stroke-width="0.8"/>
+<rect x="510.0" y="169.5" width="91.0" height="23.4" fill="#1266d1" fill-opacity="0.55" stroke="#1266d1" stroke-width="0.8"/>
+<rect x="510.0" y="236.6" width="91.0" height="23.4" fill="#1266d1" fill-opacity="0.55" stroke="#1266d1" stroke-width="0.8"/>
+<rect x="601.0" y="169.5" width="52.0" height="13.0" fill="#1266d1" fill-opacity="0.55" stroke="#1266d1" stroke-width="0.8"/>
+<rect x="601.0" y="247.0" width="52.0" height="13.0" fill="#1266d1" fill-opacity="0.55" stroke="#1266d1" stroke-width="0.8"/>
+<rect x="601.0" y="182.5" width="58.5" height="11.7" fill="#1266d1" fill-opacity="0.55" stroke="#1266d1" stroke-width="0.8"/>
+<rect x="601.0" y="248.3" width="58.5" height="11.7" fill="#1266d1" fill-opacity="0.55" stroke="#1266d1" stroke-width="0.8"/>
+<rect x="653.0" y="98.0" width="14.3" height="71.5" fill="#8e44ad" fill-opacity="0.55" stroke="#8e44ad" stroke-width="0.8"/>
+<rect x="653.0" y="231.4" width="14.3" height="14.3" fill="#8e44ad" fill-opacity="0.55" stroke="#8e44ad" stroke-width="0.8"/>
+<rect x="510.0" y="98.0" width="104.0" height="20.8" fill="#b06d00" fill-opacity="0.55" stroke="#b06d00" stroke-width="0.8"/>
+<rect x="510.0" y="215.8" width="104.0" height="20.8" fill="#b06d00" fill-opacity="0.55" stroke="#b06d00" stroke-width="0.8"/>
+<rect x="510.0" y="118.8" width="130.0" height="18.2" fill="#8e44ad" fill-opacity="0.55" stroke="#8e44ad" stroke-width="0.8"/>
+<rect x="510.0" y="218.4" width="130.0" height="18.2" fill="#8e44ad" fill-opacity="0.55" stroke="#8e44ad" stroke-width="0.8"/>
+<rect x="510.0" y="137.0" width="117.0" height="7.8" fill="#b06d00" fill-opacity="0.55" stroke="#b06d00" stroke-width="0.8"/>
+<rect x="510.0" y="228.8" width="117.0" height="7.8" fill="#b06d00" fill-opacity="0.55" stroke="#b06d00" stroke-width="0.8"/>
+<rect x="510.0" y="169.5" width="91.0" height="20.8" fill="#8e44ad" fill-opacity="0.55" stroke="#8e44ad" stroke-width="0.8"/>
+<rect x="510.0" y="215.8" width="91.0" height="20.8" fill="#8e44ad" fill-opacity="0.55" stroke="#8e44ad" stroke-width="0.8"/>
+<rect x="510.0" y="144.8" width="123.5" height="13.0" fill="#8e44ad" fill-opacity="0.55" stroke="#8e44ad" stroke-width="0.8"/>
+<rect x="510.0" y="222.3" width="123.5" height="13.0" fill="#8e44ad" fill-opacity="0.55" stroke="#8e44ad" stroke-width="0.8"/>
+<rect x="510.0" y="157.8" width="123.5" height="10.4" fill="#1266d1" fill-opacity="0.55" stroke="#1266d1" stroke-width="0.8"/>
+<rect x="510.0" y="224.9" width="123.5" height="10.4" fill="#1266d1" fill-opacity="0.55" stroke="#1266d1" stroke-width="0.8"/>
+<rect x="510.0" y="157.8" width="78.0" height="10.4" fill="#1266d1" fill-opacity="0.55" stroke="#1266d1" stroke-width="0.8"/>
+<rect x="510.0" y="214.5" width="78.0" height="10.4" fill="#1266d1" fill-opacity="0.55" stroke="#1266d1" stroke-width="0.8"/>
+<rect x="510.0" y="144.8" width="123.5" height="13.0" fill="#1266d1" fill-opacity="0.55" stroke="#1266d1" stroke-width="0.8"/>
+<rect x="510.0" y="209.3" width="123.5" height="13.0" fill="#1266d1" fill-opacity="0.55" stroke="#1266d1" stroke-width="0.8"/>
+<text x="16" y="492" font-size="9" fill="#5b7185">Both plans pass the same independent validator. Reduction denominator is required container capacity, not material volume.</text>
+</svg>

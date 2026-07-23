@@ -1,0 +1,20 @@
+# Dense mixed batch — the baseline-vs-optimized container-count comparison.
+#
+# ~40 straight pipes at roughly 1.2x one container's capacity, so both algorithms
+# must open more than one container and the only question is how many.
+scenario:
+  preset: mixed_pipes_dense
+  seed: 42
+  strategy: max_density
+
+generator:
+  item_count: 40
+  length_range_mm: [250, 1500]
+  diameter_range_mm: [50, 240]
+  container_spec: standard_box
+
+optimizer:
+  restarts: 6
+  time_budget_ms: 4000
+
+dynamic_events: []

@@ -1,0 +1,760 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>WISEPACK — packing demonstrator</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect x='2' y='4' width='12' height='9' rx='1.5' fill='%234aa3ff'/%3E%3C/svg%3E"/>
+<style>
+  /* ------------------------------------------------------------------ tokens
+     Token set adapted from TEMPO's dashboard: one set, two themes, and nothing
+     below names a raw colour. The SVG twin view and the topology both resolve
+     these, so a theme flip recolours everything with no re-render. */
+  :root{
+    color-scheme:dark;
+    --bg:#0f1720; --panel:#16212e; --inset:#0e1926; --line:#22303f; --line-soft:#1b2836;
+    --ink:#e6edf3; --mut:#8aa0b4; --acc:#4aa3ff;
+    --ok:#2ecc71; --warn:#f1c40f; --bad:#e74c3c; --hold:#e67e22; --neutral:#5b7893;
+    --ok-bg:rgba(46,204,113,.15); --warn-bg:rgba(241,196,15,.15);
+    --bad-bg:rgba(231,76,60,.15); --hold-bg:rgba(230,126,34,.18);
+    --neutral-bg:rgba(91,120,147,.16);
+    --node-fill:#0e1926; --node-stroke:#5b7893; --node-kind:#8aa0b4;
+    --link-tel:#5b7893; --link-ctl:#4aa3ff;
+    --cnt-fill:rgba(90,120,150,.10); --cnt-line:#3d566e; --floor:#111c28;
+    --shadow:none;
+    /* segregation groups — distinguishable in both themes and for the common
+       forms of colour vision deficiency (blue / amber / magenta, not red/green) */
+    --grp-A:#4aa3ff; --grp-B:#f39c12; --grp-C:#c678dd; --grp-D:#1abc9c; --grp-E:#e74c3c;
+  }
+  :root[data-theme="light"]{
+    color-scheme:light;
+    --bg:#f4f6f9; --panel:#ffffff; --inset:#f7f9fb; --line:#d8e0ea; --line-soft:#e6ecf3;
+    --ink:#12222f; --mut:#5b7185; --acc:#1266d1;
+    --ok:#12784a; --warn:#a76a00; --bad:#c0392b; --hold:#c05a11; --neutral:#5b7185;
+    --ok-bg:rgba(18,120,74,.10); --warn-bg:rgba(167,106,0,.12);
+    --bad-bg:rgba(192,57,43,.10); --hold-bg:rgba(192,90,17,.12);
+    --neutral-bg:rgba(91,113,133,.10);
+    --node-fill:#ffffff; --node-stroke:#8fa3b6; --node-kind:#5b7185;
+    --link-tel:#7c93a8; --link-ctl:#1266d1;
+    --cnt-fill:rgba(18,102,209,.05); --cnt-line:#a9bccd; --floor:#eaeff5;
+    --shadow:0 1px 2px rgba(16,32,48,.06);
+    --grp-A:#1266d1; --grp-B:#b06d00; --grp-C:#8e44ad; --grp-D:#0e8a6d; --grp-E:#c0392b;
+  }
+
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);
+    font:14px/1.45 ui-sans-serif,system-ui,Segoe UI,Roboto,Arial}
+  header{padding:10px 16px;border-bottom:1px solid var(--line);display:flex;
+    align-items:center;gap:12px;background:var(--panel);flex-wrap:wrap;
+    position:sticky;top:0;z-index:20}
+  header b{font-size:16px;letter-spacing:.02em}
+  header .sub{font-size:11px;color:var(--mut);max-width:340px;line-height:1.3}
+  .spacer{margin-left:auto}
+  .badge{font-size:11px;color:var(--mut);border:1px solid var(--line);
+    padding:2px 9px;border-radius:999px;white-space:nowrap}
+  .badge.sim{color:var(--warn);border-color:var(--warn);background:var(--warn-bg);font-weight:700}
+  .badge.live{color:var(--ok);border-color:var(--ok);background:var(--ok-bg);font-weight:700}
+  .badge.err{color:var(--bad);border-color:var(--bad);background:var(--bad-bg)}
+  .conn::before{content:'';display:inline-block;width:7px;height:7px;border-radius:50%;
+    margin-right:6px;vertical-align:1px;background:var(--mut)}
+  .conn.on::before{background:var(--ok)} .conn.off::before{background:var(--bad)}
+
+  .wrap{display:grid;grid-template-columns:minmax(0,1.35fr) minmax(0,1fr);gap:12px;padding:12px}
+  @media (max-width:1150px){ .wrap{grid-template-columns:1fr} }
+  .col{display:flex;flex-direction:column;gap:12px;min-width:0}
+  .panel{background:var(--panel);border:1px solid var(--line);border-radius:10px;
+    padding:11px 12px;box-shadow:var(--shadow);min-width:0}
+  .panel h3{margin:0 0 9px;font-size:11px;letter-spacing:.09em;text-transform:uppercase;
+    color:var(--mut);display:flex;align-items:center;gap:8px}
+  .panel h3 .note{text-transform:none;letter-spacing:0;font-weight:400;font-size:11px}
+
+  /* ------------------------------------------------------------- controls */
+  .ctl{display:grid;grid-template-columns:repeat(auto-fit,minmax(126px,1fr));gap:8px}
+  label.f{display:flex;flex-direction:column;gap:3px;font-size:11px;color:var(--mut)}
+  select,input{background:var(--inset);color:var(--ink);border:1px solid var(--line);
+    border-radius:6px;padding:5px 7px;font:13px ui-sans-serif,system-ui;width:100%}
+  input[type=checkbox]{width:auto}
+  .btns{display:flex;gap:7px;flex-wrap:wrap;margin-top:10px}
+  button{appearance:none;border:1px solid var(--line);background:var(--inset);
+    color:var(--ink);border-radius:7px;padding:6px 11px;cursor:pointer;
+    font:600 12px ui-sans-serif,system-ui}
+  button:hover:not(:disabled){border-color:var(--acc);color:var(--acc)}
+  button:disabled{opacity:.4;cursor:not-allowed}
+  button.pri{background:var(--acc);border-color:var(--acc);color:#fff}
+  button.pri:hover:not(:disabled){opacity:.88;color:#fff}
+  button.dang{border-color:var(--bad);color:var(--bad)}
+  button.warn{border-color:var(--hold);color:var(--hold)}
+
+  /* ------------------------------------------------------------ KPI tiles */
+  .tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(118px,1fr));gap:8px}
+  .tile{background:var(--inset);border:1px solid var(--line);border-radius:8px;padding:8px 9px}
+  .tile .k{font-size:10px;color:var(--mut);text-transform:uppercase;letter-spacing:.05em;
+    line-height:1.25;min-height:24px}
+  .tile .v{font-size:19px;font-weight:700;margin-top:3px;line-height:1.1}
+  /* unmeasured is muted and smaller — never red, which would read as a failure */
+  .tile .v.nm{color:var(--mut);font-size:12px;font-weight:600}
+  .tile .s{font-size:9px;margin-top:3px;text-transform:uppercase;letter-spacing:.06em}
+  .s.measured{color:var(--ok)} .s.simulated{color:var(--warn)}
+  .s.target{color:var(--acc)} .s.operator{color:var(--acc)}
+
+  /* --------------------------------------------------------------- twin */
+  #twin{width:100%;height:auto;display:block;background:var(--inset);
+    border:1px solid var(--line);border-radius:8px}
+  .legend{display:flex;flex-wrap:wrap;gap:5px 12px;font-size:10.5px;color:var(--mut);margin-top:7px}
+  .legend i{display:inline-block;width:9px;height:9px;border-radius:2px;margin-right:4px;
+    vertical-align:-1px}
+  .seg{display:inline-flex;border:1px solid var(--line);border-radius:7px;overflow:hidden;
+    background:var(--inset)}
+  .seg button{border:0;border-radius:0;background:transparent;color:var(--mut);
+    padding:5px 9px;font:600 11px ui-sans-serif,system-ui;letter-spacing:.04em;
+    text-transform:uppercase}
+  .seg button+button{border-left:1px solid var(--line)}
+  .seg button[aria-pressed="true"]{background:var(--acc);color:#fff}
+
+  /* ------------------------------------------------------------ compare */
+  table{width:100%;border-collapse:collapse;font-size:12px}
+  th,td{text-align:left;padding:5px 7px;border-bottom:1px solid var(--line-soft)}
+  th{color:var(--mut);font-weight:600;font-size:10.5px;text-transform:uppercase;
+    letter-spacing:.05em}
+  td.num,th.num{text-align:right;font-variant-numeric:tabular-nums}
+  tr.win td{color:var(--ok);font-weight:600}
+  .scroll{overflow-x:auto}
+
+  /* ------------------------------------------------------------- topology */
+  #topo svg{display:block;width:100%;height:auto}
+  .n-box{fill:var(--node-fill);stroke:var(--node-stroke);stroke-width:1.8}
+  .n-label{fill:var(--ink);font:600 11px ui-sans-serif,system-ui}
+  .n-kind{fill:var(--node-kind);font:600 8px ui-sans-serif,system-ui;letter-spacing:.08em;
+    text-transform:uppercase}
+  .st-active .n-box{stroke:var(--ok);stroke-width:2.4}
+  .st-standby .n-box{stroke:var(--warn);stroke-width:2.4}
+  .st-fault .n-box{stroke:var(--bad);stroke-width:2.4}
+  .lk{stroke:var(--link-tel);stroke-width:1.4;fill:none}
+  .lk.ctl{stroke:var(--link-ctl);stroke-dasharray:4 3}
+
+  /* ----------------------------------------------------------------- log */
+  #log{max-height:340px;overflow:auto;font:11.5px/1.5 ui-monospace,Menlo,Consolas,monospace}
+  #log .row{padding:3px 0;border-bottom:1px dashed var(--line-soft);display:grid;
+    grid-template-columns:52px 92px 1fr auto;gap:7px;align-items:baseline}
+  #log .seq{color:var(--mut)}
+  #log .stg{color:var(--acc);font-size:10px}
+  #log .msg{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  #log .src{font-size:9px;text-transform:uppercase;letter-spacing:.05em}
+  #log .r-failed .msg{color:var(--bad)} #log .r-rejected .msg{color:var(--bad)}
+  #log .r-retry .msg{color:var(--warn)} #log .r-pending .msg{color:var(--warn)}
+  #log .dyn{border-left:3px solid var(--hold);padding-left:5px}
+
+  .stagepill{display:inline-block;padding:2px 9px;border-radius:999px;font-weight:700;
+    font-size:11px;background:var(--neutral-bg);color:var(--neutral)}
+  .stagepill.go{background:var(--ok-bg);color:var(--ok)}
+  .stagepill.wait{background:var(--warn-bg);color:var(--warn)}
+  .stagepill.bad{background:var(--bad-bg);color:var(--bad)}
+  .bar{height:6px;background:var(--inset);border-radius:99px;overflow:hidden;margin-top:7px;
+    border:1px solid var(--line)}
+  .bar>i{display:block;height:100%;background:var(--acc);width:0;transition:width .3s}
+  .notice{font-size:11.5px;color:var(--mut);margin-top:8px;min-height:16px}
+  .warnbox{background:var(--warn-bg);border:1px solid var(--warn);color:var(--warn);
+    border-radius:7px;padding:7px 9px;font-size:11.5px;margin-bottom:9px}
+  .foot{color:var(--mut);font-size:10.5px;padding:2px 16px 18px;line-height:1.6}
+  code{background:var(--inset);border:1px solid var(--line);border-radius:4px;padding:0 4px;
+    font-size:11px}
+</style>
+</head>
+<body>
+<header>
+  <b>WISEPACK</b>
+  <span class="sub">Intelligent robotic sorting &amp; volume-optimized packaging of nuclear waste — Human-in-the-Loop AI</span>
+  <span class="badge" id="b-scenario">scenario —</span>
+  <span class="badge" id="b-run">run —</span>
+  <span class="spacer"></span>
+  <span class="stagepill" id="b-stage">IDLE</span>
+  <span class="badge" id="b-source">source —</span>
+  <span class="badge conn" id="b-fiware">FIWARE —</span>
+  <div class="seg">
+    <button id="theme-d" aria-pressed="true">Dark</button>
+    <button id="theme-l" aria-pressed="false">Light</button>
+  </div>
+</header>
+
+<div class="wrap">
+  <!-- ================================================= LEFT COLUMN -->
+  <div class="col">
+    <div class="panel">
+      <h3>Digital Twin
+        <span class="note" id="twin-note"></span>
+        <span class="spacer"></span>
+        <span class="seg">
+          <button class="v-btn" data-view="optimized" aria-pressed="true">Optimized</button>
+          <button class="v-btn" data-view="baseline" aria-pressed="false">Baseline</button>
+          <button class="v-btn" data-view="side" aria-pressed="false">Side by side</button>
+        </span>
+      </h3>
+      <svg id="twin" viewBox="0 0 1000 470" preserveAspectRatio="xMidYMid meet"
+           role="img" aria-label="Container packing view"></svg>
+      <div class="legend" id="legend"></div>
+      <div class="bar"><i id="progbar"></i></div>
+      <div class="notice" id="notice"></div>
+    </div>
+
+    <div class="panel">
+      <h3>Baseline vs optimized <span class="note">measured — both plans pass the independent validator</span></h3>
+      <div class="scroll"><table id="cmp"><tbody></tbody></table></div>
+      <div class="notice" id="selreason"></div>
+    </div>
+
+    <div class="panel">
+      <h3>System topology <span class="note">solid = telemetry · dashed = commands</span></h3>
+      <div id="topo"></div>
+    </div>
+  </div>
+
+  <!-- ================================================ RIGHT COLUMN -->
+  <div class="col">
+    <div class="panel">
+      <h3>Operator — Human in the Loop</h3>
+      <div id="approval-warn"></div>
+      <div class="btns">
+        <button class="pri" id="c-approve">Approve plan</button>
+        <button class="dang" id="c-reject">Reject &amp; re-plan</button>
+        <button id="c-alt">Alternative strategy</button>
+      </div>
+      <div class="btns">
+        <button class="warn" id="c-inject">Inject item</button>
+        <button class="warn" id="c-unavail">Container unavailable</button>
+        <button class="warn" id="c-grasp">Grasp failure</button>
+      </div>
+      <div class="btns">
+        <button id="c-pause">Pause</button>
+        <button id="c-resume">Resume</button>
+        <button id="c-step">Step</button>
+        <button id="c-artifacts">Write artefacts</button>
+      </div>
+    </div>
+
+    <div class="panel">
+      <h3>Scenario</h3>
+      <div class="ctl">
+        <label class="f">Preset<select id="s-preset"></select></label>
+        <label class="f">Seed<input id="s-seed" type="number" min="0" step="1" value="42"/></label>
+        <label class="f">Strategy<select id="s-strategy"></select></label>
+        <label class="f">Item count<input id="s-count" type="number" min="1" max="200" placeholder="preset"/></label>
+        <label class="f">Length min/max mm<input id="s-len" placeholder="e.g. 250,1500"/></label>
+        <label class="f">Diameter min/max mm<input id="s-dia" placeholder="e.g. 50,240"/></label>
+        <label class="f">Container<select id="s-container"></select></label>
+        <label class="f">Pick failure prob.<input id="s-fail" type="number" min="0" max="1" step="0.01" value="0.08"/></label>
+        <label class="f">Dynamic events<input id="s-dyn" type="checkbox" checked/></label>
+      </div>
+      <div class="btns">
+        <button class="pri" id="c-reset">Generate &amp; plan</button>
+        <button id="c-strategies">Compare strategies</button>
+      </div>
+      <div class="scroll"><table id="strategies"><tbody></tbody></table></div>
+    </div>
+
+    <div class="panel">
+      <h3>KPIs <span class="note">measured · simulated · target are never mixed</span></h3>
+      <div class="tiles" id="kpis"></div>
+      <div style="margin-top:10px"></div>
+      <h3>Proposal KPI targets <span class="note">a target is not a result</span></h3>
+      <div class="scroll"><table id="targets"><tbody></tbody></table></div>
+    </div>
+
+    <div class="panel">
+      <h3>Action event timeline
+        <span class="note" id="log-note"></span>
+      </h3>
+      <div id="log"></div>
+    </div>
+  </div>
+</div>
+
+<div class="foot">
+  Container demand is measured as <code>containers × capacity each</code>. Total pipe material volume is
+  never a reduction denominator — it is identical for both algorithms.
+  Simulated figures come from a seeded simulator: there is no perception model, no robot and no radiation
+  model in this demonstrator. Proposal KPI targets are shown as targets, never scored as results
+  unless this demonstrator can genuinely measure them.
+</div>
+
+<script>
+"use strict";
+// ---------------------------------------------------------------- helpers
+const $ = (s) => document.querySelector(s);
+const el = (t, a = {}, kids = []) => {
+  const n = document.createElementNS(a._ns || "http://www.w3.org/1999/xhtml", t);
+  for (const [k, v] of Object.entries(a)) if (k !== "_ns") n.setAttribute(k, v);
+  for (const c of [].concat(kids)) n.append(c);
+  return n;
+};
+const svg = (t, a = {}, kids = []) => el(t, { ...a, _ns: "http://www.w3.org/2000/svg" }, kids);
+const num = (v, d = 1) => (v === null || v === undefined || Number.isNaN(v)) ? null : Number(v).toFixed(d);
+const GROUPS = ["A", "B", "C", "D", "E"];
+const groupColor = (g) => `var(--grp-${GROUPS.includes(g) ? g : "A"})`;
+
+let STATE = {}, PLANS = null, VIEW = "optimized", WS = null, POLLING = null;
+
+// ---------------------------------------------------------------- theme
+function setTheme(t) {
+  document.documentElement.dataset.theme = t;
+  $("#theme-d").setAttribute("aria-pressed", String(t === "dark"));
+  $("#theme-l").setAttribute("aria-pressed", String(t === "light"));
+  try { localStorage.setItem("wisepack-theme", t); } catch (e) { /* private mode */ }
+  drawTwin(); drawTopo();
+}
+$("#theme-d").onclick = () => setTheme("dark");
+$("#theme-l").onclick = () => setTheme("light");
+
+// ---------------------------------------------------------------- fetch
+async function api(path, opts) {
+  const r = await fetch(path, opts);
+  if (!r.ok) {
+    let detail = r.statusText;
+    try { detail = (await r.json()).detail || detail; } catch (e) { /* non-JSON */ }
+    throw new Error(detail);
+  }
+  return r.json();
+}
+async function command(cmd, args = {}) {
+  try {
+    const res = await api("/api/command", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ command: cmd, args })
+    });
+    $("#notice").textContent = res.detail || `${cmd}: ok`;
+    await refreshAll();
+  } catch (e) {
+    $("#notice").textContent = `${cmd} refused — ${e.message}`;
+  }
+}
+
+// ---------------------------------------------------------------- header
+const GO = ["PICK_ITEM","VERIFY_PICK","PLACE_ITEM","VERIFY_PLACEMENT","UPDATE_CONTAINER_STATE","NEXT_ITEM","COMPLETE"];
+function renderHeader(s) {
+  const stage = s.stage || "IDLE";
+  const pill = $("#b-stage");
+  pill.textContent = stage;
+  pill.className = "stagepill " + (stage === "DEGRADED" ? "bad"
+    : stage === "WAIT_FOR_OPERATOR_APPROVAL" || stage === "REPLAN" ? "wait"
+    : GO.includes(stage) ? "go" : "");
+
+  const b = s.badge || {};
+  const src = $("#b-source");
+  src.textContent = "source: " + (b.label || "—");
+  src.className = "badge " + (b.source === "sim" ? "sim" : "live");
+  src.title = b.detail || "";
+
+  const f = $("#b-fiware");
+  const conn = s.fiware && s.fiware.connected;
+  f.textContent = "FIWARE " + (conn === true ? "connected" : conn === false ? "unreachable" : "n/a");
+  f.className = "badge conn " + (conn === true ? "on" : conn === false ? "off" : "");
+  f.title = (s.fiware && s.fiware.error) || "";
+
+  $("#b-scenario").textContent = s.scenario ? `scenario: ${s.scenario.scenario_id}` : "scenario —";
+  $("#b-run").textContent = s.run_id ? `run: ${s.run_id}` : "run —";
+  $("#progbar").style.width = (s.progress_pct || 0) + "%";
+  if (s.notice) $("#notice").textContent = s.notice;
+
+  // Approval banner — the safety statement, stated not implied.
+  const box = $("#approval-warn");
+  box.innerHTML = "";
+  if (stage === "WAIT_FOR_OPERATOR_APPROVAL") {
+    box.append(el("div", { class: "warnbox" },
+      "Plan awaiting your decision. No physical action is authorised until it is approved."));
+  } else if (stage === "DEGRADED") {
+    box.append(el("div", { class: "warnbox" },
+      "DEGRADED — the system is held. " + (s.degraded_reason || "")));
+  }
+  for (const [id, on] of [["#c-approve", stage === "WAIT_FOR_OPERATOR_APPROVAL"],
+                          ["#c-reject", stage === "WAIT_FOR_OPERATOR_APPROVAL"]]) {
+    $(id).disabled = !on;
+  }
+}
+
+// ------------------------------------------------------------ Digital Twin
+// Top view (X-Y) and side view (X-Z) per container, drawn from real placement
+// geometry. Scale is derived from the container, so any container spec renders.
+function drawTwin() {
+  const root = $("#twin");
+  root.innerHTML = "";
+  if (!PLANS || !PLANS.ready) {
+    root.append(svg("text", { x: 500, y: 235, "text-anchor": "middle",
+      fill: "var(--mut)", "font-size": "15" }, "Generate a scenario to see the Digital Twin"));
+    return;
+  }
+  // The execution plan is what shows progress; fall back to the comparison
+  // plan before anything has been selected.
+  const exec = PLANS.selected || PLANS.optimized;
+  const plans = VIEW === "side" ? [PLANS.baseline, exec]
+              : VIEW === "baseline" ? [PLANS.baseline] : [exec];
+  const itemsById = {};
+  for (const it of PLANS.scenario.items) itemsById[it.item_id] = it;
+
+  const W = 1000, H = 470, PAD = 12;
+  const colW = W / plans.length;
+  const executedIds = new Set();
+  for (const p of (PLANS.optimized.placements || []).concat(PLANS.baseline.placements || []))
+    if (p.executed) executedIds.add(p.item_id + "@" + p.container_id);
+
+  plans.forEach((plan, pi) => {
+    const g = svg("g", { transform: `translate(${pi * colW},0)` });
+    const used = (plan.containers || []).filter(c =>
+      (plan.placements || []).some(p => p.container_id === c.container_id));
+    const title = `${plan.algorithm === "arrival_order_shelf" ? "Baseline" : "Optimized"} · ` +
+      `${used.length} container${used.length === 1 ? "" : "s"} · ${Number(plan.utilization_pct).toFixed(1)}% used`;
+    g.append(svg("text", { x: PAD, y: 15, fill: "var(--ink)", "font-size": "12",
+      "font-weight": "700" }, title));
+
+    if (!used.length) { root.append(g); return; }
+    // Lay containers out in a column; each gets a top view and a side view.
+    const rowH = (H - 30) / Math.min(used.length, 3);
+    used.slice(0, 3).forEach((cnt, ci) => {
+      const y0 = 26 + ci * rowH;
+      const cw = cnt.inner_width_mm, cd = cnt.inner_depth_mm, ch = cnt.inner_height_mm;
+      const availW = colW - 2 * PAD;
+      // Both views share one scale so the two projections stay comparable.
+      const sc = Math.min(availW / (cw + cd * 0.06 + 40), (rowH - 26) / (cd + ch));
+      const topH = cd * sc, sideH = ch * sc, boxW = cw * sc;
+      const ox = PAD, oyTop = y0 + 12, oySide = oyTop + topH + 8;
+
+      const label = `${cnt.container_id} · ${cw}×${cd}×${ch} mm` +
+        (cnt.status === "unavailable" ? " · UNAVAILABLE" : "");
+      g.append(svg("text", { x: ox, y: y0 + 6, fill: "var(--mut)", "font-size": "9.5",
+        "letter-spacing": ".05em" }, label));
+
+      // container outlines
+      for (const [oy, hh, tag] of [[oyTop, topH, "top"], [oySide, sideH, "side"]]) {
+        g.append(svg("rect", { x: ox, y: oy, width: boxW, height: hh,
+          fill: "var(--floor)", stroke: "var(--cnt-line)", "stroke-width": "1.2", rx: "2" }));
+        g.append(svg("text", { x: ox + boxW + 4, y: oy + hh / 2, fill: "var(--mut)",
+          "font-size": "8", "dominant-baseline": "middle" }, tag));
+      }
+      // shelf plates (baseline only) — shown because they explain its wasted height
+      for (const z of (cnt.shelf_levels_mm || [])) {
+        const yy = oySide + sideH - z * sc;
+        g.append(svg("line", { x1: ox, y1: yy, x2: ox + boxW, y2: yy,
+          stroke: "var(--hold)", "stroke-width": "1", "stroke-dasharray": "3 3", opacity: ".8" }));
+      }
+
+      for (const p of (plan.placements || []).filter(p => p.container_id === cnt.container_id)) {
+        const item = itemsById[p.item_id] || {};
+        const col = groupColor(item.segregation_group);
+        const done = p.executed;
+        const invalid = p.validation_status === "invalid";
+        const stroke = invalid ? "var(--bad)" : item.injected ? "var(--hold)" : col;
+        const common = {
+          fill: col, "fill-opacity": invalid ? ".18" : done ? ".85" : ".38",
+          stroke, "stroke-width": item.injected ? "1.8" : "1",
+          "stroke-dasharray": invalid ? "3 2" : done ? "" : "2 2"
+        };
+        // top view: X across, Y down
+        g.append(svg("rect", { x: ox + p.position.x * sc, y: oyTop + p.position.y * sc,
+          width: Math.max(1, p.size.x * sc), height: Math.max(1, p.size.y * sc),
+          rx: "1", ...common },
+          [svg("title", {}, `${p.item_id} · ${item.geometry_type || ""} · group ${item.segregation_group || "?"}`
+            + ` · ${item.length_mm}×${item.outer_diameter_mm} mm · axis ${p.axis}`
+            + (done ? " · executed" : " · planned") + (invalid ? " · INVALID" : ""))]));
+        // side view: X across, Z up from the floor
+        g.append(svg("rect", { x: ox + p.position.x * sc,
+          y: oySide + sideH - (p.position.z + p.size.z) * sc,
+          width: Math.max(1, p.size.x * sc), height: Math.max(1, p.size.z * sc),
+          rx: "1", ...common }));
+      }
+    });
+    if (used.length > 3) {
+      g.append(svg("text", { x: PAD, y: H - 4, fill: "var(--mut)", "font-size": "10" },
+        `+${used.length - 3} further container(s) not drawn`));
+    }
+    root.append(g);
+  });
+
+  // source bin + robot, drawn only in single-plan views where there is room
+  if (VIEW !== "side") {
+    const s = STATE;
+    const bx = W - 150, by = H - 74;
+    root.append(svg("rect", { x: bx, y: by, width: 132, height: 56, rx: "4",
+      fill: "var(--cnt-fill)", stroke: "var(--cnt-line)", "stroke-dasharray": "3 3" }));
+    root.append(svg("text", { x: bx + 66, y: by + 16, "text-anchor": "middle",
+      fill: "var(--mut)", "font-size": "9", "letter-spacing": ".07em" }, "SOURCE BIN"));
+    root.append(svg("text", { x: bx + 66, y: by + 34, "text-anchor": "middle",
+      fill: "var(--ink)", "font-size": "11", "font-weight": "700" },
+      (s.robot_state || "idle").toUpperCase()));
+    root.append(svg("text", { x: bx + 66, y: by + 48, "text-anchor": "middle",
+      fill: "var(--acc)", "font-size": "10" }, s.current_item_id || "—"));
+  }
+
+  const noteBits = [];
+  if (PLANS.scenario.totals && PLANS.scenario.totals.has_approximated_items)
+    noteBits.push("dashed outline = planned · bounding-box approximation in use");
+  $("#twin-note").textContent = noteBits.join(" · ");
+
+  const lg = $("#legend"); lg.innerHTML = "";
+  const groups = (PLANS.scenario.totals && PLANS.scenario.totals.segregation_groups) || [];
+  for (const g of groups)
+    lg.append(el("span", {}, [el("i", { style: `background:${groupColor(g)}` }), `group ${g}`]));
+  for (const [txt, style] of [
+    ["executed", "background:var(--neutral);opacity:.85"],
+    ["planned", "background:var(--neutral);opacity:.38"],
+    ["invalid", "background:var(--bad);opacity:.4"],
+    ["dynamic-event item", "background:var(--hold)"],
+    ["shelf plate (baseline)", "background:var(--hold);opacity:.6"]])
+    lg.append(el("span", {}, [el("i", { style }), txt]));
+}
+document.querySelectorAll(".v-btn").forEach(b => b.onclick = () => {
+  VIEW = b.dataset.view;
+  document.querySelectorAll(".v-btn").forEach(x =>
+    x.setAttribute("aria-pressed", String(x === b)));
+  drawTwin();
+});
+
+// ------------------------------------------------------------- comparison
+function renderCompare() {
+  const tb = $("#cmp").querySelector("tbody"); tb.innerHTML = "";
+  if (!PLANS || !PLANS.ready) return;
+  const b = PLANS.baseline, o = PLANS.optimized;
+  const rows = [
+    ["Algorithm", b.algorithm, o.algorithm + " / " + o.strategy, null],
+    ["Containers required", b.containers_required, o.containers_required, "low"],
+    ["Utilization %", num(b.utilization_pct), num(o.utilization_pct), "high"],
+    ["Required capacity m³", num(b.required_capacity_mm3 / 1e9, 3), num(o.required_capacity_mm3 / 1e9, 3), "low"],
+    ["Empty capacity m³", num(b.unused_capacity_mm3 / 1e9, 3), num(o.unused_capacity_mm3 / 1e9, 3), "low"],
+    ["Unplaced items", b.unplaced_item_ids.length, o.unplaced_item_ids.length, "low"],
+    ["Computation ms", num(b.computation_time_ms), num(o.computation_time_ms), null],
+    ["Passes validator", b.is_valid ? "yes" : "NO", o.is_valid ? "yes" : "NO", null],
+  ];
+  tb.append(el("tr", {}, [el("th", {}, "Metric"), el("th", { class: "num" }, "Baseline"),
+    el("th", { class: "num" }, "Optimized"), el("th", {}, "")]));
+  for (const [k, bv, ov, better] of rows) {
+    let mark = "";
+    if (better && bv !== null && ov !== null && !isNaN(parseFloat(bv))) {
+      const d = parseFloat(ov) - parseFloat(bv);
+      if (d !== 0) mark = (better === "low" ? d < 0 : d > 0) ? "optimized better" : "baseline better";
+    }
+    tb.append(el("tr", { class: mark.startsWith("optimized") ? "win" : "" },
+      [el("td", {}, k), el("td", { class: "num" }, String(bv)),
+       el("td", { class: "num" }, String(ov)), el("td", {}, mark)]));
+  }
+  $("#selreason").textContent = "Selected: " + (PLANS.selection_reason || "—");
+}
+
+// -------------------------------------------------------------------- KPIs
+const KPI_TILES = [
+  ["containers_baseline", "Containers baseline", 0],
+  ["containers_optimized", "Containers optimized", 0],
+  ["volume_requirement_reduction_pct", "Volume requirement reduction", 1],
+  ["packing_density_gain_pct", "Utilization gain (relative)", 1],
+  ["container_utilization_optimized_pct", "Utilization optimized", 1],
+  ["optimization_time_ms", "Optimization time ms", 0],
+  ["simulated_pick_success_rate_pct", "Pick success", 1],
+  ["simulated_end_to_end_success_rate_pct", "End-to-end success", 1],
+  ["replans", "Re-plans", 0],
+  ["operator_interventions", "Operator interventions", 0],
+  ["action_events_published", "Action events", 0],
+  ["dds_to_fiware_latency_ms", "DDS→FIWARE p50 ms", 2],
+];
+async function renderKPIs() {
+  let doc;
+  try { doc = await api("/api/kpis"); } catch (e) { return; }
+  const box = $("#kpis"); box.innerHTML = "";
+  if (!doc.ready) {
+    box.append(el("div", { class: "tile" }, [el("div", { class: "k" }, "KPIs"),
+      el("div", { class: "v nm" }, "not measured")]));
+    return;
+  }
+  for (const [key, label, dp] of KPI_TILES) {
+    const m = doc.metrics[key];
+    if (!m) continue;
+    const v = m.value === null ? null : num(m.value, dp);
+    box.append(el("div", { class: "tile", title: m.note || "" }, [
+      el("div", { class: "k" }, label),
+      el("div", { class: "v" + (v === null ? " nm" : "") }, v === null ? "not measured" : v),
+      el("div", { class: "s " + m.source }, m.source),
+    ]));
+  }
+  const tb = $("#targets").querySelector("tbody"); tb.innerHTML = "";
+  tb.append(el("tr", {}, ["KPI", "Target", "Measured", "Status"].map(h => el("th", {}, h))));
+  for (const r of doc.target_assessment) {
+    const cls = r.status === "met" ? "s measured" : r.status === "not_met" ? "s simulated" : "s";
+    tb.append(el("tr", { title: r.explanation }, [
+      el("td", {}, r.key + " " + r.label),
+      el("td", { class: "num" }, ">" + r.target_pct + "%"),
+      el("td", { class: "num" }, r.measured_value === null ? "—" : num(r.measured_value, 1) + "%"),
+      el("td", {}, el("span", { class: cls }, r.status.replace(/_/g, " "))),
+    ]));
+  }
+}
+
+// -------------------------------------------------------------- strategies
+async function renderStrategies() {
+  $("#notice").textContent = "evaluating all packing strategies…";
+  let doc;
+  try { doc = await api("/api/strategies"); } catch (e) {
+    $("#notice").textContent = "strategy comparison failed: " + e.message; return;
+  }
+  const tb = $("#strategies").querySelector("tbody"); tb.innerHTML = "";
+  if (!doc.ready) return;
+  tb.append(el("tr", {}, ["Strategy", "Cont.", "Util %", "Score", "Valid"].map(h => el("th", {}, h))));
+  for (const r of doc.rows) {
+    tb.append(el("tr", {}, [el("td", {}, r.strategy),
+      el("td", { class: "num" }, r.containers), el("td", { class: "num" }, num(r.utilization_pct)),
+      el("td", { class: "num" }, num(r.objective_score, 3)),
+      el("td", {}, r.valid ? "yes" : "NO")]));
+  }
+  $("#notice").textContent = "strategies compared — same constraints, different objective weights";
+}
+
+// ---------------------------------------------------------------- topology
+async function drawTopo() {
+  let doc;
+  try { doc = await api("/api/topology"); } catch (e) { return; }
+  const host = $("#topo"); host.innerHTML = "";
+  const layers = doc.layers.length, W = 1000, LH = 74, H = layers * LH + 16;
+  const root = svg("svg", { viewBox: `0 0 ${W} ${H}`, preserveAspectRatio: "xMidYMid meet" });
+  // Coordinates are derived here, not stored server-side (TEMPO's approach), so
+  // adding a node needs no layout change on the backend.
+  const byLayer = {};
+  for (const n of doc.nodes) (byLayer[n.layer] ||= []).push(n);
+  const pos = {};
+  for (const [layer, nodes] of Object.entries(byLayer)) {
+    const step = W / (nodes.length + 1);
+    nodes.forEach((n, i) => { pos[n.id] = { x: step * (i + 1), y: 34 + layer * LH }; });
+  }
+  const NW = 132, NH = 34;
+  for (const e of doc.edges) {
+    const a = pos[e.s], b = pos[e.t];
+    if (!a || !b) continue;
+    const a1 = { x: a.x, y: a.y + (b.y > a.y ? NH / 2 : -NH / 2) };
+    const b1 = { x: b.x, y: b.y + (b.y > a.y ? -NH / 2 : NH / 2) };
+    const mid = (a1.y + b1.y) / 2;
+    root.append(svg("path", { class: "lk" + (e.c === "control" ? " ctl" : ""),
+      d: `M${a1.x},${a1.y} C${a1.x},${mid} ${b1.x},${mid} ${b1.x},${b1.y}` }));
+  }
+  for (const n of doc.nodes) {
+    const p = pos[n.id], st = doc.status[n.id] || "idle";
+    const g = svg("g", { class: "st-" + st, transform: `translate(${p.x - NW / 2},${p.y - NH / 2})` });
+    g.append(svg("rect", { class: "n-box", width: NW, height: NH, rx: "6" }));
+    g.append(svg("text", { class: "n-kind", x: 8, y: 12 }, n.kind));
+    g.append(svg("text", { class: "n-label", x: 8, y: 26 }, n.label));
+    root.append(g);
+  }
+  host.append(root);
+}
+
+// --------------------------------------------------------------------- log
+function renderLog(events) {
+  const box = $("#log");
+  box.innerHTML = "";
+  for (const e of events) {
+    const dyn = e.action.startsWith("dynamic_event");
+    box.append(el("div", { class: "row r-" + e.result + (dyn ? " dyn" : ""),
+      title: `${e.timestamp}  ${e.action}  ${e.message}` },
+      [el("span", { class: "seq" }, "#" + e.sequence),
+       el("span", { class: "stg" }, e.stage),
+       el("span", { class: "msg" },
+         (e.item_id ? e.item_id + " · " : "") + (e.container_id ? e.container_id + " · " : "") + e.message),
+       el("span", { class: "src s " + e.source }, e.source)]));
+  }
+}
+
+// ------------------------------------------------------------------ wiring
+function readSettings() {
+  const parsePair = (s) => {
+    const m = (s || "").split(",").map(x => parseInt(x.trim(), 10));
+    return (m.length === 2 && m.every(Number.isFinite)) ? m : null;
+  };
+  return {
+    preset: $("#s-preset").value, seed: parseInt($("#s-seed").value || "42", 10),
+    strategy: $("#s-strategy").value,
+    item_count: parseInt($("#s-count").value || "0", 10) || null,
+    length_range_mm: parsePair($("#s-len").value),
+    diameter_range_mm: parsePair($("#s-dia").value),
+    container_spec: $("#s-container").value || null,
+    dynamic_events_enabled: $("#s-dyn").checked,
+    pick_failure_probability: parseFloat($("#s-fail").value || "0.08"),
+  };
+}
+function fillSelects(s) {
+  const p = $("#s-preset");
+  if (!p.options.length) {
+    for (const x of s.presets || []) p.append(new Option(x, x));
+    p.value = (s.settings && s.settings.preset) || "mixed_pipes_dense";
+    const st = $("#s-strategy");
+    for (const x of s.strategies || []) st.append(new Option(x, x));
+    const c = $("#s-container");
+    c.append(new Option("(preset default)", ""));
+    for (const [k, v] of Object.entries(s.container_specs || {})) c.append(new Option(k, k)).title = v;
+  }
+}
+
+$("#c-approve").onclick = () => command("approve");
+$("#c-reject").onclick = () => command("reject", { reason: "operator rejected from dashboard" });
+$("#c-alt").onclick = () => command("alternative_strategy",
+  { strategy: $("#s-strategy").value === "retrievability" ? "segregation" : "retrievability" });
+$("#c-inject").onclick = () => command("inject_item");
+$("#c-unavail").onclick = () => command("container_unavailable");
+$("#c-grasp").onclick = () => command("grasp_failure");
+$("#c-pause").onclick = () => command("pause");
+$("#c-resume").onclick = () => command("resume");
+$("#c-step").onclick = () => command("step");
+$("#c-artifacts").onclick = () => command("write_artifacts");
+$("#c-reset").onclick = () => command("reset", readSettings());
+$("#c-strategies").onclick = renderStrategies;
+
+// ------------------------------------------------------------- refreshing
+async function refreshState() {
+  STATE = await api("/api/state");
+  fillSelects(STATE);
+  renderHeader(STATE);
+}
+async function refreshPlans() {
+  const doc = await api("/api/plans");
+  const changed = !PLANS || JSON.stringify(doc).length !== JSON.stringify(PLANS).length;
+  PLANS = doc;
+  if (changed) { drawTwin(); renderCompare(); }
+}
+async function refreshEvents() {
+  const doc = await api("/api/events?limit=150");
+  renderLog(doc.events);
+  $("#log-note").textContent = `${doc.total} events · newest first`;
+}
+async function refreshAll() {
+  try {
+    await refreshState();
+    await refreshPlans();
+    await refreshEvents();
+    await renderKPIs();
+    await drawTopo();
+  } catch (e) { $("#notice").textContent = "refresh failed: " + e.message; }
+}
+
+// WebSocket is an ENHANCEMENT. If it never connects or dies, polling carries
+// the page — the demo must not depend on a socket surviving venue wifi.
+function connectWS() {
+  try {
+    WS = new WebSocket((location.protocol === "https:" ? "wss://" : "ws://") + location.host + "/ws");
+    WS.onmessage = (m) => {
+      const d = JSON.parse(m.data);
+      if (d.state) { STATE = d.state; fillSelects(STATE); renderHeader(STATE); }
+    };
+    WS.onclose = () => { WS = null; startPolling(); };
+    WS.onerror = () => { try { WS.close(); } catch (e) { /* already gone */ } };
+  } catch (e) { startPolling(); }
+}
+function startPolling() {
+  if (POLLING) return;
+  POLLING = setInterval(refreshState, 1000);
+}
+
+(async function init() {
+  try { setTheme(localStorage.getItem("wisepack-theme") || "dark"); }
+  catch (e) { setTheme("dark"); }
+  await refreshAll();
+  connectWS();
+  startPolling();                       // always on: WS only reduces its work
+  setInterval(refreshPlans, 1500);
+  setInterval(refreshEvents, 2000);
+  setInterval(renderKPIs, 4000);
+  setInterval(drawTopo, 3000);
+})();
+</script>
+</body>
+</html>

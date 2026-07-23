@@ -1,0 +1,139 @@
+{
+  "dds": {
+    "ddsmodule": {
+      "dds": {
+        "domain": 0,
+        "transport": "udp"
+      }
+    },
+    "ngsild": {
+      "topics": {
+        "rt/wisepack/action/event": {
+          "entityType": "WISEPACKActionStream",
+          "entityId": "urn:ngsi-ld:WISEPACKActionStream:main",
+          "attribute": "actionJson"
+        },
+        "rt/wisepack/action/sequence": {
+          "entityType": "WISEPACKActionStream",
+          "entityId": "urn:ngsi-ld:WISEPACKActionStream:main",
+          "attribute": "sequence"
+        },
+        "rt/wisepack/dynamic_event": {
+          "entityType": "WISEPACKActionStream",
+          "entityId": "urn:ngsi-ld:WISEPACKActionStream:main",
+          "attribute": "dynamicEvent"
+        },
+        "rt/wisepack/execution/state": {
+          "entityType": "WISEPACKSystem",
+          "entityId": "urn:ngsi-ld:WISEPACKSystem:main",
+          "attribute": "stage"
+        },
+        "rt/wisepack/system/readiness": {
+          "entityType": "WISEPACKSystem",
+          "entityId": "urn:ngsi-ld:WISEPACKSystem:main",
+          "attribute": "readiness"
+        },
+        "rt/wisepack/scenario/state": {
+          "entityType": "WISEPACKScenario",
+          "entityId": "urn:ngsi-ld:WISEPACKScenario:current",
+          "attribute": "summary"
+        },
+        "rt/wisepack/scenario/config": {
+          "entityType": "WISEPACKScenario",
+          "entityId": "urn:ngsi-ld:WISEPACKScenario:current",
+          "attribute": "config"
+        },
+        "rt/wisepack/waste/detected_count": {
+          "entityType": "WISEPACKScenario",
+          "entityId": "urn:ngsi-ld:WISEPACKScenario:current",
+          "attribute": "detectedCount"
+        },
+        "rt/wisepack/plan/baseline": {
+          "entityType": "WISEPACKPackingPlan",
+          "entityId": "urn:ngsi-ld:WISEPACKPackingPlan:current",
+          "attribute": "baseline"
+        },
+        "rt/wisepack/plan/optimized": {
+          "entityType": "WISEPACKPackingPlan",
+          "entityId": "urn:ngsi-ld:WISEPACKPackingPlan:current",
+          "attribute": "optimized"
+        },
+        "rt/wisepack/plan/selected": {
+          "entityType": "WISEPACKPackingPlan",
+          "entityId": "urn:ngsi-ld:WISEPACKPackingPlan:current",
+          "attribute": "selected"
+        },
+        "rt/wisepack/plan/status_json": {
+          "entityType": "WISEPACKPackingPlan",
+          "entityId": "urn:ngsi-ld:WISEPACKPackingPlan:current",
+          "attribute": "status"
+        },
+        "rt/wisepack/execution/current_item": {
+          "entityType": "WISEPACKRobot",
+          "entityId": "urn:ngsi-ld:WISEPACKRobot:arm-01",
+          "attribute": "currentItem"
+        },
+        "rt/wisepack/execution/current_container": {
+          "entityType": "WISEPACKRobot",
+          "entityId": "urn:ngsi-ld:WISEPACKRobot:arm-01",
+          "attribute": "currentContainer"
+        },
+        "rt/wisepack/execution/progress_pct": {
+          "entityType": "WISEPACKRobot",
+          "entityId": "urn:ngsi-ld:WISEPACKRobot:arm-01",
+          "attribute": "progressPct"
+        },
+        "rt/wisepack/kpi/containers_baseline": {
+          "entityType": "WISEPACKKPI",
+          "entityId": "urn:ngsi-ld:WISEPACKKPI:current",
+          "attribute": "containersBaseline"
+        },
+        "rt/wisepack/kpi/containers_optimized": {
+          "entityType": "WISEPACKKPI",
+          "entityId": "urn:ngsi-ld:WISEPACKKPI:current",
+          "attribute": "containersOptimized"
+        },
+        "rt/wisepack/kpi/utilization_baseline_pct": {
+          "entityType": "WISEPACKKPI",
+          "entityId": "urn:ngsi-ld:WISEPACKKPI:current",
+          "attribute": "utilizationBaselinePct"
+        },
+        "rt/wisepack/kpi/utilization_optimized_pct": {
+          "entityType": "WISEPACKKPI",
+          "entityId": "urn:ngsi-ld:WISEPACKKPI:current",
+          "attribute": "utilizationOptimizedPct"
+        },
+        "rt/wisepack/kpi/volume_reduction_pct": {
+          "entityType": "WISEPACKKPI",
+          "entityId": "urn:ngsi-ld:WISEPACKKPI:current",
+          "attribute": "volumeReductionPct"
+        },
+        "rt/wisepack/kpi/optimization_ms": {
+          "entityType": "WISEPACKKPI",
+          "entityId": "urn:ngsi-ld:WISEPACKKPI:current",
+          "attribute": "optimizationMs"
+        },
+        "rt/wisepack/kpi/pick_success_pct": {
+          "entityType": "WISEPACKKPI",
+          "entityId": "urn:ngsi-ld:WISEPACKKPI:current",
+          "attribute": "pickSuccessPct"
+        },
+        "rt/wisepack/kpi/end_to_end_success_pct": {
+          "entityType": "WISEPACKKPI",
+          "entityId": "urn:ngsi-ld:WISEPACKKPI:current",
+          "attribute": "endToEndSuccessPct"
+        },
+        "rt/wisepack/operator/approval": {
+          "entityType": "WISEPACKSystem",
+          "entityId": "urn:ngsi-ld:WISEPACKSystem:main",
+          "attribute": "approval"
+        },
+        "rt/wisepack/operator/command": {
+          "entityType": "WISEPACKSystem",
+          "entityId": "urn:ngsi-ld:WISEPACKSystem:main",
+          "attribute": "command"
+        }
+      }
+    }
+  }
+}

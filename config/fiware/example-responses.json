@@ -1,0 +1,87 @@
+{
+  "_comment": [
+    "REAL responses captured from a running Orion-LD 'post-v1.12.0' started with",
+    "-wip dds -mongocOnly, while the WISEPACK stack ran the mixed_pipes_small",
+    "scenario at seed 42. Values are abbreviated where noted with an ellipsis.",
+    "",
+    "NOTE THE NESTING: every bridged value is at <attribute>.value.data, for",
+    "String and numeric types alike. Alongside 'value', Orion-LD also returns DDS",
+    "metadata siblings (ddsDataType, participantId, instanceHandleId, publishedAt)",
+    "which consumers can ignore; they are omitted here for readability."
+  ],
+
+  "GET /ngsi-ld/v1/entities/urn:ngsi-ld:WISEPACKKPI:current?local=true": {
+    "id": "urn:ngsi-ld:WISEPACKKPI:current",
+    "type": "WISEPACKKPI",
+    "containersBaseline":      { "type": "Property", "value": { "data": 2 } },
+    "containersOptimized":     { "type": "Property", "value": { "data": 1 } },
+    "utilizationBaselinePct":  { "type": "Property", "value": { "data": 30.072500229 } },
+    "utilizationOptimizedPct": { "type": "Property", "value": { "data": 60.145000458 } },
+    "volumeReductionPct":      { "type": "Property", "value": { "data": 50 } },
+    "optimizationMs":          { "type": "Property", "value": { "data": 59.759803772 } },
+    "pickSuccessPct":          { "type": "Property", "value": { "data": 84.210525513 } },
+    "endToEndSuccessPct":      { "type": "Property", "value": { "data": 100 } }
+  },
+
+  "GET /ngsi-ld/v1/entities/urn:ngsi-ld:WISEPACKActionStream:main?local=true": {
+    "id": "urn:ngsi-ld:WISEPACKActionStream:main",
+    "type": "WISEPACKActionStream",
+    "_comment": [
+      "STATE-ORIENTED, not append-only. actionJson holds the LATEST action and",
+      "sequence the highest number reached. The append-only record is the",
+      "results/wisepack-actions-*.jsonl artefact. This repository does not claim",
+      "append-only semantics from the broker."
+    ],
+    "sequence": { "type": "Property", "value": { "data": 97 } },
+    "actionJson": {
+      "type": "Property",
+      "value": {
+        "data": "{\"schema\":\"wisepack/1\",\"event_id\":\"evt-3f1a9c22b7d0\",\"timestamp\":\"2026-07-23T10:30:24.117Z\",\"sequence\":97,\"scenario_id\":\"mixed_pipes_small-s42\",\"cycle_id\":\"cycle-8a41f2\",\"stage\":\"WAIT_FOR_OPERATOR_APPROVAL\",\"action\":\"await_approval\",\"actor\":\"hitl_orchestrator\",\"item_id\":null,\"container_id\":null,\"result\":\"pending\",\"duration_ms\":0.0,\"message\":\"plan awaiting operator decision — no physical action is authorised\",\"details\":{\"plan_id\":\"plan-optimized-mixed_pipes_small-s42\",\"containers_required\":1,\"utilization_pct\":60.15},\"source\":\"measured\"}"
+      }
+    }
+  },
+
+  "GET /ngsi-ld/v1/entities/urn:ngsi-ld:WISEPACKPackingPlan:current?local=true": {
+    "id": "urn:ngsi-ld:WISEPACKPackingPlan:current",
+    "type": "WISEPACKPackingPlan",
+    "baseline": {
+      "type": "Property",
+      "value": { "data": "{\"plan_id\": \"plan-baseline-mixed_pipes_small-s42\", \"algorithm\": \"arrival_order_shelf\", \"containers_required\": 2, \"utilization_pct\": 30.07, \"is_valid\": true, ...}" }
+    },
+    "optimized": {
+      "type": "Property",
+      "value": { "data": "{\"plan_id\": \"plan-optimized-mixed_pipes_small-s42\", \"algorithm\": \"geometry_aware_ep_bfd\", \"strategy\": \"max_density\", \"containers_required\": 1, \"utilization_pct\": 60.15, ...}" }
+    },
+    "status": {
+      "_comment": "Published on the ROS leaf `status_json`; the bare `status` leaf is reserved by Orion-LD's DDS module and never bridges. The FIWARE attribute name is unaffected.",
+      "type": "Property",
+      "value": { "data": "{\"plan_id\":\"plan-optimized-mixed_pipes_small-s42\",\"valid\":true,\"placements_checked\":16,\"placements_valid\":16,\"violation_count\":0,\"validator\":\"wisepack_twin_validator (independent process)\"}" }
+    }
+  },
+
+  "GET /ngsi-ld/v1/entities/urn:ngsi-ld:WISEPACKSystem:main?local=true": {
+    "id": "urn:ngsi-ld:WISEPACKSystem:main",
+    "type": "WISEPACKSystem",
+    "stage":     { "type": "Property", "value": { "data": "WAIT_FOR_OPERATOR_APPROVAL" } },
+    "readiness": { "type": "Property", "value": { "data": false } },
+    "approval":  { "type": "Property", "value": "uninitialized" },
+    "command":   { "type": "Property", "value": { "data": "{\"command\":\"grasp_failure\",\"args\":{}}" } },
+    "_comment_approval": [
+      "'uninitialized' means the attribute is MAPPED but no DDS sample has been",
+      "propagated yet. It is not an error. Writing it drives the workflow — see",
+      "the PATCH example below."
+    ]
+  },
+
+  "PATCH /ngsi-ld/v1/entities/urn:ngsi-ld:WISEPACKSystem:main/attrs/approval": {
+    "_comment": [
+      "VERIFIED: returns HTTP 204 and moves the workflow from",
+      "WAIT_FOR_OPERATOR_APPROVAL to executing, via Orion-LD -> DDS -> ROS 2.",
+      "",
+      "The nested value.data shape is REQUIRED. A plain {\"value\": \"APPROVE\"}",
+      "does NOT propagate to DDS and the orchestrator never sees it."
+    ],
+    "request_body": { "type": "Property", "value": { "data": "APPROVE" } },
+    "response_status": 204
+  }
+}

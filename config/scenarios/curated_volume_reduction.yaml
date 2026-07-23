@@ -1,0 +1,24 @@
+# CURATED DEMONSTRATION DATASET — read the caveat before quoting any number.
+#
+# This dataset is HAND-BUILT to expose one specific weakness of arrival-order
+# shelf packing, and its construction is published in full (see
+# wisepack_core/generator.py::build_curated_scenario):
+#
+#   * 20 items alternate long-thin (1500 x 100 mm) and short-fat (400 x 300 mm);
+#   * the shelf baseline sets each level's height from the tallest item on it, so
+#     every 300 mm fat item wastes 200 mm of height for the thin items sharing
+#     its level, and it cannot rotate the long items to use the 700 mm depth;
+#   * the optimizer sorts by volume, rotates freely and nests.
+#
+# It is NOT a random sample and NOT a general performance claim. It contains no
+# random draw at all, so the seed is irrelevant to it. Whatever reduction the
+# run reports is whatever the two algorithms computed on this input.
+scenario:
+  preset: curated_volume_reduction
+  seed: 7
+  strategy: max_density
+
+optimizer:
+  restarts: 8
+
+dynamic_events: []

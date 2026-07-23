@@ -1,0 +1,20 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>wisepack_sim</name>
+  <version>0.1.0</version>
+  <description>WISEPACK simulated perception and scenario publishing nodes</description>
+  <maintainer email="office@hpc.bg">High Performance Creators</maintainer>
+  <license>MIT</license>
+
+  <depend>rclpy</depend>
+  <depend>std_msgs</depend>
+  <depend>wisepack_core</depend>
+  <depend>wisepack_bringup</depend>
+
+  <test_depend>python3-pytest</test_depend>
+
+  <export>
+    <build_type>ament_python</build_type>
+  </export>
+</package>

@@ -1,0 +1,20 @@
+# All six EDF/CEA geometry classes.
+#
+# Half the batch is drawn from the five APPROXIMATED classes (bent tube, flat
+# sheet, curved sheet, curved panel, I-beam). Those are represented by a
+# conservative bounding box — an over-estimate of the space consumed, never an
+# under-estimate — so plans built from them are safe but pessimistic. Every such
+# item is flagged `is_approximated` and the dashboard and reports say so.
+#
+# Only the straight tube has an exact analytic model in this demonstrator.
+scenario:
+  preset: mixed_geometries
+  seed: 42
+  strategy: max_density
+
+generator:
+  item_count: 24
+  approximated_fraction: 0.5
+  container_spec: standard_box
+
+dynamic_events: []
