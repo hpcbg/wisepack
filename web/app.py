@@ -63,10 +63,14 @@ from wisepack_core.events import (                                 # noqa: E402
     DynamicEvent, DynamicEventType, Stage,
 )
 from wisepack_core.generator import CONTAINER_SPECS, PRESETS       # noqa: E402
+from wisepack_bringup.topics import OPERATOR_COMMANDS              # noqa: E402
 from wisepack_core.kpi import compare_strategies                   # noqa: E402
 from wisepack_core.packing import OptimizerConfig                  # noqa: E402
 from wisepack_core.workflow import (                               # noqa: E402
-    ApprovalRequired, RobotSimConfig, WorkflowConfig, WorkflowEngine,
+    ApprovalRequired, RobotSimConfig, WorkflowConfig, WorkflowEngine, WorkflowError,
+)
+from snapshot import (                                             # noqa: E402
+    FiwareSnapshotProvider, RosSnapshotProvider, SimSnapshotProvider, parse_attr,
 )
 
 SOURCE = os.environ.get("WISEPACK_SOURCE", "sim")
@@ -363,16 +367,14 @@ TOPOLOGY = {
 }
 
 
-def topology_status() -> Dict[str, str]:
-    """Colour each node from the live workflow state."""
-    with STATE.lock:
-        engine = STATE.engine
-        stage = engine.stage if engine else Stage.IDLE
-        finished = engine.finished if engine else False
-        degraded = stage is Stage.DEGRADED
-        approved = (engine.selected.approval_state.value == "approved"
-                    if engine and engine.selected else False)
-        fiware_ok = STATE.fiware_connected
+def topology_status(snap=None) -> Dict[str, str]:
+    """Colour each node from the snapshot's stage — same logic in every mode."""
+    if snap is None:
+        snap = _provider().snapshot()
+    stage = snap.stage
+    degraded = stage == "DEGRADED"
+    approved = snap.approval_state == "approved"
+    fiware_ok = snap.fiware_connected
 
     def s(active: bool, warn: bool = False) -> str:
         if degraded:
@@ -381,19 +383,21 @@ def topology_status() -> Dict[str, str]:
             return "standby"
         return "active" if active else "idle"
 
-    planning = stage in (Stage.GENERATE_BASELINE_PLAN,
-                         Stage.GENERATE_OPTIMIZED_PLAN, Stage.REPLAN)
-    executing = stage in (Stage.PICK_ITEM, Stage.VERIFY_PICK, Stage.PLACE_ITEM,
-                          Stage.VERIFY_PLACEMENT, Stage.UPDATE_CONTAINER_STATE,
-                          Stage.NEXT_ITEM)
+    planning = stage in ("GENERATE_BASELINE_PLAN", "GENERATE_OPTIMIZED_PLAN",
+                         "REPLAN")
+    executing = stage in ("PICK_ITEM", "VERIFY_PICK", "PLACE_ITEM",
+                          "VERIFY_PLACEMENT", "UPDATE_CONTAINER_STATE",
+                          "NEXT_ITEM")
+    has_plan = snap.plans_ready
     return {
-        "generator": s(stage is Stage.GENERATE_OR_LOAD_SCENARIO or finished),
-        "perception": s(stage in (Stage.SCAN_SOURCE_BIN, Stage.DETECT_ITEMS)),
-        "optimizer": s(planning),
-        "twin": s(stage is Stage.DIGITAL_TWIN_VALIDATE),
+        "generator": s(stage == "GENERATE_OR_LOAD_SCENARIO" or bool(snap.scenario)),
+        "perception": s(stage in ("SCAN_SOURCE_BIN", "DETECT_ITEMS")
+                        or snap.detected_count > 0),
+        "optimizer": s(planning or has_plan),
+        "twin": s(stage == "DIGITAL_TWIN_VALIDATE" or bool(snap.plan_status)),
         "orchestrator": s(True, warn=degraded),
-        "operator": s(stage is Stage.WAIT_FOR_OPERATOR_APPROVAL,
-                      warn=stage is Stage.WAIT_FOR_OPERATOR_APPROVAL),
+        "operator": s(stage == "WAIT_FOR_OPERATOR_APPROVAL",
+                      warn=stage == "WAIT_FOR_OPERATOR_APPROVAL"),
         "robot": s(executing and approved),
         "dds": s(SOURCE in ("ros", "fiware")),
         "orion": ("active" if fiware_ok else
@@ -434,83 +438,62 @@ async def _fiware_poller() -> None:
 app = FastAPI(title="WISEPACK dashboard", lifespan=lifespan)
 
 
-def _source_badge() -> Dict[str, Any]:
-    """The badge is the honesty contract: it always names where data came from."""
-    with STATE.lock:
-        connected = STATE.fiware_connected
+def _provider():
+    """The one place a mode maps to a snapshot source.
+
+    Every endpoint below goes through this, so no endpoint can accidentally
+    depend on STATE.engine in a live mode — which is precisely how the ROS and
+    FIWARE dashboards ended up rendering empty panels while reporting healthy.
+    """
     if SOURCE == "sim":
-        return {"source": "sim", "label": "SIMULATED",
-                "detail": "no ROS, no FIWARE — same domain logic and optimizer "
-                          "as live mode; execution outcomes are simulated",
-                "live": False}
+        return SimSnapshotProvider(STATE, lambda: latest_latency_p50_ms(RESULTS_DIR))
     if SOURCE == "fiware":
-        return {"source": "fiware+ros" if connected else "ros",
-                "label": "FIWARE" if connected else "ROS (FIWARE unreachable)",
-                "detail": "state read back from Orion-LD over NGSI-LD; "
-                          "high-frequency animation still comes from ROS",
-                "live": True}
-    return {"source": "ros", "label": "ROS 2 / DDS",
-            "detail": "live ROS 2 topics over Fast DDS; robot outcomes remain "
-                      "simulated",
-            "live": True}
+        return FiwareSnapshotProvider(STATE, read_fiware_entities)
+    return RosSnapshotProvider(STATE)
+
+
+def read_fiware_entities() -> Dict[str, Any]:
+    """Read every mapped entity from Orion-LD, unwrapped to plain values."""
+    from wisepack_fiware.entities import ENTITY_IDS                # noqa: PLC0415
+    out: Dict[str, Any] = {}
+    for name, entity_id in ENTITY_IDS.items():
+        entity = fiware_entity(entity_id)
+        if not entity:
+            continue
+        out[name] = {k: parse_attr(v) for k, v in entity.items()
+                     if k not in ("id", "type", "@context")}
+    return out
 
 
 @app.get("/api/state")
 def api_state():
     """Complete initial state. The page renders fully from this one call."""
+    snap = _provider().snapshot()
     with STATE.lock:
-        engine = STATE.engine
-        snapshot = engine.snapshot() if engine else {}
-        auto = STATE.auto_step
-        notice = STATE.notice
         settings = dict(STATE.settings)
-    return {
-        "badge": _source_badge(),
-        "stage": snapshot.get("stage", Stage.IDLE.value),
-        "auto_step": auto,
-        "notice": notice,
+    payload = snap.to_state()
+    payload["fiware"]["broker"] = ORION
+    payload.update({
         "settings": settings,
         "presets": sorted(PRESETS),
         "container_specs": {k: v["description"] for k, v in CONTAINER_SPECS.items()},
         "strategies": [s.value for s in Strategy],
-        "fiware": {"connected": STATE.fiware_connected,
-                   "error": STATE.fiware_last_error, "broker": ORION},
-        "topology_status": topology_status(),
-        "ros_mirror": STATE.ros_mirror,
-        **snapshot,
+        "topology_status": topology_status(snap),
+        "commands": list(OPERATOR_COMMANDS),
         "ts": time.time(),
-    }
+    })
+    return payload
 
 
 @app.get("/api/plans")
 def api_plans():
     """Geometry for the Digital Twin view and the baseline/optimized comparison."""
-    with STATE.lock:
-        engine = STATE.engine
-        if engine is None or engine.baseline is None:
-            return JSONResponse({"ready": False}, status_code=200)
-        return {
-            "ready": True,
-            "scenario": engine.scenario.to_dict(),
-            # baseline/optimized are the comparison pair over the full batch;
-            # `selected` is the execution plan and is what the twin renders, so
-            # already-executed placements show as executed.
-            "baseline": engine.baseline.to_dict(),
-            "optimized": engine.optimized.to_dict(),
-            "selected": engine.selected.to_dict() if engine.selected else None,
-            "selected_plan_id": engine.selected.plan_id if engine.selected else None,
-            "selection_reason": engine.selection_reason,
-        }
+    return _provider().snapshot().to_plans()
 
 
 @app.get("/api/kpis")
 def api_kpis():
-    with STATE.lock:
-        engine = STATE.engine
-        if engine is None or engine.selected is None:
-            return {"ready": False}
-        report = engine.kpis(latest_latency_p50_ms(RESULTS_DIR))
-        return {"ready": True, **report.to_dict()}
+    return _provider().snapshot().to_kpis()
 
 
 @app.get("/api/strategies")
@@ -527,35 +510,20 @@ def api_strategies():
 
 @app.get("/api/events")
 def api_events(limit: int = 150):
-    return {"events": STATE.recent(limit), "total": len(STATE.events)}
+    return _provider().snapshot().to_events(limit)
 
 
 @app.get("/api/analytics")
 def api_analytics():
-    """Aggregations for the analytics panel."""
-    with STATE.lock:
-        engine = STATE.engine
-        if engine is None:
-            return {"ready": False}
-        log = engine.log
-        return {
-            "ready": True,
-            "by_action": log.by_action(),
-            "by_stage": log.by_stage(),
-            "duration_by_stage_ms": log.duration_by_stage_ms(),
-            "sequence_ok": log.sequence_is_monotonic()[0],
-            "total_events": log.count,
-            "replans": engine.stats.replans,
-            "replan_causes": list(engine.stats.replan_causes),
-            "pick_attempts": engine.stats.pick_attempts,
-            "pick_successes": engine.stats.pick_successes,
-            "latency": latest_artifact("dds-fiware-latency", RESULTS_DIR),
-        }
+    """Aggregations for the analytics panel, in every mode."""
+    payload = _provider().snapshot().to_analytics()
+    payload["latency"] = latest_artifact("dds-fiware-latency", RESULTS_DIR)
+    return payload
 
 
 @app.get("/api/topology")
 def api_topology():
-    return {**TOPOLOGY, "status": topology_status()}
+    return {**TOPOLOGY, "status": topology_status(_provider().snapshot())}
 
 
 @app.get("/api/fiware")
@@ -609,7 +577,11 @@ async def api_command(payload: Dict[str, Any]):
             raise HTTPException(status_code=409, detail="no run in progress")
         try:
             return _apply_command_locked(engine, command, args)
-        except (ApprovalRequired, ValueError) as exc:
+        except (ApprovalRequired, WorkflowError, ValueError) as exc:
+            # 409, not 500. These are all "that command is not legal right now"
+            # — an operator double-clicking Approve, or pressing Resume on an
+            # unapproved plan. A server error would tell them nothing and would
+            # look like a crash in front of an audience.
             raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 
@@ -711,10 +683,11 @@ async def ws(sock: WebSocket):
     await sock.accept()
     try:
         while True:
+            snap = _provider().snapshot()
             await sock.send_json({
                 "type": "tick",
                 "state": api_state(),
-                "events": STATE.recent(12),
+                "events": snap.to_events(12)["events"],
             })
             await asyncio.sleep(0.5)
     except WebSocketDisconnect:

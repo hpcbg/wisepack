@@ -14,7 +14,7 @@ trail.
 | **Runtime** | ROS 2 Jazzy on Vulcanexus / Fast DDS, Orion-LD (NGSI-LD), FastAPI dashboard |
 | **Host requirements** | Docker only. No host ROS 2, no host Python packages. A no-Docker mode also works. |
 | **Licence** | MIT. Reuses **TEMPO**, **HARVEST** and **HARMONY** — see [NOTICE](NOTICE) and [§17](#17-attribution). |
-| **Tests** | 186, all passing, runnable without ROS |
+| **Tests** | 223 passing — unit, contract, QoS and headless-browser |
 
 ---
 
@@ -36,6 +36,45 @@ occupancy at all.
 
 Current industrial bin-picking returns a *grasp pose*. Academic bin-packing
 optimises *known geometries* with no robot. WISEPACK closes that loop.
+
+---
+
+## Demonstrated result
+
+| Scenario | Items | Baseline | Optimized | Utilization | Required-capacity reduction |
+|---|---:|---:|---:|---:|---:|
+| `mixed_pipes_dense`, seed 42 | 40 pipes | **3 containers** | **2 containers** | 39.6% -> 59.3% | **33.3%** |
+
+**Measured by this software demonstrator.** Both plans come from real algorithms
+on real geometry, and both pass the *same independent validator* — which runs in
+its own ROS 2 process and re-derives every bounding box from scratch. Reproduce
+it with `./run_wisepack_dashboard.sh sim`, or from a shell:
+
+```bash
+python3 -c "
+import sys; sys.path.insert(0,'wisepack_ws/src/wisepack_core')
+from wisepack_core.generator import build_scenario
+from wisepack_core.packing import pack_baseline, pack_optimized, OptimizerConfig
+s = build_scenario('mixed_pipes_dense', 42)
+b, o = pack_baseline(s), pack_optimized(s, config=OptimizerConfig(seed=42))
+print(b.containers_required, '->', o.containers_required,
+      f'{b.utilization_pct:.1f}% -> {o.utilization_pct:.1f}%')"
+```
+
+![Baseline versus optimized packing](images/generated/comparison-mixed_pipes_dense.svg)
+
+Three things this result is *not* saying:
+
+- **Perception and physical robot execution remain simulated.** There is no
+  camera and no robot here; only the packing is real. See
+  [what is simulated](#3-what-is-simulated--read-this-before-quoting-any-number).
+- **33.3% is not the proposal's >50% KPI4 target.** It is measured against a
+  *competent* baseline, and the shortfall is analysed rather than tuned away.
+- **It is still operationally meaningful.** One fewer certified container for
+  this batch — and a certified container is a purchased, transported and
+  permanently stored asset.
+
+---
 
 ## 2. What this demonstrator proves
 
@@ -217,9 +256,18 @@ Then open <http://127.0.0.1:8080>.
 ./run_vulcanexus_wisepack.sh validate_wisepack_e2e.sh
 ./run_vulcanexus_wisepack.sh validate_fiware_action_log.sh
 ./run_vulcanexus_wisepack.sh measure_dds_fiware_latency.sh
-./generate_demo_artifacts.sh
+./generate_demo_artifacts.sh          # SVG figures + run artefacts
+./generate_readme_gifs.sh             # the HitL GIFs above, from the live UI
 python3 -m pytest tests/ -q
 ```
+
+The launchers **always build** the ROS workspace (incremental colcon, a few
+seconds) so a run can never validate a stale `install/`. Opt out deliberately
+with `WISEPACK_SKIP_BUILD=1`.
+
+Browser tests need `pip install playwright && playwright install chromium`; the
+GIF tooling additionally needs `ffmpeg`. Both are optional — the rest of the
+suite skips cleanly without them.
 
 ## 7. Dashboard walkthrough
 
@@ -391,8 +439,159 @@ before approval; and `step_execution()` independently raises `ApprovalRequired`
 if the plan is not approved. `AwaitApproval` never times out — a timeout would
 mean "proceed because nobody answered".
 
-If the orchestrator stops publishing its heartbeat, consumers see a DDS
-deadline-missed event and hold. Degraded means **held**, never "carry on".
+The scenarios below are what an operator actually does. Every one of them runs
+in all three modes (`sim`, `ros`, `fiware`); in live modes the command travels
+`dashboard → /wisepack/operator/command → DDS → orchestrator`, the same path an
+external NGSI-LD client uses.
+
+### Scenario A — plan review and approval
+
+![Operator approves the optimized plan and execution begins](images/generated/hitl-approve-execute.gif)
+
+*Watch for: the plan is on screen and nothing moves. The Approve button is the
+only thing that starts execution — and once it does, Approve/Reject grey out
+while Pause/Step become available.*
+
+1. Generate the dense pipe scenario (**Generate & plan**).
+2. Baseline and optimized plans are produced from the same items.
+3. The Digital Twin validator independently checks the selected plan.
+4. The workflow stops at `WAIT_FOR_OPERATOR_APPROVAL`.
+5. **No simulated pick is authorised.** Progress is 0% and the page says so.
+6. The operator reviews: containers required (3 vs 2), utilization
+   (39.6% vs 59.3%), any placement the validator rejected, segregation-group
+   colours in the Digital Twin, and the side-by-side comparison.
+7. The operator approves.
+8. Execution begins; every action is logged and published over DDS.
+
+### Scenario B — the operator rejects, or asks for another strategy
+
+1. **Reject & re-plan** records the operator's reason and re-runs the optimizer.
+2. **Alternative strategy** rotates the objective weighting instead.
+3. The new plan is independently validated.
+4. **Execution stays blocked.** A re-plan never inherits the previous approval.
+5. The operator must approve the new plan.
+
+The three strategies differ *only* in objective weights — identical hard
+constraints, identical search, identical validator, so none of them can buy
+density with a boundary or segregation violation:
+
+| Strategy | Optimises for | Expect |
+|---|---|---|
+| `max_density` | fewest containers, tightest fill | the KPI4 configuration |
+| `retrievability` | items reachable without unstacking | more containers — the trade-off is shown, not hidden |
+| `segregation` | each waste group consolidated | fewer mixed-group boxes, possibly more boxes |
+
+### Scenario C — a late-arriving waste component
+
+![A late waste component triggers re-planning and renewed approval](images/generated/hitl-dynamic-replan.gif)
+
+*Watch for: the injected item appears with an orange outline, the stage returns
+to `WAIT_FOR_OPERATOR_APPROVAL`, and the already-executed placements stay put.*
+
+1. Execution is already under way.
+2. A high-priority ILW component arrives (`Inject item`).
+3. **Already-executed placements are frozen** — those pipes are physically in a
+   container and re-planning cannot move them.
+4. Only the remainder is re-optimized, around the frozen geometry.
+5. The new plan is validated by the Digital Twin.
+6. Execution returns to the approval gate.
+7. The operator approves or rejects the revised plan.
+
+### Scenario D — a container becomes unavailable
+
+![An unavailable container triggers a revised packing plan](images/generated/hitl-container-unavailable.gif)
+
+*Watch for: the retired container is excluded from the revised plan, and the
+operator is asked again before anything else is placed.*
+
+1. A container is marked unavailable (damage, contamination, transport booked).
+2. It is excluded from all future placements, and **its id is never re-issued** —
+   the container index advances past it, so a re-plan cannot silently resurrect
+   a box that is out of service.
+3. Placements already executed into it remain recorded; a container going out of
+   service does not levitate its contents back out.
+4. The remaining batch is re-planned.
+5. The operator reviews the operational impact — usually one more container.
+
+### Scenario E — a simulated grasp failure
+
+1. `Grasp failure` forces exactly the next simulated grasp to fail.
+2. The failure is logged as its own ActionEvent with `result: failed`.
+3. The configured retry policy applies (`max_pick_retries`, default 2).
+4. **A full packing re-plan is NOT triggered.** Re-planning a whole container
+   because one grasp slipped would be wasteful and would misrepresent what
+   re-planning is for.
+5. Only when the retry budget is exhausted is the item abandoned, and the cycle
+   is then counted as attempted-but-not-completed in the KPIs.
+
+### Scenario F — controlled execution
+
+| Control | Effect |
+|---|---|
+| **Pause** | stops automatic execution. The plan stays **approved**, so resuming needs no second approval. |
+| **Resume** | continues. Refused with a stated reason if the plan is not approved. |
+| **Step** | executes exactly one workflow step — useful for narrating a demo. |
+| **Write artefacts** | writes the run, plan, KPI and event artefacts *now*, before or after completion, and returns the paths. |
+
+These are **supervision and evidence-generation functions, not a safety system.**
+Nothing here is a substitute for industrial safety control: in a real cell the
+interlocks, the emergency stop and the safety PLC remain the authority, and this
+dashboard would never be in that path.
+
+### The Action Event Timeline
+
+Every row in the timeline is one structured `ActionEvent` — the same record that
+is published on `/wisepack/action/event`, crosses DDS into Orion-LD, and is
+written to `results/wisepack-actions-*.jsonl`. Each carries:
+
+| Field | Purpose |
+|---|---|
+| `sequence` | monotonic, gap-free — a missing number is a lost event, visibly |
+| `timestamp` | UTC, millisecond resolution |
+| `stage` | which workflow stage produced it |
+| `action` | what happened (`pick_item`, `replan_start`, …) |
+| `actor` | which module or person (`robot_simulator`, `operator`, …) |
+| `item_id` / `container_id` | what it happened to |
+| `result` | `ok` / `failed` / `retry` / `rejected` / `pending` |
+| `duration_ms` | how long it took |
+| `source` | `measured`, `simulated` or `operator` — never guessed |
+| `details` | structured payload, truncated *visibly* if oversized |
+
+Visual semantics in the dashboard:
+
+- **newest first**, so the current state is at the top;
+- **sequence numbers are shown** so a gap is obvious rather than invisible;
+- **simulated** events are badged amber; **operator** decisions are badged blue;
+  **measured** workflow actions are badged green;
+- **dynamic events** get a left border so a disturbance stands out;
+- in FIWARE mode the sequence number is the one read back from Orion-LD, so a
+  match with the ROS sequence proves the event crossed DDS.
+
+A normal execution cycle reads:
+
+```
+ #7  WAIT_FOR_OPERATOR_APPROVAL   plan awaiting operator decision; no physical action is authorised
+ #8  WAIT_FOR_OPERATOR_APPROVAL   approve_plan — selected plan approved by operator      [operator]
+ #9  PICK_ITEM                    item-001 selected from source bin                      [simulated]
+ #10 VERIFY_PICK                  simulated grasp verified                               [simulated]
+ #11 PLACE_ITEM                   item-001 placed into CNT-01                            [simulated]
+ #12 VERIFY_PLACEMENT             placement re-validated against container geometry      [measured]
+ #13 UPDATE_CONTAINER_STATE       CNT-01 occupancy updated                               [measured]
+```
+
+And a disturbance reads:
+
+```
+ #24 NEXT_ITEM                    dynamic_event:item_inject — high-priority ILW component arrives
+ #25 REPLAN                       replan_start — cause: dynamic event item_inject
+ #26 REPLAN                       replan_complete — 2 containers, optimized selected
+ #27 DIGITAL_TWIN_VALIDATE        validate_placements — 41/41 placements pass
+ #28 WAIT_FOR_OPERATOR_APPROVAL   plan awaiting operator decision; no physical action is authorised
+```
+
+**That last line is the point of the whole sequence.** A re-plan lands back at
+the approval gate, so a disturbance can never be used to slip an unreviewed plan
+into execution.
 
 ## 11. Dynamic events
 
@@ -416,24 +615,64 @@ would be both wasteful and a misleading demonstration of what re-planning is for
 
 ## 12. ROS 2 / DDS contract
 
-25 topics, all scalar `std_msgs` (see [§5](#5-architecture)). Full list in
+28 topics, all scalar `std_msgs` (see [§5](#5-architecture)). Full list in
 [`topics.py`](wisepack_ws/src/wisepack_bringup/wisepack_bringup/topics.py).
+
+Plan topics carry the **complete** `PackingPlan` — every placement's position,
+size, axis and validation status (~27 kB for a 40-item scenario). A dashboard
+cannot draw a container from "59.3% utilization", and publishing only summaries
+is precisely why the live Digital Twin used to render empty.
 
 | Profile | Topics | Why |
 |---|---|---|
-| `event_qos` | action events, dynamic events | RELIABLE, depth 200 — a dropped event is a hole in a regulatory record |
-| `state_qos` | scenario, plans, action sequence | RELIABLE + TRANSIENT_LOCAL — a late joiner must see current state |
-| `heartbeat_qos` | execution state | latched **and** Deadline/Liveliness — silence must be *detectable* |
+| `event_qos` | action events, dynamic events | RELIABLE + **TRANSIENT_LOCAL**, depth 200 — an audit trail that only exists for whoever was already listening is not a record |
+| `state_qos` | scenario, plans, KPIs, execution state, action sequence | RELIABLE + TRANSIENT_LOCAL — a late joiner must see the current value |
+| `heartbeat_qos` | `/wisepack/system/heartbeat` (**publisher only**) | offers Deadline + Liveliness so a strict external consumer can use them |
+| `watchdog_subscribe_qos` | heartbeat (subscriber) | plain latched state — see below |
 | `command_qos` | operator approval, operator command | RELIABLE + TRANSIENT_LOCAL, **no deadline** |
-| `telemetry_qos` | progress, KPI values | BEST_EFFORT — freshness beats completeness |
+| `telemetry_qos` | progress only | BEST_EFFORT — genuinely high-rate |
 
-> **`command_qos` carries no Deadline, and that was a real bug found by running
-> the live stack.** A subscription that *requests* a Deadline only matches a
-> publisher that *offers* one at least as short. Orion-LD's DDS bridge and
-> `ros2 topic pub` both offer an infinite deadline, so requesting 2 s made them
-> incompatible — and rclpy does not raise, it silently delivers nothing forever.
-> Every node reported healthy while the entire FIWARE→ROS operator path was dead.
-> There is now a regression test.
+### The QoS rule this project learned the hard way
+
+> **A subscription must never REQUEST a Deadline or a Liveliness lease.**
+
+A reader only matches a writer whose *offered* policy is at least as strict.
+Orion-LD's DDS enabler creates a bare-DDS publisher on **every topic it
+discovers** — not merely the ones it maps — and each offers an *infinite* lease
+and no deadline. So any subscription requesting either policy silently matches
+nothing. rclpy does not raise; the topic is simply dead.
+
+Three separate outages in this repository traced to that one rule:
+
+| Symptom | Cause |
+|---|---|
+| The entire FIWARE → ROS operator path never connected | `command_qos()` requested a 2 s Deadline |
+| `Last incompatible policy: LIVELINESS`, blank live dashboard | `/wisepack/execution/state` requested a 4 s lease |
+| Every KPI tile read "not measured" in live mode; timeline empty | KPI topics were BEST_EFFORT + VOLATILE, so a dashboard attaching *after* planning received nothing |
+
+The resolution is a clean split, with the watchdog on its own topic:
+
+```
+/wisepack/execution/state     RELIABLE, TRANSIENT_LOCAL, KEEP_LAST(1)
+                              no deadline, no liveliness  -> anything can read it
+
+/wisepack/system/heartbeat    publisher OFFERS deadline + liveliness
+                              subscriber requests neither, and detects a dead
+                              orchestrator from the counter not advancing
+                              (HEARTBEAT_STALE_S). NOT bridged to FIWARE, so no
+                              generic publisher ever appears on it.
+```
+
+Orchestrator loss is still detected — the dashboard reports `DEGRADED` and holds
+— it is just detected at the application layer, because the DDS-level route is
+unavailable in a deployment that includes a generic bridge. `tests/test_qos_contract.py`
+pins all of this, and with `WISEPACK_QOS_LIVE=1` it parses the **actual running
+graph** from `ros2 topic info -v` rather than trusting the Python objects.
+
+> **If you change a QoS profile, restart Orion-LD.** Its DDS enabler caches
+> endpoint QoS from first discovery, so a running broker keeps offering the old
+> policy and produces incompatibility warnings that survive the fix. Measured:
+> 10 warnings before restarting the broker, 0 after.
 
 ## 13. FIWARE data path
 
@@ -458,6 +697,37 @@ by an adapted HARMONY generator. **No custom bridge node runs at all.**
 | `urn:ngsi-ld:WISEPACKKPI:current` | 8 KPI attributes |
 
 ◄ = inbound (FIWARE → ROS). Every value is read as `<attr>.value.data`.
+
+### Measured latency
+
+Measured on this machine, `ROS 2 → DDS → Orion-LD → NGSI-LD attribute readable`,
+10 samples after 2 warm-ups, zero timeouts:
+
+| Hop | p50 | p95 | max |
+|---|---|---|---|
+| **ROS → FIWARE** (the audit hop) | **6.92 ms** | 7.02 ms | 7.04 ms |
+| FIWARE → ROS (operator command) | 1.31 ms | 2.68 ms | 3.65 ms |
+
+The ROS → FIWARE figure *includes* the probe's 5 ms HTTP polling interval, so it
+is an **upper bound** on true propagation delay, not a lower one. Reproduce with
+`./run_vulcanexus_wisepack.sh measure_dds_fiware_latency.sh`. When the benchmark
+has never run, the dashboard reads `not measured` — never `0 ms`.
+
+### Which panels read from FIWARE, and which from ROS
+
+FIWARE mode does not claim more than it delivers. `panel_sources` in
+`/api/state` names the origin of each panel, and the header badge aggregates it:
+
+| Panel | Source | Why |
+|---|---|---|
+| workflow stage, readiness | **FIWARE** | audit-relevant; `WISEPACKSystem` holds it |
+| scenario summary, detected count | **FIWARE** | `WISEPACKScenario` |
+| KPI tiles | **FIWARE** | `WISEPACKKPI`, read back over NGSI-LD |
+| plan digest, validation verdict | **FIWARE** | `WISEPACKPackingPlan.summary` / `.status` |
+| Digital Twin geometry | ROS | 40 placement coordinates are not an audit record; the bridge maps a ~1 kB digest instead of a 27 kB plan |
+| action-event stream | ROS | Orion-LD holds only the *latest* action (state-oriented bridge); the full stream is on DDS and in the JSONL artefact |
+
+So the badge reads **`FIWARE + ROS`**, never a bare `FIWARE`.
 
 ### Verified behaviour, and its honest limitation
 
@@ -534,7 +804,10 @@ Full list: `items_generated`, `items_packed`, `unplaced_items`,
 ## 15. Tests and evidence
 
 ```bash
-python3 -m pytest tests/ -q        # 186 tests, no ROS required
+python3 -m pytest tests/ -q                     # no ROS required
+WISEPACK_QOS_LIVE=1 pytest tests/test_qos_contract.py -q     # against a live graph
+WISEPACK_BROWSER_ROS=http://127.0.0.1:8080 \
+    pytest tests/test_dashboard_browser.py -q                # against a live dashboard
 ```
 
 | File | Covers |
@@ -544,7 +817,10 @@ python3 -m pytest tests/ -q        # 186 tests, no ROS required
 | `test_optimizer.py` | all placements validate, reproducibility, multi-container, honest selection, curated result computed not constant, speed |
 | `test_kpi.py` | exact known cases, zero-baseline protection, the material-volume anti-fudge test, target labelling |
 | `test_workflow.py` | approval gating, rejection→re-plan, frozen placements, dynamic events, audit-trail monotonicity |
-| `test_ros_fiware.py` | reserved `status` leaf, bridgeable types, YAML↔contract agreement, generated mapping, QoS regression |
+| `test_ros_fiware.py` | reserved `status` leaf, bridgeable types, YAML↔contract agreement, generated mapping |
+| `test_qos_contract.py` | no subscription requests Deadline/Liveliness; KPIs latched; events transient-local. With `WISEPACK_QOS_LIVE=1` it parses the **real running graph** from `ros2 topic info -v` |
+| `test_launchers.py` | wrapper argument handling and exit codes, always-build, targeted cleanup |
+| `test_dashboard_browser.py` | real Chromium: fails on any page error, console error, failed request or `refresh failed`. Verifies 3→2 containers on screen, the approval gate, re-plan → renewed gate, and that **no advertised command is a dead button** |
 
 Artefacts written to `results/` per run, all timestamped: `wisepack-run-*.json`,
 `wisepack-actions-*.{jsonl,csv}`, `wisepack-placements-*.csv`,
@@ -578,6 +854,15 @@ Stated plainly, because a demonstrator that hides its edges is not evidence.
 9. **Single robot, single workstation.** No fleet coordination.
 10. **Latency figures include HTTP polling.** The ROS→FIWARE number is an
     upper bound on true propagation delay, not a lower one.
+11. **Orion-LD caches endpoint QoS.** Change a QoS profile and the running
+    broker keeps offering the old one, producing incompatibility warnings that
+    survive the fix. Restart it — see [§12](#12-ros-2--dds-contract).
+12. **DDS-level liveliness detection is unavailable to subscribers here.** A
+    generic bridge on the domain publishes with an infinite lease on every topic
+    it discovers, so orchestrator loss is detected from the heartbeat counter
+    stalling rather than from a DDS liveliness event.
+13. **The GIFs are recorded in simulation mode** and say `SIMULATED` on screen.
+    They demonstrate the operator workflow, not live ROS or FIWARE operation.
 
 ## 17. From here to TRL6
 

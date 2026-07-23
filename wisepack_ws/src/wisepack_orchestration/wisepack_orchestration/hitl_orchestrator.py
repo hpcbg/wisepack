@@ -41,15 +41,15 @@ from std_msgs.msg import Bool, Float32, Int32, String
 import py_trees
 
 from wisepack_bringup import topics as T
-from wisepack_bringup.qos import ORCHESTRATOR_PERIOD_S, qos_for
+from wisepack_bringup.qos import ORCHESTRATOR_PERIOD_S, heartbeat_qos, qos_for
 from wisepack_core.artifacts import (
     latest_latency_p50_ms, write_run_artifacts, write_validation_report,
 )
-from wisepack_core.domain import Strategy
-from wisepack_core.events import DynamicEvent, DynamicEventType, Stage
+from wisepack_core.domain import ApprovalState, Source, Strategy
+from wisepack_core.events import Actor, DynamicEvent, DynamicEventType, Stage
 from wisepack_core.packing import OptimizerConfig
 from wisepack_core.workflow import (
-    ApprovalRequired, RobotSimConfig, WorkflowConfig, WorkflowEngine,
+    ApprovalRequired, RobotSimConfig, WorkflowConfig, WorkflowEngine, WorkflowError,
 )
 
 
@@ -147,6 +147,23 @@ class ExecuteLoop(_EngineBehaviour):
     def update(self):
         if self.engine.finished:
             return py_trees.common.Status.SUCCESS
+
+        # ORDER MATTERS, and it is safety-relevant.
+        #
+        # The approval check comes FIRST, before the pause gate. A re-plan sets
+        # the plan back to pending AND clears auto_step; when the pause gate was
+        # checked first, this behaviour returned RUNNING forever and the tree
+        # never went back to AwaitApproval — the stage stayed at NEXT_ITEM after
+        # a re-plan, i.e. execution continued on a plan nobody had approved.
+        # Measured on the live stack before this was corrected.
+        plan = self.engine.selected
+        if plan is None or plan.approval_state is not ApprovalState.APPROVED:
+            return py_trees.common.Status.FAILURE       # back to the gate
+
+        if not getattr(self.owner, "auto_step", True):
+            # Paused with an APPROVED plan: hold here so `resume` continues
+            # rather than asking for approval a second time.
+            return py_trees.common.Status.RUNNING
         try:
             more = self.engine.step_execution()
         except ApprovalRequired as exc:
@@ -236,8 +253,13 @@ class HitLOrchestrator(Node):
         self.p_baseline = pub(T.PLAN_BASELINE, String)
         self.p_optimized = pub(T.PLAN_OPTIMIZED, String)
         self.p_selected = pub(T.PLAN_SELECTED, String)
-        self.p_geometry = pub(T.PLAN_GEOMETRY, String)
+        self.p_plan_summary = pub(T.PLAN_SUMMARY, String)
         self.p_state = pub(T.EXECUTION_STATE, String)
+        # Published with the OFFERING profile: Deadline + Liveliness are
+        # offered so a strict external consumer can use them. Subscribers in
+        # this repository deliberately do not request them (see qos.py).
+        self.p_heartbeat = self.create_publisher(
+            Int32, T.SYSTEM_HEARTBEAT, heartbeat_qos())
         self.p_item = pub(T.EXECUTION_CURRENT_ITEM, String)
         self.p_container = pub(T.EXECUTION_CURRENT_CONTAINER, String)
         self.p_progress = pub(T.EXECUTION_PROGRESS_PCT, Float32)
@@ -272,13 +294,19 @@ class HitLOrchestrator(Node):
         self.tree = build_tree(self)
         self.tree.setup_with_descendants()
         self._artifacts_written = False
+        # Gates the ExecuteLoop behaviour. Approving sets it; `pause` clears it
+        # WITHOUT touching approval, so `resume` needs no second approval.
+        self.auto_step = True
 
+        self._heartbeat = 0
         period = float(self.get_parameter("tick_period_s").value)
         self.create_timer(period, self._tick)
-        # Heartbeat: republishes state even when unchanged, so the Deadline on
-        # the execution-state topic is satisfied while the loop is healthy and
-        # missed the moment this node dies.
+        # State is republished so late joiners and the dashboard stay current;
+        # the WATCHDOG lives on its own topic. Keeping them separate is what
+        # stopped the dashboard's state subscription from having to request a
+        # liveliness lease it could not match against Orion-LD's DDS bridge.
         self.create_timer(ORCHESTRATOR_PERIOD_S, self.publish_state)
+        self.create_timer(ORCHESTRATOR_PERIOD_S, self._publish_heartbeat)
 
         self.get_logger().info(
             f"WISEPACK orchestrator up — preset={preset} seed={seed} "
@@ -309,6 +337,21 @@ class HitLOrchestrator(Node):
         if event.stage is Stage.REPLAN or event.action.startswith("dynamic_event"):
             self.get_logger().info(f"[{event.action}] {event.message}")
 
+        # A re-plan REPLACES the plan and resets approval, so the plan topics
+        # must be republished or the dashboard keeps rendering the superseded
+        # plan with a stale "approved" badge — which is exactly the state a
+        # human must never be shown while deciding whether to authorise a pick.
+        # A re-plan can be triggered from deep inside step_execution(), so this
+        # hooks the event stream rather than any one call site.
+        if event.action in ("replan_complete", "scenario_ready"):
+            self.auto_step = False
+            try:
+                self.publish_scenario()
+                self.publish_plans()
+                self.publish_state()
+            except Exception as exc:                    # noqa: BLE001
+                self.get_logger().warn(f"post-replan publish failed: {exc}")
+
     def publish_scenario(self) -> None:
         scenario = self.engine.scenario
         if scenario is None:
@@ -327,21 +370,36 @@ class HitLOrchestrator(Node):
         self.p_detected.publish(Int32(data=len(self.engine.detected)))
 
     def publish_plans(self) -> None:
+        """Publish the COMPLETE plans, plus a compact digest for FIWARE.
+
+        Full `PackingPlan.to_dict()` on each plan topic — the dashboard's Digital
+        Twin and the twin validator both need real placement geometry, and no
+        amount of summary can be turned back into a container drawing.
+        """
         engine = self.engine
         if engine.baseline:
-            self.p_baseline.publish(String(data=json.dumps(engine.baseline.summary())))
+            self.p_baseline.publish(
+                String(data=json.dumps(engine.baseline.to_dict(), default=str)))
         if engine.optimized:
-            self.p_optimized.publish(String(data=json.dumps(engine.optimized.summary())))
+            self.p_optimized.publish(
+                String(data=json.dumps(engine.optimized.to_dict(), default=str)))
         if engine.selected:
-            self.p_selected.publish(String(data=json.dumps(engine.selected.summary())))
-            # Full geometry for the twin validator and the dashboard.
-            self.p_geometry.publish(String(data=json.dumps({
-                "plan_id": engine.selected.plan_id,
-                "scenario_id": engine.selected.scenario_id,
-                "containers": [c.to_dict() for c in engine.selected.containers],
-                "placements": [p.to_dict() for p in engine.selected.placements],
-            })))
+            self.p_selected.publish(
+                String(data=json.dumps(engine.selected.to_dict(), default=str)))
+        # ~1 kB digest: this is what the FIWARE bridge maps.
+        self.p_plan_summary.publish(String(data=json.dumps({
+            "baseline": engine.baseline.summary() if engine.baseline else None,
+            "optimized": engine.optimized.summary() if engine.optimized else None,
+            "selected": engine.selected.summary() if engine.selected else None,
+            "selected_plan_id": engine.selected.plan_id if engine.selected else None,
+            "selection_reason": engine.selection_reason,
+        }, default=str)))
         self.publish_kpis()
+
+    def _publish_heartbeat(self) -> None:
+        """The watchdog tick. Its silence is what means "the orchestrator died"."""
+        self._heartbeat += 1
+        self.p_heartbeat.publish(Int32(data=self._heartbeat))
 
     def publish_state(self) -> None:
         engine = self.engine
@@ -392,12 +450,21 @@ class HitLOrchestrator(Node):
         decision = (msg.data or "").strip().upper()
         if decision == T.APPROVE:
             try:
+                if (self.engine.selected
+                        and self.engine.selected.approval_state
+                        is ApprovalState.APPROVED):
+                    self.get_logger().info("already approved — ignoring")
+                    return
                 self.engine.approve(operator="fiware/dashboard")
+                self.auto_step = True
+                self.publish_plans()
                 self.get_logger().info("plan APPROVED via operator topic")
             except Exception as exc:                    # noqa: BLE001
                 self.get_logger().warn(f"approval refused: {exc}")
         elif decision == T.REJECT:
             self.engine.reject(reason="rejected via operator topic")
+            self.auto_step = False
+            self.publish_plans()
             self.get_logger().info("plan REJECTED via operator topic — re-planning")
         elif decision:
             self.get_logger().warn(f"unknown approval value {decision!r}")
@@ -416,24 +483,54 @@ class HitLOrchestrator(Node):
             return
         try:
             self._apply_command(command, args)
+        except (ApprovalRequired, WorkflowError, ValueError) as exc:
+            # A command that is not legal in the current stage is an operator
+            # mistake, not a node fault. Log it and carry on serving.
+            self.get_logger().warn(f"command {command} refused: {exc}")
         except Exception as exc:                        # noqa: BLE001
-            self.get_logger().warn(f"command {command} failed: {exc}")
+            self.get_logger().error(f"command {command} failed unexpectedly: {exc}")
         self.publish_state()
 
     def _apply_command(self, command: str, args: Dict[str, Any]) -> None:
+        """Every advertised operator command, implemented here.
+
+        The dashboard's button list and `T.OPERATOR_COMMANDS` are the same
+        contract; a command that reaches here and is not handled is a bug, and
+        `test_operator_command_parity` fails on it rather than leaving a dead
+        button in the UI.
+        """
         engine = self.engine
+
         if command == "approve":
             engine.approve(operator=args.get("operator", "fiware/dashboard"))
+            self.auto_step = True
+            self.publish_plans()
+
         elif command == "reject":
             engine.reject(reason=args.get("reason", "rejected via command topic"))
+            self.auto_step = False
+            self.publish_scenario()
+            self.publish_plans()
+
         elif command == "alternative_strategy":
-            strategy = Strategy(args.get("strategy", "retrievability"))
+            # Deterministic rotation when none is named, so repeatedly pressing
+            # the button walks the three strategies instead of sticking.
+            order = [s.value for s in Strategy]
+            requested = args.get("strategy")
+            if requested:
+                strategy = Strategy(requested)
+            else:
+                current = engine.config.strategy.value
+                strategy = Strategy(order[(order.index(current) + 1) % len(order)])
             engine.config.strategy = strategy
             engine.stats.operator_interventions += 1
             engine.generate_plans(strategy)
             engine.digital_twin_validate()
             engine.request_approval()
+            self.auto_step = False
             self.publish_plans()
+            self.get_logger().info(f"strategy -> {strategy.value}; re-approval required")
+
         elif command == "inject_item":
             engine.apply_dynamic_event(DynamicEvent(
                 event_type=DynamicEventType.ITEM_INJECT,
@@ -443,45 +540,155 @@ class HitLOrchestrator(Node):
                     "length_mm": 1100, "outer_diameter_mm": 200,
                     "inner_diameter_mm": 170, "priority": 9,
                     "dose_class": "ILW"})}))
+            self.auto_step = False
             self.publish_scenario()
             self.publish_plans()
+
         elif command == "container_unavailable":
             container_id = args.get("container_id") or (
                 engine.selected.containers_used[0].container_id
                 if engine.selected and engine.selected.containers_used else "")
+            if not container_id:
+                raise ValueError("no container available to mark unavailable")
             engine.apply_dynamic_event(DynamicEvent(
                 event_type=DynamicEventType.CONTAINER_UNAVAILABLE,
                 trigger=f"placement:{engine.cursor.index}",
                 label=f"{container_id} out of service",
                 payload={"container_id": container_id}))
+            self.auto_step = False
             self.publish_plans()
+
         elif command == "grasp_failure":
             engine.apply_dynamic_event(DynamicEvent(
                 event_type=DynamicEventType.GRASP_FAILURE,
                 trigger=f"placement:{engine.cursor.index}",
                 label="Operator-injected grasp failure"))
+
+        elif command == "pause":
+            # Pausing does NOT invalidate the plan — it stays approved, so
+            # `resume` needs no second approval.
+            self.auto_step = False
+            engine.log.emit(Stage(engine.stage), "pause_execution", Actor.OPERATOR,
+                            source=Source.OPERATOR,
+                            message="automatic execution paused by operator")
+
+        elif command == "resume":
+            if not (engine.selected
+                    and engine.selected.approval_state is ApprovalState.APPROVED):
+                raise ValueError("cannot resume: the current plan is not approved")
+            self.auto_step = True
+            engine.log.emit(Stage(engine.stage), "resume_execution", Actor.OPERATOR,
+                            source=Source.OPERATOR,
+                            message="automatic execution resumed by operator")
+
         elif command == "step":
             engine.step_execution()
             self.publish_execution()
 
+        elif command == "reset":
+            self._reset_run(args)
+
+        elif command == "write_artifacts":
+            paths = self._write_artifacts(force=True)
+            engine.log.emit(Stage(engine.stage), "write_artifacts", Actor.OPERATOR,
+                            source=Source.OPERATOR,
+                            message=f"artefacts written ({len(paths)} files)",
+                            details={"files": paths})
+
+    def _reset_run(self, args: Dict[str, Any]) -> None:
+        """Build a brand-new run from the operator's scenario settings.
+
+        This is the dashboard's "Generate & plan". It replaces the engine
+        entirely rather than mutating the old one: a half-reset engine carrying
+        the previous run's counters and frozen placements is exactly the kind of
+        state that makes a demo behave differently the second time it is shown.
+        """
+        preset = args.get("preset", self.engine.config.preset)
+        seed = int(args.get("seed", self.engine.config.seed))
+        strategy = Strategy(args.get("strategy", self.engine.config.strategy.value))
+
+        overrides: Dict[str, Any] = {}
+        if preset != "curated_volume_reduction":
+            for key in ("item_count", "length_range_mm", "diameter_range_mm",
+                        "container_spec"):
+                value = args.get(key)
+                if value:
+                    overrides[key] = (tuple(value) if isinstance(value, list)
+                                      else value)
+
+        events = []
+        if args.get("dynamic_events_enabled", True):
+            events = [DynamicEvent(
+                event_type=DynamicEventType.ITEM_INJECT,
+                trigger="placement:4",
+                label="High-priority ILW component arrives late",
+                payload={"item": {"length_mm": 1200, "outer_diameter_mm": 220,
+                                  "inner_diameter_mm": 186,
+                                  "material": "stainless_316L",
+                                  "priority": 9, "dose_class": "ILW"}})]
+
+        self.engine = WorkflowEngine(WorkflowConfig(
+            preset=preset, seed=seed, strategy=strategy,
+            optimizer=OptimizerConfig(seed=seed, restarts=6),
+            robot=RobotSimConfig(
+                pick_failure_probability=float(
+                    args.get("pick_failure_probability",
+                             self.engine.config.robot.pick_failure_probability)),
+                seed=seed),
+            dynamic_events=events,
+            generator_overrides=overrides,
+            auto_approve=self.auto_approve))
+        self.engine.log.add_sink(self._publish_event)
+
+        # Drive straight to the approval gate — never past it.
+        self.engine.generate_or_load_scenario()
+        self.engine.scan_and_detect()
+        self.engine.generate_plans()
+        self.engine.digital_twin_validate()
+        self.engine.request_approval()
+
+        self._artifacts_written = False
+        self.auto_step = False
+        self.tree = build_tree(self)
+        self.tree.setup_with_descendants()
+
+        self.publish_scenario()
+        self.publish_detection()
+        self.publish_plans()
+        self.publish_state()
+        self.get_logger().info(
+            f"reset -> preset={preset} seed={seed} strategy={strategy.value}; "
+            f"awaiting approval")
+
     # -- artefacts --------------------------------------------------------- #
 
-    def _write_artifacts(self) -> None:
+    def _write_artifacts(self, force: bool = False) -> Dict[str, str]:
+        """Write the run artefacts. Returns {kind: path}.
+
+        `force` allows an operator to capture evidence mid-run, which is the
+        point of the dashboard's "Write artefacts" button — waiting for
+        completion is no use when the interesting state is the one on screen.
+        """
         self._artifacts_written = True
         engine = self.engine
-        if engine.selected is None:
-            return
+        if engine.selected is None or engine.baseline is None:
+            self.get_logger().warn("nothing to write yet — no plan exists")
+            return {}
         try:
             kpis = engine.kpis(latest_latency_p50_ms(self.results_dir))
             artifacts = write_run_artifacts(
                 engine.scenario, engine.baseline, engine.optimized,
                 engine.selected, kpis, engine.log, self.results_dir)
-            write_validation_report(
+            report = write_validation_report(
                 engine.scenario, engine.baseline, engine.optimized,
                 engine.selected, kpis, engine.log, artifacts, self.results_dir)
+            paths = dict(artifacts.paths)
+            paths["validation_report"] = report
             self.get_logger().info(f"artefacts written: {artifacts.stamp}")
+            return paths
         except Exception as exc:                        # noqa: BLE001
             self.get_logger().error(f"artefact write failed: {exc}")
+            return {}
 
 
 def main(args=None) -> None:

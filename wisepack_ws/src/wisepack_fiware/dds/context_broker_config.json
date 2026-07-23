@@ -48,20 +48,10 @@
           "entityId": "urn:ngsi-ld:WISEPACKScenario:current",
           "attribute": "detectedCount"
         },
-        "rt/wisepack/plan/baseline": {
+        "rt/wisepack/plan/summary": {
           "entityType": "WISEPACKPackingPlan",
           "entityId": "urn:ngsi-ld:WISEPACKPackingPlan:current",
-          "attribute": "baseline"
-        },
-        "rt/wisepack/plan/optimized": {
-          "entityType": "WISEPACKPackingPlan",
-          "entityId": "urn:ngsi-ld:WISEPACKPackingPlan:current",
-          "attribute": "optimized"
-        },
-        "rt/wisepack/plan/selected": {
-          "entityType": "WISEPACKPackingPlan",
-          "entityId": "urn:ngsi-ld:WISEPACKPackingPlan:current",
-          "attribute": "selected"
+          "attribute": "summary"
         },
         "rt/wisepack/plan/status_json": {
           "entityType": "WISEPACKPackingPlan",

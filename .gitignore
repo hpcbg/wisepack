@@ -13,8 +13,8 @@ __pycache__/
 # demonstration evidence is committed deliberately (see the negations below);
 # everything else is transient.
 results/*
-!results/.gitkeep
-!results/wisepack-preset-summary.md
+#!results/.gitkeep
+#!results/wisepack-preset-summary.md
 
 # Generated figures ARE committed: they are the presentation evidence and a
 # reviewer must be able to see them without running anything.

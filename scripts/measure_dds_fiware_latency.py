@@ -55,6 +55,10 @@ try:
     from rclpy.executors import SingleThreadedExecutor
     from rclpy.node import Node
     from std_msgs.msg import String
+    # The probe MUST use the contract's QoS, not a hand-rolled depth. It writes
+    # to a real WISEPACK topic, so its publisher has to be compatible with the
+    # subscribers already on that topic — Orion-LD's DDS enabler included.
+    from wisepack_bringup.qos import qos_for
 except Exception as exc:                                # pragma: no cover
     sys.stderr.write(
         "ERROR: could not import rclpy/std_msgs (%s).\n"
@@ -168,9 +172,15 @@ def patch_output_attr(payload):
 class LoopProbe(Node):
     def __init__(self):
         super().__init__("wisepack_dds_fiware_latency_probe")
-        self._pub = self.create_publisher(String, INPUT_TOPIC, 10)
+        # Hand-rolling `10` here published VOLATILE onto an audit topic the
+        # contract declares TRANSIENT_LOCAL. Orion-LD's subscriber requests
+        # TRANSIENT_LOCAL, so it never matched: every sample timed out with
+        # "audit attribute not observed" and in=0 matched subscriptions.
+        self._pub = self.create_publisher(String, INPUT_TOPIC,
+                                          qos_for(INPUT_TOPIC))
         self._sub = self.create_subscription(String, OUTPUT_TOPIC,
-                                             self._on_output, 10)
+                                             self._on_output,
+                                             qos_for(OUTPUT_TOPIC))
         self._lock = threading.Lock()
         self._expected = None
         self._received_ns = None
@@ -398,8 +408,14 @@ def main():
 
         ok_samples = [s for s in samples if s["ok"]]
         if not ok_samples:
-            print("\n  %sx%s No successful samples — broken DDS mapping or the "
-                  "broker is not in DDS mode." % (RED, RST))
+            # Fail loudly with an EMPTY summary. Writing 0 ms here would be a
+            # fabricated measurement, and a consumer cannot tell 0 ms from
+            # "never ran" once it is in the artefact.
+            print("\n  %sx%s No successful samples — nothing reached Orion-LD."
+                  % (RED, RST))
+            print("      Check: is the ROS stack publishing? does the probe's QoS")
+            print("      match the contract? was Orion-LD restarted after a QoS")
+            print("      change (it caches endpoint QoS from first discovery)?")
             json_path, csv_path = write_outputs(stamp, config, samples, {}, env)
             print("    wrote %s" % json_path)
             return 1

@@ -50,4 +50,17 @@ else
 fi
 
 export ORION
-exec python3 "$REPO/scripts/measure_dds_fiware_latency.py"
+# Not `exec`: rclpy/Fast DDS not uncommonly segfaults during teardown (exit 139)
+# and that would be reported as a measurement failure even when every sample
+# succeeded. Capture the real result first.
+python3 "$REPO/scripts/measure_dds_fiware_latency.py"
+RC=$?
+if [ "$RC" -ge 128 ]; then
+    NEWEST="$(ls -1t "$WISEPACK_RESULTS_DIR"/wisepack-dds-fiware-latency-*.json 2>/dev/null | head -1)"
+    if [ -n "$NEWEST" ] && grep -q '"median"' "$NEWEST" 2>/dev/null; then
+        warn "process exited with signal $((RC - 128)) during teardown, but the"
+        info "measurement completed and $(basename "$NEWEST") has samples."
+        RC=0
+    fi
+fi
+exit "$RC"

@@ -40,17 +40,20 @@ mkdir -p "$RESULTS_DIR"
 # pinning the code here that teardown crash would be reported as a validation
 # failure even when every check passed.
 FINAL_RC=0
+# Kill only the process group THIS script started. `pkill -f wisepack_` also
+# matches another checkout running concurrently on the same machine.
 cleanup() {
-    kill "${LAUNCH_PID:-0}" 2>/dev/null || true
-    pkill -f wisepack_ 2>/dev/null || true
-    wait "${LAUNCH_PID:-0}" 2>/dev/null || true
+    if [ -n "${LAUNCH_PID:-}" ]; then
+        kill -TERM "-$LAUNCH_PID" 2>/dev/null || kill "$LAUNCH_PID" 2>/dev/null || true
+        wait "$LAUNCH_PID" 2>/dev/null || true
+    fi
     exit "$FINAL_RC"
 }
 trap cleanup EXIT INT TERM
 
 # ---- 1. bring the graph up --------------------------------------------------
 head_ "1. Node graph"
-ros2 launch wisepack_bringup demo.launch.py \
+setsid ros2 launch wisepack_bringup demo.launch.py \
     preset:="$PRESET" seed:="$SEED" dynamic_events:=true \
     results_dir:="$RESULTS_DIR" > "$LOG" 2>&1 &
 LAUNCH_PID=$!
@@ -69,14 +72,15 @@ await_log "perception simulator up" "$LOG" 20 && pass "perception simulator star
 
 # ---- 2. canonical topics ----------------------------------------------------
 head_ "2. Canonical topic contract"
-sleep 5
-TOPIC_LIST="$(ros2 topic list 2>/dev/null)"
+sleep 6
+TOPIC_LIST="$(list_topics)"
 EXPECTED=(
     /wisepack/scenario/config /wisepack/scenario/state /wisepack/waste/items
     /wisepack/waste/detected_count /wisepack/plan/baseline /wisepack/plan/optimized
     /wisepack/plan/selected /wisepack/plan/status_json /wisepack/operator/approval
     /wisepack/execution/state /wisepack/execution/progress_pct
-    /wisepack/system/readiness /wisepack/action/event /wisepack/action/sequence
+    /wisepack/system/readiness /wisepack/system/heartbeat
+    /wisepack/plan/summary /wisepack/action/event /wisepack/action/sequence
     /wisepack/kpi/containers_baseline /wisepack/kpi/containers_optimized
     /wisepack/kpi/volume_reduction_pct
 )
@@ -117,10 +121,7 @@ fi
 
 # ---- 5. approval over ROS 2 -------------------------------------------------
 head_ "5. Operator approval over ROS 2 / DDS"
-ros2 topic pub --once /wisepack/operator/approval std_msgs/msg/String \
-    'data: APPROVE' --qos-reliability reliable --qos-durability transient_local \
-    >/dev/null 2>&1
-if await_log "APPROVED via operator topic" "$LOG" 20; then
+if send_operator_decision APPROVE "$LOG"; then
     pass "approval received and accepted by the orchestrator"
 else
     fail "orchestrator did not accept the approval"
@@ -131,12 +132,41 @@ head_ "6. Execution and dynamic re-planning"
 if await_log "replan_complete|re-plan" "$LOG" 90; then
     pass "a dynamic event triggered a re-plan"
 else
-    warn "no re-plan observed within 90 s (is dynamic_events:=true?)"
+    fail "no re-plan observed within 90 s (is dynamic_events:=true?)"
 fi
-# The scripted event forces a second approval; grant it so the run can finish.
-ros2 topic pub --once /wisepack/operator/approval std_msgs/msg/String \
-    'data: APPROVE' --qos-reliability reliable --qos-durability transient_local \
-    >/dev/null 2>&1
+
+# THE safety property: a re-plan must land back at the operator gate. If a
+# disturbance could carry a plan straight into execution, the human-in-the-loop
+# claim would be void.
+#
+# Checked on the PLAN, not by racing the stage topic. The stage is a moving
+# target during a re-plan and polling it burned minutes without proving
+# anything; what actually matters is that the new plan carries NO approval, so
+# nothing can execute until the operator acts again. That is the property, and
+# it is a single deterministic read.
+APPROVAL_STATE="$(echo_state /wisepack/plan/summary 8 | tail -1)"
+if [ -z "$APPROVAL_STATE" ]; then
+    warn "plan summary not readable — cannot confirm the post-replan gate"
+elif printf '%s' "$APPROVAL_STATE" | grep -q '"approval_state": *"approved"'; then
+    fail "the re-planned plan is already approved — the operator gate was bypassed"
+else
+    pass "the re-planned plan is UNAPPROVED — execution stays gated"
+fi
+
+# ...and the published stage must be the gate itself.
+REPLAN_STAGE="$(echo_state /wisepack/execution/state 8 | tail -1)"
+if printf '%s' "$REPLAN_STAGE" | grep -q "WAIT_FOR_OPERATOR_APPROVAL"; then
+    pass "after the re-plan the workflow is back at the approval gate"
+else
+    fail "after a re-plan the stage is '$REPLAN_STAGE' — expected the gate"
+fi
+# The scripted event forces a SECOND approval; grant it so the run can finish.
+# That a second approval is needed at all is the point of the check above.
+if send_operator_decision APPROVE "$LOG"; then
+    pass "second approval accepted — execution resumes after the re-plan"
+else
+    fail "the orchestrator did not accept the post-replan approval"
+fi
 
 if await_log "artefacts written" "$LOG" 180; then
     pass "cycle completed and artefacts were written"

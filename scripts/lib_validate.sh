@@ -94,13 +94,75 @@ await_orion() {
     return 1
 }
 
+# Topic discovery WITHOUT the ROS 2 daemon.
+#
+# `ros2 topic list` talks to a long-lived daemon that survives between runs and
+# outlives the containers that started it. On a host-networked machine that has
+# run many stacks, a stale daemon returns an EMPTY list and, with stderr
+# discarded, the validation reports every topic as missing while the stack is
+# demonstrably healthy. Reproduced here: 17/17 topics "missing" while the twin
+# validator and the approval path were both working.
+#
+# --no-daemon does direct DDS discovery. It is a little slower and completely
+# immune to daemon state, which is the right trade for a validation script.
+list_topics() {
+    local out
+    out="$(ros2 topic list --no-daemon 2>&1)"
+    if [ -z "$out" ] || printf '%s' "$out" | grep -qi 'error'; then
+        sleep 3
+        out="$(ros2 topic list --no-daemon 2>&1)"
+    fi
+    printf '%s\n' "$out"
+}
+
 # `ros2 topic echo` subscribes RELIABLE/VOLATILE by default, which matches
 # NEITHER WISEPACK's BEST_EFFORT telemetry nor its TRANSIENT_LOCAL state topics —
 # it would just sit there printing nothing. Ask for the QoS the publisher offers.
+# Publish an operator decision and CONFIRM the orchestrator took it.
+#
+# `ros2 topic pub --once` fires as soon as it has one matching subscription,
+# which on a busy host can be Orion-LD's bridge rather than the orchestrator.
+# One unconfirmed publish is not evidence of an approval, so this retries until
+# the orchestrator says so in its own log.
+#   send_operator_decision APPROVE|REJECT LOGFILE [attempts]
+send_operator_decision() {
+    local decision="$1" logfile="$2" attempts="${3:-4}" n=0
+    local marker="APPROVED via operator topic"
+    [ "$decision" = "REJECT" ] && marker="REJECTED via operator topic"
+    local before
+    before="$(grep -c "$marker" "$logfile" 2>/dev/null || true)"
+    before="${before:-0}"
+    while [ "$n" -lt "$attempts" ]; do
+        n=$((n + 1))
+        timeout 15 ros2 topic pub --once /wisepack/operator/approval \
+            std_msgs/msg/String "data: $decision" \
+            --qos-reliability reliable --qos-durability transient_local \
+            >/dev/null 2>&1
+        local after
+        for _ in 1 2 3 4 5 6; do
+            after="$(grep -c "$marker" "$logfile" 2>/dev/null || true)"
+            after="${after:-0}"
+            [ "$after" -gt "$before" ] && return 0
+            sleep 1
+        done
+    done
+    return 1
+}
+
+# Latched-state read, with one retry: DDS discovery can need a moment on a busy
+# host, and a single empty read is not evidence that a topic has no value.
 echo_state() {
-    timeout "${2:-8}" ros2 topic echo "$1" --once \
+    local out
+    out="$(timeout "${2:-8}" ros2 topic echo "$1" --once \
         --qos-reliability reliable --qos-durability transient_local 2>/dev/null \
-        | grep '^data:' || true
+        | grep '^data:')"
+    if [ -z "$out" ]; then
+        sleep 2
+        out="$(timeout "${2:-8}" ros2 topic echo "$1" --once \
+            --qos-reliability reliable --qos-durability transient_local 2>/dev/null \
+            | grep '^data:')"
+    fi
+    printf '%s\n' "$out"
 }
 echo_telemetry() {
     timeout "${2:-8}" ros2 topic echo "$1" --once --qos-reliability best_effort \

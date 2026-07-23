@@ -41,11 +41,17 @@ FOUR PROFILES, and the reason each exists:
                taking five minutes to study a plan is the system working, not a
                fault to detect.
 
-  telemetry_qos  High-rate progress and KPI values. BEST_EFFORT — freshness beats
-               completeness, and a lost progress sample is replaced 200 ms later.
+  telemetry_qos  High-rate progress ONLY. BEST_EFFORT — freshness beats
+               completeness, and a lost progress sample is replaced shortly.
+               KPI topics deliberately do NOT use this: they are latched state.
 
-DEGRADATION. The orchestrator publishes its heartbeat on the execution-state
-topic every ORCHESTRATOR_PERIOD_S. Its subscribers request a Deadline; when the
+LATE ATTACHMENT IS THE NORMAL CASE. The dashboard connects after the
+orchestrator has already planned, so anything it must render has to be
+TRANSIENT_LOCAL. Both the KPI topics and the action-event stream were VOLATILE
+and produced an empty dashboard against a healthy stack; both are latched now.
+
+DEGRADATION. The orchestrator publishes `/wisepack/system/heartbeat` every
+ORCHESTRATOR_PERIOD_S. Its subscribers request a Deadline; when the
 orchestrator stops publishing, the deadline-missed event fires and the consumer
 transitions to a paused/degraded state. WISEPACK never simulates unsafe
 autonomous continuation, so degraded means HELD, not "carry on".
@@ -53,7 +59,8 @@ autonomous continuation, so degraded means HELD, not "carry on".
 A DEADLINE IS ONLY DECLARED WHERE IT MEANS SOMETHING. Plans and events are
 event-driven — they legitimately go quiet for a minute while an operator thinks —
 so putting a deadline on them would produce constant false alarms. Only the
-periodic heartbeat and command topics carry one.
+periodic heartbeat topic carries one; the command topics deliberately do not
+(see command_qos).
 """
 
 from rclpy.duration import Duration
@@ -74,18 +81,35 @@ STATE_DEADLINE_S = 2.0
 #: How long a consumer tolerates a silent (or dead) orchestrator before holding.
 LIVELINESS_LEASE_S = 4.0
 
+#: Application-level staleness threshold for the heartbeat counter. A consumer
+#: that has seen no new heartbeat for this long treats the orchestrator as lost.
+#: This is what actually detects a dead orchestrator — see
+#: watchdog_subscribe_qos() for why the DDS-level route is unavailable here.
+HEARTBEAT_STALE_S = 6.0
+
 #: Action-event history depth. One full 40-item cycle emits ~230 events; a
 #: subscriber that stalls briefly must not lose the middle of the audit trail.
 EVENT_HISTORY_DEPTH = 200
 
 
 def event_qos() -> QoSProfile:
-    """Action events: RELIABLE, deep KEEP_LAST. The audit trail must not drop."""
+    """Action events: RELIABLE, TRANSIENT_LOCAL, deep KEEP_LAST.
+
+    TRANSIENT_LOCAL matters as much as RELIABLE here. The dashboard attaches
+    AFTER the orchestrator has planned — that is the normal case, not an edge
+    case — and with VOLATILE durability it received an empty timeline while the
+    orchestrator had already emitted the whole planning sequence. Measured:
+    `/api/events` returned 0 events against an action count of 7.
+
+    Retaining the last EVENT_HISTORY_DEPTH events for late joiners is also the
+    right semantics for an audit trail: a regulatory record that only exists for
+    whoever happened to be listening is not a record.
+    """
     return QoSProfile(
         history=HistoryPolicy.KEEP_LAST,
         depth=EVENT_HISTORY_DEPTH,
         reliability=ReliabilityPolicy.RELIABLE,
-        durability=DurabilityPolicy.VOLATILE,
+        durability=DurabilityPolicy.TRANSIENT_LOCAL,
     )
 
 
@@ -100,11 +124,18 @@ def state_qos() -> QoSProfile:
 
 
 def heartbeat_qos() -> QoSProfile:
-    """Execution state: latched AND deadline-monitored.
+    """`/wisepack/system/heartbeat` ONLY: latched AND deadline-monitored.
 
-    This is the topic whose silence means "the orchestrator is gone". It carries
-    both the latch (so late joiners see the stage) and the Deadline/Liveliness
-    pair (so its absence is detectable rather than merely invisible).
+    This is the topic whose silence means "the orchestrator is gone". It is the
+    single place a Deadline/Liveliness pair is declared, and it is deliberately
+    NOT bridged to FIWARE.
+
+    DO NOT apply this profile to a topic anything else might publish on. A
+    subscription requesting a liveliness lease is incompatible with any
+    publisher offering an infinite one — which is every generic publisher,
+    Orion-LD's DDS bridge included — and rclpy reports that by silently
+    receiving nothing. `/wisepack/execution/state` used this profile and the
+    live dashboard rendered empty as a direct result.
     """
     return QoSProfile(
         history=HistoryPolicy.KEEP_LAST,
@@ -115,6 +146,35 @@ def heartbeat_qos() -> QoSProfile:
         liveliness=LivelinessPolicy.AUTOMATIC,
         liveliness_lease_duration=Duration(seconds=LIVELINESS_LEASE_S),
     )
+
+
+def watchdog_subscribe_qos() -> QoSProfile:
+    """SUBSCRIBER side of the heartbeat: latched state, NO liveliness request.
+
+    Asymmetric on purpose, and the asymmetry is the whole point.
+
+    The orchestrator OFFERS a Deadline and a Liveliness lease on the heartbeat
+    (see heartbeat_qos). Offering is free and well-defined. REQUESTING them is
+    not: a reader only matches a writer whose offered lease is at least as
+    short, and Orion-LD's DDS enabler creates a bare-DDS publisher on every
+    topic it discovers — not merely the mapped ones — each offering an INFINITE
+    lease. Measured on this machine: with the enabler running, a subscription
+    requesting a 4 s lease logs
+
+        New publisher discovered on topic '/wisepack/system/heartbeat',
+        offering incompatible QoS. No messages will be received from it.
+        Last incompatible policy: LIVELINESS
+
+    ...even after the state topic was split out. So DDS-level liveliness
+    detection is simply unavailable to a subscriber in this deployment.
+
+    Detection is therefore done where it still works: the heartbeat carries a
+    monotonically increasing counter, and a consumer that sees it stop advancing
+    for longer than HEARTBEAT_STALE_S declares the orchestrator lost. That is
+    application-level, it is honest about being so, and unlike the QoS route it
+    actually fires.
+    """
+    return state_qos()
 
 
 def command_qos() -> QoSProfile:
@@ -138,7 +198,13 @@ def command_qos() -> QoSProfile:
 
 
 def telemetry_qos() -> QoSProfile:
-    """Progress and KPI values: BEST_EFFORT, KEEP_LAST(5)."""
+    """High-rate progress only: BEST_EFFORT, KEEP_LAST(5).
+
+    NOT for KPI values. A KPI changes a handful of times per run and a late
+    subscriber must see the current one; BEST_EFFORT + VOLATILE gave the live
+    dashboard a full set of empty KPI tiles because every value had been
+    published before it connected. KPIs are latched state — see qos_for.
+    """
     return QoSProfile(
         history=HistoryPolicy.KEEP_LAST,
         depth=5,
@@ -168,8 +234,16 @@ def qos_for(topic: str) -> QoSProfile:
         return state_qos()
     if topic in (T.OPERATOR_APPROVAL, T.OPERATOR_COMMAND):
         return command_qos()
-    if topic == T.EXECUTION_STATE:
-        return heartbeat_qos()
-    if topic in (T.EXECUTION_PROGRESS_PCT,) or topic.startswith("/wisepack/kpi/"):
+    if topic == T.SYSTEM_HEARTBEAT:
+        # NOTE: this is the SUBSCRIBER-safe profile. The orchestrator publishes
+        # the heartbeat with heartbeat_qos() explicitly, so it still OFFERS the
+        # Deadline/Liveliness pair.
+        return watchdog_subscribe_qos()
+    if topic == T.EXECUTION_PROGRESS_PCT:
+        # Genuinely high-rate: a lost sample is replaced 700 ms later.
         return telemetry_qos()
+    if topic.startswith("/wisepack/kpi/"):
+        # KPIs are STATE, not telemetry. Latched, so a dashboard attaching
+        # mid-run renders the current values instead of "not measured".
+        return state_qos()
     return state_qos()

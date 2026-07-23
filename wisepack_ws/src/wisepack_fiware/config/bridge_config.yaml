@@ -97,25 +97,20 @@ ros_to_fiware:
     fiware_attribute: "detectedCount"
 
   # ---- plans -------------------------------------------------------------- #
-  - ros_topic: "/wisepack/plan/baseline"
+  # The COMPACT DIGEST is mapped, not the full plans.
+  #
+  # /wisepack/plan/{baseline,optimized,selected} each carry a complete
+  # PackingPlan (~27 kB for a 40-item scenario) because the dashboard's Digital
+  # Twin needs real placement geometry. Pushing 27 kB into an NGSI-LD attribute
+  # on every re-plan is not an audit trail worth having, and the audit value of
+  # a plan is its container count, utilization and validity — all of which are
+  # in the digest. The full geometry stays on DDS for the dashboard, and the
+  # placement-level record is the results/wisepack-placements-*.csv artefact.
+  - ros_topic: "/wisepack/plan/summary"
     ros_msg_type: "std_msgs/String"
     fiware_entity: "WISEPACKPackingPlan:current"
     fiware_entity_type: "WISEPACKPackingPlan"
-    fiware_attribute: "baseline"
-    ros_field: "data"
-
-  - ros_topic: "/wisepack/plan/optimized"
-    ros_msg_type: "std_msgs/String"
-    fiware_entity: "WISEPACKPackingPlan:current"
-    fiware_entity_type: "WISEPACKPackingPlan"
-    fiware_attribute: "optimized"
-    ros_field: "data"
-
-  - ros_topic: "/wisepack/plan/selected"
-    ros_msg_type: "std_msgs/String"
-    fiware_entity: "WISEPACKPackingPlan:current"
-    fiware_entity_type: "WISEPACKPackingPlan"
-    fiware_attribute: "selected"
+    fiware_attribute: "summary"
     ros_field: "data"
 
   # NOTE the `status_json` leaf — see constraint 2 in the header. The FIWARE

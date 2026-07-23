@@ -47,6 +47,9 @@ fi
 
 # ---- sim mode: no ROS, and no Docker if the host can run it directly --------
 if [ "$MODE" = "sim" ]; then
+    # No colcon build here on purpose: sim mode imports wisepack_core straight
+    # from wisepack_ws/src, so it is ALWAYS the current source. There is no
+    # install/ to go stale.
     echo "[dashboard] sim mode — no ROS, no FIWARE, no hardware."
     echo "[dashboard] Packing figures are MEASURED by the same optimizer the live"
     echo "[dashboard] stack runs. Execution outcomes are SIMULATED and labelled so."
@@ -75,6 +78,36 @@ if [ "$MODE" = "sim" ]; then
         bash -lc 'exec python3 web/app.py --source sim --port "${WISEPACK_DASH_PORT}" \
                     --preset "${WISEPACK_PRESET}" --seed "${WISEPACK_SEED}"'
 fi
+
+
+# ── Refuse to run alongside another WISEPACK stack on the same DDS domain ────
+# Two orchestrators on one ROS_DOMAIN_ID both publish the canonical topics, and
+# a reader then sees whichever wrote last. Measured symptom: the validation
+# reported stage NEXT_ITEM *before* approval, with progress 0% — two different
+# runs answering the same question. This is the "clean stale ROS processes"
+# rule, done by CONTAINER NAME so it can never touch another project's stack.
+wisepack_reap_stale() {
+    local own="$1"
+    docker rm -f "$own" >/dev/null 2>&1 || true
+
+    local others
+    others="$(docker ps --filter "ancestor=${IMAGE}" --format '{{.Names}}' \
+              | grep -v "^${own}$" || true)"
+    if [ -n "$others" ]; then
+        if [ "${WISEPACK_REAP_OTHERS:-1}" = "1" ]; then
+            echo "[host] stopping other WISEPACK containers on ROS_DOMAIN_ID=$ROS_DOMAIN_ID:"
+            printf '         %s\n' $others
+            echo "$others" | xargs -r docker rm -f >/dev/null 2>&1 || true
+        else
+            echo "[host] WARNING: other WISEPACK containers are running and will" >&2
+            echo "                share ROS_DOMAIN_ID=$ROS_DOMAIN_ID:" >&2
+            printf '                %s\n' $others >&2
+            echo "                results will be ambiguous. WISEPACK_REAP_OTHERS=1 to stop them." >&2
+        fi
+    fi
+}
+
+wisepack_reap_stale "wisepack-dashboard"
 
 # ---- live modes -------------------------------------------------------------
 "$REPO/scripts/clean_dds_shm.sh" || true
@@ -114,6 +147,7 @@ exec docker run --rm -i $([ -t 1 ] && echo -t) \
     -e "WISEPACK_SOURCE=$SOURCE" \
     -e "WISEPACK_PRESET=$PRESET" \
     -e "WISEPACK_SEED=$SEED" \
+    -e WISEPACK_SKIP_BUILD \
     -e ORION \
     -v "$REPO:$REPO" \
     -w "$REPO" \
@@ -123,17 +157,35 @@ exec docker run --rm -i $([ -t 1 ] && echo -t) \
         # it is still unset, so nounset aborts before the ROS env is even sourced.
         source /opt/vulcanexus/jazzy/setup.bash
 
-        if [ ! -f wisepack_ws/install/setup.bash ]; then
-            echo "[container] building workspace ..."
+        # Always build. An incremental colcon build is a few seconds when the
+        # workspace is current, and demonstrating a STALE install is how a
+        # "working" dashboard ends up showing code from a previous session.
+        if [ "${WISEPACK_SKIP_BUILD:-0}" = "1" ]; then
+            echo "[container] WISEPACK_SKIP_BUILD=1 — using the existing install/"
+            [ -f wisepack_ws/install/setup.bash ] || {
+                echo "[container] ERROR: nothing built and the build was skipped." >&2
+                exit 1
+            }
+        else
+            echo "[container] colcon build --symlink-install (incremental) ..."
             ( cd wisepack_ws && colcon build --symlink-install ) || exit 1
         fi
         source wisepack_ws/install/setup.bash
 
-        cleanup() { kill ${LAUNCH_PID:-0} 2>/dev/null; pkill -f wisepack_ 2>/dev/null; true; }
+        # Kill only what THIS launcher started. `pkill -f wisepack_` would also
+        # match another checkout of this project running on the same machine,
+        # and a broader pattern would take out unrelated ROS stacks entirely.
+        cleanup() {
+            if [ -n "${LAUNCH_PID:-}" ]; then
+                kill -TERM "-$LAUNCH_PID" 2>/dev/null \
+                    || kill "$LAUNCH_PID" 2>/dev/null || true
+                wait "$LAUNCH_PID" 2>/dev/null || true
+            fi
+        }
         trap cleanup EXIT INT TERM
 
         echo "[container] launching WISEPACK (orchestrator + perception + twin) ..."
-        ros2 launch wisepack_bringup demo.launch.py \
+        setsid ros2 launch wisepack_bringup demo.launch.py \
             preset:="${WISEPACK_PRESET}" seed:="${WISEPACK_SEED}" \
             > /tmp/wisepack_stack.log 2>&1 &
         LAUNCH_PID=$!

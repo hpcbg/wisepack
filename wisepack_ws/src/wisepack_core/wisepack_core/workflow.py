@@ -460,8 +460,20 @@ class WorkflowEngine:
 
         # A dynamic event scheduled for this point fires before the pick.
         self._fire_due_events(placement_index=self.cursor.index)
-        if self.stage is Stage.REPLAN:
-            return True                                  # re-plan already queued
+        # If that event triggered a re-plan, STOP HERE.
+        #
+        # Guarding only on Stage.REPLAN was wrong and safety-relevant: replan()
+        # finishes by calling request_approval(), which leaves the stage at
+        # WAIT_FOR_OPERATOR_APPROVAL, not REPLAN. So the guard never fired and
+        # this method went on to pick and place one more item using the
+        # SUPERSEDED plan — after the operator's approval had been revoked.
+        # Observed on the live stack as stage NEXT_ITEM immediately after a
+        # re-plan. The authoritative test is the approval state itself.
+        if self.stage in (Stage.REPLAN, Stage.WAIT_FOR_OPERATOR_APPROVAL):
+            return True
+        if (self.selected is None
+                or self.selected.approval_state is not ApprovalState.APPROVED):
+            return True
 
         placements = self.selected.ordered_placements
         pending = [p for p in placements if not p.executed]

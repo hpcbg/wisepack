@@ -28,6 +28,27 @@ never bridges. Every status-like topic here therefore ends in `_json` or another
 distinct leaf, exactly as HARMONY resolved the same problem. The FIWARE
 *attribute* can still be called `status`; only the ROS leaf must differ.
 
+STATE VS WATCHDOG — WHY THERE IS A SEPARATE HEARTBEAT TOPIC
+-----------------------------------------------------------
+`/wisepack/execution/state` is ORDINARY LATCHED STATE. It carries no Deadline
+and no Liveliness, so anything can subscribe to it and read the current stage.
+
+Watchdog detection lives on its own topic, `/wisepack/system/heartbeat`, which
+is the only place a Deadline/Liveliness pair is declared.
+
+This split exists because of a real, measured failure. A subscription that
+REQUESTS a liveliness lease only matches a publisher that OFFERS a lease at
+least as short. Orion-LD's DDS bridge publishes on every mapped topic and offers
+an INFINITE lease, so a dashboard requesting a 4 s lease on the state topic got:
+
+    New publisher discovered on topic '/wisepack/execution/state', offering
+    incompatible QoS. No messages will be received from it.
+    Last incompatible policy: LIVELINESS
+
+Rendering the current stage must never depend on watchdog policy matching. The
+heartbeat topic is deliberately NOT mapped into FIWARE, so no external bridge
+publishes on it and the watchdog subscription only ever meets the orchestrator.
+
 SINGLE-WRITER DISCIPLINE
 ------------------------
 Exactly one node publishes each topic. The orchestrator owns every workflow and
@@ -45,12 +66,21 @@ WASTE_ITEMS = "/wisepack/waste/items"                  # String: JSON item list
 WASTE_DETECTED_COUNT = "/wisepack/waste/detected_count"  # Int32
 
 # --- planning -----------------------------------------------------------------
-PLAN_BASELINE = "/wisepack/plan/baseline"              # String: JSON plan summary
-PLAN_OPTIMIZED = "/wisepack/plan/optimized"            # String: JSON plan summary
-PLAN_SELECTED = "/wisepack/plan/selected"              # String: JSON plan summary
+# Plan topics carry the COMPLETE PackingPlan.to_dict() — every placement's
+# position, size, axis and validation status. A dashboard cannot draw a
+# container from "59.3% utilization", and publishing only summaries here is why
+# the live Digital Twin rendered empty. ~27 kB per plan for a 40-item scenario.
+PLAN_BASELINE = "/wisepack/plan/baseline"              # String: FULL PackingPlan JSON
+PLAN_OPTIMIZED = "/wisepack/plan/optimized"            # String: FULL PackingPlan JSON
+PLAN_SELECTED = "/wisepack/plan/selected"              # String: FULL PackingPlan JSON
 PLAN_STATUS = "/wisepack/plan/status_json"             # String: JSON validation verdict
                                                        #   ('status' leaf is reserved)
-PLAN_GEOMETRY = "/wisepack/plan/geometry"              # String: JSON placements
+# Compact digest of all three plans plus the selection reason (~1 kB). This is
+# what the FIWARE bridge maps: the audit value of a plan in NGSI-LD is its
+# container count, utilization and validity, not 40 placement coordinates, and
+# pushing 27 kB into an attribute on every re-plan is not an audit trail worth
+# having. The full plans stay on DDS for the dashboard.
+PLAN_SUMMARY = "/wisepack/plan/summary"                # String: compact JSON digest
 
 # --- operator (FIWARE/dashboard -> orchestrator) ------------------------------
 OPERATOR_APPROVAL = "/wisepack/operator/approval"      # String: APPROVE | REJECT
@@ -62,6 +92,7 @@ EXECUTION_CURRENT_ITEM = "/wisepack/execution/current_item"        # String
 EXECUTION_CURRENT_CONTAINER = "/wisepack/execution/current_container"  # String
 EXECUTION_PROGRESS_PCT = "/wisepack/execution/progress_pct"        # Float32
 SYSTEM_READINESS = "/wisepack/system/readiness"        # Bool: ready to execute
+SYSTEM_HEARTBEAT = "/wisepack/system/heartbeat"        # Int32: monotonic tick
 
 # --- events -------------------------------------------------------------------
 ACTION_EVENT = "/wisepack/action/event"                # String: JSON ActionEvent
@@ -83,9 +114,21 @@ APPROVE = "APPROVE"
 REJECT = "REJECT"
 
 #: Commands accepted on OPERATOR_COMMAND, as {"command": ..., "args": {...}}.
+#: This tuple is the contract the dashboard, the orchestrator and the tests all
+#: check against, so a command advertised in the UI but unimplemented in the
+#: orchestrator is a test failure rather than a dead button.
 OPERATOR_COMMANDS = (
-    "approve", "reject", "alternative_strategy", "inject_item",
-    "container_unavailable", "grasp_failure", "pause", "resume", "step", "reset",
+    "approve",                  # approve the validated plan; execution may start
+    "reject",                   # reject + re-plan; returns to the approval gate
+    "alternative_strategy",     # re-plan with another objective weighting
+    "inject_item",              # late-arriving component -> re-plan
+    "container_unavailable",    # retire a container -> re-plan
+    "grasp_failure",            # force one deterministic simulated grasp failure
+    "pause",                    # stop automatic execution, plan stays approved
+    "resume",                   # resume automatic execution (approved plans only)
+    "step",                     # execute exactly one workflow step
+    "reset",                    # new run from the supplied scenario settings
+    "write_artifacts",          # write run/plan/KPI/event artefacts now
 )
 
 
@@ -105,7 +148,7 @@ def all_topics() -> dict:
         PLAN_OPTIMIZED: "std_msgs/String",
         PLAN_SELECTED: "std_msgs/String",
         PLAN_STATUS: "std_msgs/String",
-        PLAN_GEOMETRY: "std_msgs/String",
+        PLAN_SUMMARY: "std_msgs/String",
         OPERATOR_APPROVAL: "std_msgs/String",
         OPERATOR_COMMAND: "std_msgs/String",
         EXECUTION_STATE: "std_msgs/String",
@@ -113,6 +156,7 @@ def all_topics() -> dict:
         EXECUTION_CURRENT_CONTAINER: "std_msgs/String",
         EXECUTION_PROGRESS_PCT: "std_msgs/Float32",
         SYSTEM_READINESS: "std_msgs/Bool",
+        SYSTEM_HEARTBEAT: "std_msgs/Int32",
         ACTION_EVENT: "std_msgs/String",
         ACTION_SEQUENCE: "std_msgs/Int32",
         DYNAMIC_EVENT: "std_msgs/String",

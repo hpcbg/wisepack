@@ -381,3 +381,47 @@ def test_detection_is_labelled_simulated_in_the_kpis():
     report = engine.kpis()
     assert report.metrics["detection_rate_pct"].source.value == "simulated"
     assert "NOT a vision measurement" in report.metrics["detection_rate_pct"].note
+
+
+# --------------------------------------------------------------------------- #
+# Re-plan must revoke authorisation immediately
+# --------------------------------------------------------------------------- #
+
+def test_a_replan_stops_execution_in_the_same_step():
+    """Regression: one more item was placed on the SUPERSEDED plan.
+
+    `step_execution` guarded only on `Stage.REPLAN`, but `replan()` finishes by
+    calling `request_approval()`, which leaves the stage at
+    WAIT_FOR_OPERATOR_APPROVAL. The guard never fired, so after a dynamic event
+    revoked approval the method carried on and executed one more placement.
+    Observed live as stage NEXT_ITEM immediately after a re-plan.
+    """
+    engine = planned(fast(auto_approve=False))
+    engine.approve()
+    for _ in range(2):
+        engine.step_execution()
+    executed_before = sum(1 for p in engine.selected.placements if p.executed)
+
+    engine.dynamic_events = [DynamicEvent(
+        event_type=DynamicEventType.ITEM_INJECT,
+        trigger=f"placement:{engine.cursor.index}",
+        label="late arrival",
+        payload={"item": {"length_mm": 900, "outer_diameter_mm": 180,
+                          "inner_diameter_mm": 150}})]
+
+    engine.step_execution()          # fires the event -> re-plan -> gate
+
+    assert engine.stage is Stage.WAIT_FOR_OPERATOR_APPROVAL
+    assert engine.selected.approval_state is not ApprovalState.APPROVED
+    executed_after = sum(1 for p in engine.selected.placements if p.executed)
+    assert executed_after == executed_before, (
+        "a placement was executed after the re-plan revoked approval")
+
+
+def test_step_execution_refuses_once_approval_is_revoked():
+    engine = planned(fast(auto_approve=False))
+    engine.approve()
+    engine.step_execution()
+    engine.selected.approval_state = ApprovalState.PENDING
+    with pytest.raises(ApprovalRequired):
+        engine.step_execution()

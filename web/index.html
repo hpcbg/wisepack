@@ -330,8 +330,10 @@ async function command(cmd, args = {}) {
 // ---------------------------------------------------------------- header
 const GO = ["PICK_ITEM","VERIFY_PICK","PLACE_ITEM","VERIFY_PLACEMENT","UPDATE_CONTAINER_STATE","NEXT_ITEM","COMPLETE"];
 function renderHeader(s) {
+  s = s || {};
   const stage = s.stage || "IDLE";
   const pill = $("#b-stage");
+  if (!pill) return;
   pill.textContent = stage;
   pill.className = "stagepill " + (stage === "DEGRADED" ? "bad"
     : stage === "WAIT_FOR_OPERATOR_APPROVAL" || stage === "REPLAN" ? "wait"
@@ -349,10 +351,13 @@ function renderHeader(s) {
   f.className = "badge conn " + (conn === true ? "on" : conn === false ? "off" : "");
   f.title = (s.fiware && s.fiware.error) || "";
 
-  $("#b-scenario").textContent = s.scenario ? `scenario: ${s.scenario.scenario_id}` : "scenario —";
-  $("#b-run").textContent = s.run_id ? `run: ${s.run_id}` : "run —";
-  $("#progbar").style.width = (s.progress_pct || 0) + "%";
-  if (s.notice) $("#notice").textContent = s.notice;
+  const sc = $("#b-scenario");
+  if (sc) sc.textContent = (s.scenario && s.scenario.scenario_id)
+    ? `scenario: ${s.scenario.scenario_id}` : "scenario —";
+  const rn = $("#b-run");
+  if (rn) rn.textContent = s.run_id ? `run: ${s.run_id}` : "run —";
+  const pb = $("#progbar");
+  if (pb) pb.style.width = (s.progress_pct || 0) + "%";
 
   // Approval banner — the safety statement, stated not implied.
   const box = $("#approval-warn");
@@ -364,9 +369,24 @@ function renderHeader(s) {
     box.append(el("div", { class: "warnbox" },
       "DEGRADED — the system is held. " + (s.degraded_reason || "")));
   }
-  for (const [id, on] of [["#c-approve", stage === "WAIT_FOR_OPERATOR_APPROVAL"],
-                          ["#c-reject", stage === "WAIT_FOR_OPERATOR_APPROVAL"]]) {
-    $(id).disabled = !on;
+  const awaiting = stage === "WAIT_FOR_OPERATOR_APPROVAL";
+  const approved = s.approval_state === "approved";
+  const done = stage === "COMPLETE" || stage === "DEGRADED";
+  const enable = {
+    "#c-approve": awaiting,
+    "#c-reject": awaiting,
+    "#c-alt": !done,
+    "#c-inject": !done,
+    "#c-unavail": !done,
+    "#c-grasp": approved && !done,
+    "#c-pause": approved && !done && s.auto_step === true,
+    "#c-resume": approved && !done && s.auto_step !== true,
+    "#c-step": approved && !done,
+    "#c-artifacts": Boolean(s.selected_plan_id),
+  };
+  for (const [id, on] of Object.entries(enable)) {
+    const el = $(id);
+    if (el) el.disabled = !on;
   }
 }
 
@@ -376,9 +396,13 @@ function renderHeader(s) {
 function drawTwin() {
   const root = $("#twin");
   root.innerHTML = "";
-  if (!PLANS || !PLANS.ready) {
-    root.append(svg("text", { x: 500, y: 235, "text-anchor": "middle",
-      fill: "var(--mut)", "font-size": "15" }, "Generate a scenario to see the Digital Twin"));
+  if (!PLANS || !PLANS.ready || !PLANS.baseline || !PLANS.optimized) {
+    root.append(svg("text", { x: 500, y: 228, "text-anchor": "middle",
+      fill: "var(--mut)", "font-size": "15" },
+      "Generate a scenario to see the Digital Twin"));
+    root.append(svg("text", { x: 500, y: 252, "text-anchor": "middle",
+      fill: "var(--mut)", "font-size": "11" },
+      (PLANS && PLANS.source) ? `source: ${PLANS.source}` : ""));
     return;
   }
   // The execution plan is what shows progress; fall back to the comparison
@@ -387,7 +411,8 @@ function drawTwin() {
   const plans = VIEW === "side" ? [PLANS.baseline, exec]
               : VIEW === "baseline" ? [PLANS.baseline] : [exec];
   const itemsById = {};
-  for (const it of PLANS.scenario.items) itemsById[it.item_id] = it;
+  for (const it of ((PLANS.scenario && PLANS.scenario.items) || []))
+    itemsById[it.item_id] = it;
 
   const W = 1000, H = 470, PAD = 12;
   const colW = W / plans.length;
@@ -482,13 +507,18 @@ function drawTwin() {
       fill: "var(--acc)", "font-size": "10" }, s.current_item_id || "—"));
   }
 
+  const totals = (PLANS.scenario && PLANS.scenario.totals) || {};
   const noteBits = [];
-  if (PLANS.scenario.totals && PLANS.scenario.totals.has_approximated_items)
-    noteBits.push("dashed outline = planned · bounding-box approximation in use");
-  $("#twin-note").textContent = noteBits.join(" · ");
+  if (PLANS.source) noteBits.push(`source: ${PLANS.source}`);
+  if (totals.has_approximated_items)
+    noteBits.push("bounding-box approximation in use");
+  const tn = $("#twin-note");
+  if (tn) tn.textContent = noteBits.join(" · ");
 
-  const lg = $("#legend"); lg.innerHTML = "";
-  const groups = (PLANS.scenario.totals && PLANS.scenario.totals.segregation_groups) || [];
+  const lg = $("#legend");
+  if (!lg) return;
+  lg.innerHTML = "";
+  const groups = totals.segregation_groups || [];
   for (const g of groups)
     lg.append(el("span", {}, [el("i", { style: `background:${groupColor(g)}` }), `group ${g}`]));
   for (const [txt, style] of [
@@ -508,8 +538,15 @@ document.querySelectorAll(".v-btn").forEach(b => b.onclick = () => {
 
 // ------------------------------------------------------------- comparison
 function renderCompare() {
-  const tb = $("#cmp").querySelector("tbody"); tb.innerHTML = "";
-  if (!PLANS || !PLANS.ready) return;
+  const host = $("#cmp");
+  if (!host) return;
+  const tb = host.querySelector("tbody"); tb.innerHTML = "";
+  const reason = $("#selreason");
+  if (!PLANS || !PLANS.ready || !PLANS.baseline || !PLANS.optimized) {
+    tb.append(el("tr", {}, [el("td", {}, "no plan yet — press Generate & plan")]));
+    if (reason) reason.textContent = "";
+    return;
+  }
   const b = PLANS.baseline, o = PLANS.optimized;
   const rows = [
     ["Algorithm", b.algorithm, o.algorithm + " / " + o.strategy, null],
@@ -517,7 +554,8 @@ function renderCompare() {
     ["Utilization %", num(b.utilization_pct), num(o.utilization_pct), "high"],
     ["Required capacity m³", num(b.required_capacity_mm3 / 1e9, 3), num(o.required_capacity_mm3 / 1e9, 3), "low"],
     ["Empty capacity m³", num(b.unused_capacity_mm3 / 1e9, 3), num(o.unused_capacity_mm3 / 1e9, 3), "low"],
-    ["Unplaced items", b.unplaced_item_ids.length, o.unplaced_item_ids.length, "low"],
+    ["Unplaced items", (b.unplaced_item_ids || []).length,
+     (o.unplaced_item_ids || []).length, "low"],
     ["Computation ms", num(b.computation_time_ms), num(o.computation_time_ms), null],
     ["Passes validator", b.is_valid ? "yes" : "NO", o.is_valid ? "yes" : "NO", null],
   ];
@@ -533,7 +571,7 @@ function renderCompare() {
       [el("td", {}, k), el("td", { class: "num" }, String(bv)),
        el("td", { class: "num" }, String(ov)), el("td", {}, mark)]));
   }
-  $("#selreason").textContent = "Selected: " + (PLANS.selection_reason || "—");
+  if (reason) reason.textContent = "Selected: " + (PLANS.selection_reason || "—");
 }
 
 // -------------------------------------------------------------------- KPIs
@@ -554,25 +592,27 @@ const KPI_TILES = [
 async function renderKPIs() {
   let doc;
   try { doc = await api("/api/kpis"); } catch (e) { return; }
-  const box = $("#kpis"); box.innerHTML = "";
-  if (!doc.ready) {
-    box.append(el("div", { class: "tile" }, [el("div", { class: "k" }, "KPIs"),
-      el("div", { class: "v nm" }, "not measured")]));
-    return;
-  }
+  const box = $("#kpis");
+  if (!box) return;
+  box.innerHTML = "";
+  const metrics = (doc && doc.metrics) || {};
+  // Render EVERY advertised tile, whether or not the response carries it. A
+  // tile that silently disappears in live mode reads as "this mode has no KPIs";
+  // "not measured" is the honest and stable rendering.
   for (const [key, label, dp] of KPI_TILES) {
-    const m = doc.metrics[key];
-    if (!m) continue;
-    const v = m.value === null ? null : num(m.value, dp);
+    const m = metrics[key] || { value: null, source: "measured", note: "" };
+    const v = (m.value === null || m.value === undefined) ? null : num(m.value, dp);
     box.append(el("div", { class: "tile", title: m.note || "" }, [
       el("div", { class: "k" }, label),
       el("div", { class: "v" + (v === null ? " nm" : "") }, v === null ? "not measured" : v),
-      el("div", { class: "s " + m.source }, m.source),
+      el("div", { class: "s " + (m.source || "measured") }, m.source || "measured"),
     ]));
   }
-  const tb = $("#targets").querySelector("tbody"); tb.innerHTML = "";
+  const tgt = $("#targets");
+  if (!tgt) return;
+  const tb = tgt.querySelector("tbody"); tb.innerHTML = "";
   tb.append(el("tr", {}, ["KPI", "Target", "Measured", "Status"].map(h => el("th", {}, h))));
-  for (const r of doc.target_assessment) {
+  for (const r of (doc && doc.target_assessment) || []) {
     const cls = r.status === "met" ? "s measured" : r.status === "not_met" ? "s simulated" : "s";
     tb.append(el("tr", { title: r.explanation }, [
       el("td", {}, r.key + " " + r.label),
@@ -606,8 +646,10 @@ async function renderStrategies() {
 async function drawTopo() {
   let doc;
   try { doc = await api("/api/topology"); } catch (e) { return; }
-  const host = $("#topo"); host.innerHTML = "";
-  const layers = doc.layers.length, W = 1000, LH = 74, H = layers * LH + 16;
+  const host = $("#topo");
+  if (!host || !doc || !doc.nodes) return;
+  host.innerHTML = "";
+  const layers = (doc.layers || []).length, W = 1000, LH = 74, H = layers * LH + 16;
   const root = svg("svg", { viewBox: `0 0 ${W} ${H}`, preserveAspectRatio: "xMidYMid meet" });
   // Coordinates are derived here, not stored server-side (TEMPO's approach), so
   // adding a node needs no layout change on the backend.
@@ -629,7 +671,9 @@ async function drawTopo() {
       d: `M${a1.x},${a1.y} C${a1.x},${mid} ${b1.x},${mid} ${b1.x},${b1.y}` }));
   }
   for (const n of doc.nodes) {
-    const p = pos[n.id], st = doc.status[n.id] || "idle";
+    const p = pos[n.id];
+    if (!p) continue;
+    const st = (doc.status || {})[n.id] || "idle";
     const g = svg("g", { class: "st-" + st, transform: `translate(${p.x - NW / 2},${p.y - NH / 2})` });
     g.append(svg("rect", { class: "n-box", width: NW, height: NH, rx: "6" }));
     g.append(svg("text", { class: "n-kind", x: 8, y: 12 }, n.kind));
@@ -642,16 +686,24 @@ async function drawTopo() {
 // --------------------------------------------------------------------- log
 function renderLog(events) {
   const box = $("#log");
+  if (!box) return;
   box.innerHTML = "";
+  if (!events.length) {
+    box.append(el("div", { class: "row" },
+      [el("span", { class: "msg" }, "no action events yet")]));
+    return;
+  }
   for (const e of events) {
-    const dyn = e.action.startsWith("dynamic_event");
-    box.append(el("div", { class: "row r-" + e.result + (dyn ? " dyn" : ""),
-      title: `${e.timestamp}  ${e.action}  ${e.message}` },
-      [el("span", { class: "seq" }, "#" + e.sequence),
-       el("span", { class: "stg" }, e.stage),
+    if (!e) continue;
+    const dyn = (e.action || "").startsWith("dynamic_event");
+    box.append(el("div", { class: "row r-" + (e.result || "ok") + (dyn ? " dyn" : ""),
+      title: `${e.timestamp || ""}  ${e.action || ""}  ${e.message || ""}` },
+      [el("span", { class: "seq" }, "#" + (e.sequence ?? "?")),
+       el("span", { class: "stg" }, e.stage || ""),
        el("span", { class: "msg" },
-         (e.item_id ? e.item_id + " · " : "") + (e.container_id ? e.container_id + " · " : "") + e.message),
-       el("span", { class: "src s " + e.source }, e.source)]));
+         (e.item_id ? e.item_id + " · " : "") +
+         (e.container_id ? e.container_id + " · " : "") + (e.message || e.action || "")),
+       el("span", { class: "src s " + (e.source || "") }, e.source || "")]));
   }
 }
 
@@ -674,21 +726,30 @@ function readSettings() {
 }
 function fillSelects(s) {
   const p = $("#s-preset");
-  if (!p.options.length) {
-    for (const x of s.presets || []) p.append(new Option(x, x));
-    p.value = (s.settings && s.settings.preset) || "mixed_pipes_dense";
-    const st = $("#s-strategy");
-    for (const x of s.strategies || []) st.append(new Option(x, x));
-    const c = $("#s-container");
-    c.append(new Option("(preset default)", ""));
-    for (const [k, v] of Object.entries(s.container_specs || {})) c.append(new Option(k, k)).title = v;
+  if (!p || p.options.length) return;
+  for (const x of s.presets || []) p.append(new Option(x, x));
+  p.value = (s.settings && s.settings.preset) || "mixed_pipes_dense";
+  const st = $("#s-strategy");
+  if (st) for (const x of s.strategies || []) st.append(new Option(x, x));
+  const c = $("#s-container");
+  if (!c) return;
+  c.append(new Option("(preset default)", ""));
+  for (const [k, v] of Object.entries(s.container_specs || {})) {
+    // Element.append() returns UNDEFINED, so the old
+    //   c.append(new Option(k, k)).title = v
+    // threw "Cannot set properties of undefined (setting 'title')" on every
+    // refresh and took the whole render down with it. Hold the option.
+    const opt = new Option(k, k);
+    opt.title = v;
+    c.append(opt);
   }
 }
 
 $("#c-approve").onclick = () => command("approve");
 $("#c-reject").onclick = () => command("reject", { reason: "operator rejected from dashboard" });
-$("#c-alt").onclick = () => command("alternative_strategy",
-  { strategy: $("#s-strategy").value === "retrievability" ? "segregation" : "retrievability" });
+// No explicit strategy: the orchestrator rotates deterministically, so pressing
+// the button repeatedly walks all three rather than toggling two.
+$("#c-alt").onclick = () => command("alternative_strategy", {});
 $("#c-inject").onclick = () => command("inject_item");
 $("#c-unavail").onclick = () => command("container_unavailable");
 $("#c-grasp").onclick = () => command("grasp_failure");
@@ -696,6 +757,8 @@ $("#c-pause").onclick = () => command("pause");
 $("#c-resume").onclick = () => command("resume");
 $("#c-step").onclick = () => command("step");
 $("#c-artifacts").onclick = () => command("write_artifacts");
+// "Generate & plan" always carries the current form, in EVERY mode: the live
+// orchestrator builds the new run from exactly these values.
 $("#c-reset").onclick = () => command("reset", readSettings());
 $("#c-strategies").onclick = renderStrategies;
 
@@ -713,17 +776,37 @@ async function refreshPlans() {
 }
 async function refreshEvents() {
   const doc = await api("/api/events?limit=150");
-  renderLog(doc.events);
-  $("#log-note").textContent = `${doc.total} events · newest first`;
+  renderLog((doc && doc.events) || []);
+  const note = $("#log-note");
+  if (note) note.textContent =
+    `${(doc && doc.total) || 0} events · newest first` +
+    (doc && doc.source ? ` · source: ${doc.source}` : "");
+}
+// Each panel refreshes INDEPENDENTLY. Previously one throw in any panel aborted
+// the whole sequence and printed "refresh failed", so a single missing field
+// blanked the entire dashboard. A panel that fails now says so in its own place
+// and the rest still update.
+const PANEL_ERRORS = {};
+async function panel(name, fn) {
+  try {
+    await fn();
+    delete PANEL_ERRORS[name];
+  } catch (e) {
+    PANEL_ERRORS[name] = e && e.message ? e.message : String(e);
+    console.warn(`[wisepack] panel '${name}' failed:`, e);
+  }
+  const box = $("#notice");
+  const keys = Object.keys(PANEL_ERRORS);
+  if (box) box.textContent = keys.length
+    ? `panel(s) unavailable: ${keys.map(k => `${k} (${PANEL_ERRORS[k]})`).join(", ")}`
+    : (STATE.notice || "");
 }
 async function refreshAll() {
-  try {
-    await refreshState();
-    await refreshPlans();
-    await refreshEvents();
-    await renderKPIs();
-    await drawTopo();
-  } catch (e) { $("#notice").textContent = "refresh failed: " + e.message; }
+  await panel("state", refreshState);
+  await panel("plans", refreshPlans);
+  await panel("events", refreshEvents);
+  await panel("kpis", renderKPIs);
+  await panel("topology", drawTopo);
 }
 
 // WebSocket is an ENHANCEMENT. If it never connects or dies, polling carries
@@ -741,7 +824,7 @@ function connectWS() {
 }
 function startPolling() {
   if (POLLING) return;
-  POLLING = setInterval(refreshState, 1000);
+  POLLING = setInterval(() => panel("state", refreshState), 1000);
 }
 
 (async function init() {
@@ -750,10 +833,10 @@ function startPolling() {
   await refreshAll();
   connectWS();
   startPolling();                       // always on: WS only reduces its work
-  setInterval(refreshPlans, 1500);
-  setInterval(refreshEvents, 2000);
-  setInterval(renderKPIs, 4000);
-  setInterval(drawTopo, 3000);
+  setInterval(() => panel("plans", refreshPlans), 1500);
+  setInterval(() => panel("events", refreshEvents), 2000);
+  setInterval(() => panel("kpis", renderKPIs), 4000);
+  setInterval(() => panel("topology", drawTopo), 3000);
 })();
 </script>
 </body>

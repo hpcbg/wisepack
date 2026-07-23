@@ -51,8 +51,11 @@ class TwinValidator(Node):
                                          qos_for(T.PLAN_STATUS))
         self.create_subscription(String, T.WASTE_ITEMS, self._on_items,
                                  qos_for(T.WASTE_ITEMS))
-        self.create_subscription(String, T.PLAN_GEOMETRY, self._on_geometry,
-                                 qos_for(T.PLAN_GEOMETRY))
+        # Subscribes to the SELECTED plan, which now carries the complete
+        # PackingPlan. The old dedicated geometry topic published the same
+        # content under a second name; one topic is one contract to keep right.
+        self.create_subscription(String, T.PLAN_SELECTED, self._on_geometry,
+                                 qos_for(T.PLAN_SELECTED))
         self.get_logger().info(
             "Digital Twin validator up — independent re-validation over DDS")
 
@@ -72,6 +75,8 @@ class TwinValidator(Node):
             return
         try:
             doc = json.loads(msg.data)
+            if not doc.get("placements"):
+                return                      # an empty plan is nothing to check
             containers = [Container.from_dict(c) for c in doc["containers"]]
             placements = [Placement.from_dict(p) for p in doc["placements"]]
         except (ValueError, KeyError) as exc:

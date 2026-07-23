@@ -49,10 +49,13 @@ info "Orion-LD      : $ORION"
 # pinning the code here that teardown crash would be reported as a validation
 # failure even when every check passed.
 FINAL_RC=0
+# Kill only the process group THIS script started. `pkill -f wisepack_` also
+# matches another checkout running concurrently on the same machine.
 cleanup() {
-    kill "${LAUNCH_PID:-0}" 2>/dev/null || true
-    pkill -f wisepack_ 2>/dev/null || true
-    wait "${LAUNCH_PID:-0}" 2>/dev/null || true
+    if [ -n "${LAUNCH_PID:-}" ]; then
+        kill -TERM "-$LAUNCH_PID" 2>/dev/null || kill "$LAUNCH_PID" 2>/dev/null || true
+        wait "$LAUNCH_PID" 2>/dev/null || true
+    fi
     exit "$FINAL_RC"
 }
 trap cleanup EXIT INT TERM
@@ -91,7 +94,7 @@ fi
 
 # ---- 2. the workflow --------------------------------------------------------
 head_ "2. WISEPACK ROS workflow"
-ros2 launch wisepack_bringup demo.launch.py \
+setsid ros2 launch wisepack_bringup demo.launch.py \
     preset:="$PRESET" seed:="$SEED" dynamic_events:=false \
     results_dir:="$RESULTS_DIR" > "$LOG" 2>&1 &
 LAUNCH_PID=$!
@@ -127,6 +130,28 @@ fi
 ROS_SEQ="$(echo_state /wisepack/action/sequence 8 | tail -1 | sed 's/[^0-9]//g')"
 [ -z "$ROS_SEQ" ] && ROS_SEQ=0
 info "action sequence on ROS 2: $ROS_SEQ"
+
+# ---- 3b. INBOUND: an NGSI-LD PATCH must reach the orchestrator --------------
+# This is the direction an external HMI uses, and it is the half that a
+# read-only check would never exercise. A plain {"value":"..."} does NOT
+# propagate to DDS — the bridge requires the nested value.data shape.
+head_ "3b. Inbound FIWARE -> ROS operator command"
+INBOUND_MARKER="wisepack-inbound-$$"
+PATCH_CODE="$(curl -s -o /dev/null -w '%{http_code}' -X PATCH \
+    "$ORION/ngsi-ld/v1/entities/urn:ngsi-ld:WISEPACKSystem:main/attrs/command" \
+    -H 'Content-Type: application/json' \
+    -d "{\"type\":\"Property\",\"value\":{\"data\":\"{\\\"command\\\":\\\"grasp_failure\\\",\\\"args\\\":{\\\"marker\\\":\\\"$INBOUND_MARKER\\\"}}\"}}" \
+    2>/dev/null)"
+if [ "$PATCH_CODE" = "204" ] || [ "$PATCH_CODE" = "207" ]; then
+    pass "NGSI-LD PATCH accepted (HTTP $PATCH_CODE)"
+else
+    fail "NGSI-LD PATCH returned HTTP $PATCH_CODE (expected 204)"
+fi
+if await_log "grasp_failure|Operator-injected grasp failure" "$LOG" 25; then
+    pass "the orchestrator acted on the command that arrived via Orion-LD"
+else
+    fail "the inbound FIWARE -> DDS -> ROS command never reached the orchestrator"
+fi
 
 # ---- 4-6. query and verify Orion-LD ----------------------------------------
 head_ "4-6. Verifying the trail in Orion-LD"
