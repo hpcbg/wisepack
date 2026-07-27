@@ -106,6 +106,15 @@ class IsaacCommandType(str, Enum):
     #: Stop whatever is in progress and fail the current item. Used when the
     #: operator rejects, pauses into a re-plan, or the orchestrator goes away.
     RUN_ABORT = "RUN_ABORT"
+    #: REBUILD THE PHYSICAL SCENE for a new scenario, and do not report ready
+    #: until it is genuinely rebuilt.
+    #:
+    #: THE SAFETY COMMAND. Generating a new software scenario does NOT reset a
+    #: physical backend: the objects from the previous run are still lying in
+    #: the container, while the new plan assumes every one of them is back at
+    #: its source pose. Without this handshake the robot is sent to pick items
+    #: that are not there, which is uncontrolled motion, not a failed pick.
+    RESET_SCENE = "RESET_SCENE"
 
 
 class IsaacState(str, Enum):
@@ -119,6 +128,13 @@ class IsaacState(str, Enum):
     """
 
     READY = "READY"                                # simulator up, scene built
+    #: Scene-reset lifecycle. SCENE_READY is the ONLY thing that re-authorises
+    #: physical execution after a new scenario is generated, and it carries the
+    #: scenario revision it rebuilt for, so it cannot satisfy a later one.
+    RESET_REQUESTED = "RESET_REQUESTED"
+    RESETTING = "RESETTING"
+    SCENE_READY = "SCENE_READY"
+    RESET_FAILED = "RESET_FAILED"
     MOVING_TO_PICK = "MOVING_TO_PICK"
     GRASPING = "GRASPING"
     LIFTING = "LIFTING"
@@ -137,6 +153,11 @@ ITEM_TERMINAL_STATES = frozenset({IsaacState.ITEM_COMPLETED, IsaacState.ITEM_FAI
 
 #: States that terminate the whole run.
 RUN_TERMINAL_STATES = frozenset({IsaacState.RUN_COMPLETED, IsaacState.RUN_FAILED})
+
+#: The scene-reset lifecycle. These concern the SCENE, not an item and not a
+#: run's execution, so they are handled on their own path.
+RESET_STATES = frozenset({IsaacState.RESET_REQUESTED, IsaacState.RESETTING,
+                          IsaacState.SCENE_READY, IsaacState.RESET_FAILED})
 
 #: Progress states, in the order a healthy item passes through them. Used by the
 #: tests to assert the simulator never reports progress backwards.
@@ -317,6 +338,10 @@ class IsaacCommand:
     seed: int = 0
     plan_id: str = ""
     total_items: int = 0
+    #: Which SCENARIO the physical scene must correspond to. Incremented by the
+    #: orchestrator whenever a new scenario is generated, so a SCENE_READY for
+    #: revision 1 can never authorise execution of revision 2.
+    scenario_revision: int = 0
     timestamp: str = field(default_factory=utc_now_iso)
     schema_version: str = SCHEMA_VERSION
 
@@ -355,6 +380,7 @@ class IsaacCommand:
             "preset": self.preset,
             "seed": int(self.seed),
             "total_items": int(self.total_items),
+            "scenario_revision": int(self.scenario_revision),
         }
 
     def to_json(self) -> str:
@@ -384,6 +410,7 @@ class IsaacCommand:
             seed=int(doc.get("seed", 0)),
             plan_id=str(doc.get("plan_id", "")),
             total_items=int(doc.get("total_items", 0)),
+            scenario_revision=int(doc.get("scenario_revision", 0)),
             timestamp=str(doc.get("timestamp", utc_now_iso())),
             schema_version=str(doc["schema_version"]),
         )
@@ -422,6 +449,10 @@ class IsaacFeedback:
     actual_pose: Optional[Pose] = None
     position_error_mm: Optional[float] = None
     container_id: Optional[str] = None
+    #: For SCENE_READY / RESET_* this is the scenario revision the physical
+    #: scene now corresponds to. The orchestrator refuses to authorise
+    #: execution until this matches the ACTIVE revision exactly.
+    scenario_revision: int = 0
     message: str = ""
     #: Free-form measurements: settle time, residual velocities, containment
     #: checks. Kept small — it rides in one std_msgs/String on DDS.
@@ -452,6 +483,7 @@ class IsaacFeedback:
             "sequence_index": self.sequence_index,
             "item_id": self.item_id,
             "container_id": self.container_id,
+            "scenario_revision": int(self.scenario_revision),
             "dimensions": self.dimensions.to_dict() if self.dimensions else None,
             "source_pose": self.source_pose.to_dict() if self.source_pose else None,
             "target_pose": self.target_pose.to_dict() if self.target_pose else None,
@@ -486,6 +518,7 @@ class IsaacFeedback:
             actual_pose=_pose_or_none(doc.get("actual_pose")),
             position_error_mm=None if error is None else float(error),
             container_id=doc.get("container_id"),
+            scenario_revision=int(doc.get("scenario_revision", 0)),
             message=str(doc.get("message", "")),
             detail=dict(doc.get("detail", {}) or {}),
             timestamp=str(doc.get("timestamp", utc_now_iso())),

@@ -124,6 +124,37 @@ class DashboardSnapshot:
     execution_backend: str = "simulated"
     execution_backend_label: str = "SIMULATED EXECUTION"
     execution_backend_detail: str = ""
+    # -- CONTROL STATE: canonical ROS/DDS, never overwritten by FIWARE ------- #
+    #
+    # THE SPLIT THAT FIXES OPERATOR LATENCY. `stage`/`approval_state` above are
+    # the DISPLAY/AUDIT view, and in FIWARE mode they are deliberately the value
+    # Orion-LD echoed back — that echo is the proof the audit path works, and it
+    # is what the source badge is about.
+    #
+    # But an operator control must not wait for that echo. The canonical
+    # workflow already reached WAIT_FOR_OPERATOR_APPROVAL on ROS/DDS; making
+    # "Approve" wait for Orion to repeat it back adds the whole DDS->NGSI-LD
+    # bridge latency plus a dashboard poll to a safety-relevant button, for no
+    # safety benefit — the authority is the orchestrator either way, and it
+    # re-checks the invariant itself when the command arrives.
+    #
+    # So: enablement reads these fields, the badge and the audit trail read the
+    # ones above, and FIWARE is never bypassed for traceability.
+    control_stage: str = "IDLE"
+    control_approval_state: str = "pending"
+    control_plan_id: Optional[str] = None
+    control_plan_valid: bool = False
+    control_finished: bool = False
+    #: An anomaly hold blocks EXECUTION, so it must also block the button that
+    #: authorises execution. Carried in the control block for the same reason as
+    #: everything else here: it is canonical ROS/DDS state, and a stale FIWARE
+    #: echo must not decide whether a safety hold is in force.
+    control_anomaly_hold: bool = False
+    control_anomaly_ack_required: bool = False
+    #: Physical-backend scene gate. None when the backend has no scene concept
+    #: (the simulated backend), so it can never block anything there.
+    control_scene_ready: Optional[bool] = None
+    control_scene_reason: str = ""
     execution_backend_known: bool = False
     isaac: Optional[Dict[str, Any]] = None
     isaac_results: List[Dict[str, Any]] = field(default_factory=list)
@@ -142,6 +173,80 @@ class DashboardSnapshot:
     @property
     def plans_ready(self) -> bool:
         return bool(self.baseline and self.optimized)
+
+    @property
+    def can_approve(self) -> bool:
+        """May the operator approve THIS plan revision, right now?
+
+        Every clause is a way the button could otherwise lie:
+
+          * the canonical workflow must actually be at the approval gate — not
+            planning, not executing, not re-planning;
+          * a selected plan must exist. A rendered plan is not enough: after a
+            re-plan the previous geometry is still on screen for a moment;
+          * that plan must still be PENDING. `approved`, `rejected` and
+            `superseded` all mean this decision has already been made, and
+            `superseded` is exactly the stale-revision case;
+          * the plan must be VALID. Approving a plan the Digital Twin rejected
+            would authorise physical action on geometry that failed validation.
+        """
+        return not self.approval_block_reason
+
+    @property
+    def approval_block_reason(self) -> str:
+        """WHY approval is unavailable, in the operator's words. "" when it is.
+
+        Every disabled state must be explainable. Showing "waiting for your
+        decision" while every decision control is dead, with no reason given, is
+        the specific failure this exists to prevent.
+        """
+        if self.control_anomaly_hold:
+            return ("an anomaly is holding execution — acknowledge it before "
+                    "authorising anything")
+        if self.control_scene_ready is False:
+            # Approving authorises PHYSICAL action, and the physical scene does
+            # not yet correspond to this scenario.
+            return (self.control_scene_reason
+                    or "the physical scene is not ready for this scenario")
+        if self.control_finished:
+            return "the run has finished"
+        if self.control_stage != "WAIT_FOR_OPERATOR_APPROVAL":
+            return (f"the workflow is at {self.control_stage}, not at the "
+                    "approval gate")
+        if not self.control_plan_id:
+            return "there is no selected plan to approve"
+        if self.control_approval_state == "approved":
+            return "this plan is already approved"
+        if self.control_approval_state == "superseded":
+            return ("this plan was superseded by a re-plan — review the new "
+                    "one")
+        if self.control_approval_state != "pending":
+            return f"the plan is {self.control_approval_state}"
+        if not self.control_plan_valid:
+            return ("the Digital Twin did not validate this plan, so it cannot "
+                    "be authorised")
+        return ""
+
+    def control_state(self) -> Dict[str, Any]:
+        """What the operator controls are enabled from — ROS/DDS only."""
+        return {
+            "stage": self.control_stage,
+            "approval_state": self.control_approval_state,
+            "plan_id": self.control_plan_id,
+            "plan_valid": self.control_plan_valid,
+            "finished": self.control_finished,
+            "can_approve": self.can_approve,
+            "block_reason": self.approval_block_reason,
+            "anomaly_hold": self.control_anomaly_hold,
+            "anomaly_ack_required": self.control_anomaly_ack_required,
+            "scene_ready": self.control_scene_ready,
+            "scene_reason": self.control_scene_reason,
+            # Same revision guard for the two other plan-scoped decisions.
+            "can_reject": self.can_approve,
+            "can_alternative": (not self.control_finished
+                                and bool(self.control_plan_id)),
+            "source": "ros",
+        }
 
     def badge(self) -> Dict[str, Any]:
         """The header badge. Never claims a source the data did not come from."""
@@ -214,6 +319,7 @@ class DashboardSnapshot:
             "current_container_id": self.current_container_id,
             "progress_pct": round(self.progress_pct, 1),
             "approval_state": self.approval_state,
+            "control": self.control_state(),
             "readiness": self.readiness,
             "auto_step": self.auto_step,
             "scenario": self.scenario,
@@ -455,6 +561,13 @@ class SimSnapshotProvider(DashboardSnapshotProvider):
                 snap.selected = engine.selected.to_dict()
                 snap.selected_plan_id = engine.selected.plan_id
                 snap.approval_state = engine.selected.approval_state.value
+                snap.control_plan_id = engine.selected.plan_id
+                snap.control_approval_state = engine.selected.approval_state.value
+                snap.control_plan_valid = bool(engine.selected.is_valid)
+            snap.control_stage = engine.stage.value
+            snap.control_finished = engine.finished
+            snap.control_anomaly_hold = bool(engine.anomaly_hold)
+            snap.control_anomaly_ack_required = bool(engine.anomaly_ack_required)
             snap.selection_reason = engine.selection_reason
 
             # sim mode drives the engine in THIS process, and it always uses the
@@ -571,6 +684,16 @@ class RosSnapshotProvider(DashboardSnapshotProvider):
             snap.execution_backend_known = True
             snap.isaac = backend_doc.get("isaac")
             snap.visualization = backend_doc.get("visualization")
+            isaac = backend_doc.get("isaac") or {}
+            if "scene_ready" in isaac:
+                snap.control_scene_ready = bool(isaac.get("scene_ready"))
+                snap.control_scene_reason = str(isaac.get("reset_failed_reason") or "")
+                if not snap.control_scene_ready and not snap.control_scene_reason:
+                    snap.control_scene_reason = (
+                        "the physical scene is being rebuilt for this scenario"
+                        if isaac.get("reset_in_progress")
+                        else "the physical scene has not been rebuilt for this "
+                             "scenario yet")
         snap.isaac_results = list(mirror.get("isaac_results") or [])
 
         summary = mirror.get("plan_summary") or {}
@@ -579,6 +702,22 @@ class RosSnapshotProvider(DashboardSnapshotProvider):
         if snap.selected:
             snap.selected_plan_id = snap.selected.get("plan_id", snap.selected_plan_id)
             snap.approval_state = snap.selected.get("approval_state", "pending")
+
+        # CONTROL STATE, from the canonical ROS topics and nothing else. Set
+        # here in the shared base so FiwareSnapshotProvider — which subclasses
+        # this — inherits it and then overwrites only the DISPLAY fields.
+        snap.control_stage = snap.stage
+        snap.control_finished = snap.finished
+        if snap.selected:
+            snap.control_plan_id = snap.selected.get("plan_id")
+            snap.control_approval_state = snap.selected.get("approval_state",
+                                                            "pending")
+            # `is_valid` is computed by the domain model and published with the
+            # plan, so the dashboard does not re-derive validity it cannot see.
+            snap.control_plan_valid = bool(snap.selected.get("is_valid", False))
+        anomaly = mirror.get("anomaly") or {}
+        snap.control_anomaly_hold = bool(anomaly.get("hold", False))
+        snap.control_anomaly_ack_required = bool(anomaly.get("ack_required", False))
 
         # WATCHDOG. DDS-level liveliness is unusable in this deployment (see
         # qos.watchdog_subscribe_qos), so a stalled heartbeat counter is what

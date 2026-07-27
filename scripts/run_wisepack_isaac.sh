@@ -111,6 +111,57 @@ ISAAC_ARGS=(--preset "$PRESET" --seed "$SEED")
 [ "$HEADLESS" = "1" ] && ISAAC_ARGS+=(--headless)
 ISAAC_ARGS+=("$@")
 
+# --- how the operator will WATCH this run ----------------------------------
+# ONE variable decides the whole viewing configuration, because the individual
+# switches interact: WebRTC needs headless, desktop needs a display, and "none"
+# needs neither. Setting them separately is how you end up asking for a GUI
+# stream on a machine with no display and getting neither.
+#
+#   desktop  Isaac opens a window on the host display; watch it with your own
+#            remote-desktop tool (NoMachine, Sunshine/Moonlight). No stream.
+#   webrtc   headless + Isaac's WebRTC livestream. No window.
+#   none     headless, no stream. Telemetry only.
+VIEW_MODE="${WISEPACK_ISAAC_VIEW_MODE:-}"
+if [ -z "$VIEW_MODE" ]; then
+    # Infer from the older switches so existing invocations keep working.
+    if [ "${WISEPACK_ISAAC_STREAMING:-0}" = "1" ]; then VIEW_MODE="webrtc"
+    elif [ "$HEADLESS" = "0" ]; then VIEW_MODE="desktop"
+    else VIEW_MODE="none"; fi
+fi
+
+case "$VIEW_MODE" in
+    desktop)
+        if [ -z "${DISPLAY:-}" ] && [ -z "${WAYLAND_DISPLAY:-}" ]; then
+            echo "$LOG ERROR: view mode 'desktop' needs a display, and neither" >&2
+            echo "$LOG   DISPLAY nor WAYLAND_DISPLAY is set. Either run where a" >&2
+            echo "$LOG   desktop session exists, or use WISEPACK_ISAAC_VIEW_MODE=webrtc." >&2
+            exit 8
+        fi
+        HEADLESS=0
+        WISEPACK_ISAAC_STREAMING=0
+        ;;
+    webrtc)
+        # Isaac Sim 6.0.1 captures the application framebuffer for the stream and
+        # is run headless for it; a GUI window is not additionally opened.
+        HEADLESS=1
+        WISEPACK_ISAAC_STREAMING=1
+        ;;
+    none)
+        HEADLESS=1
+        WISEPACK_ISAAC_STREAMING=0
+        ;;
+    *)
+        echo "$LOG ERROR: unknown WISEPACK_ISAAC_VIEW_MODE='$VIEW_MODE'." >&2
+        echo "$LOG   expected one of: desktop | webrtc | none" >&2
+        exit 8 ;;
+esac
+export WISEPACK_ISAAC_HEADLESS="$HEADLESS"
+
+# Rebuild the argument list now that the view mode has settled headlessness.
+ISAAC_ARGS=(--preset "$PRESET" --seed "$SEED")
+[ "$HEADLESS" = "1" ] && ISAAC_ARGS+=(--headless)
+ISAAC_ARGS+=("$@")
+
 # --- WebRTC livestreaming (opt-in) -----------------------------------------
 STREAMING="${WISEPACK_ISAAC_STREAMING:-0}"
 STREAM_HOST="${WISEPACK_ISAAC_STREAM_HOST:-127.0.0.1}"
@@ -231,6 +282,28 @@ export PYTHONUNBUFFERED=1
 export WISEPACK_PRESET="$PRESET"
 export WISEPACK_SEED="$SEED"
 [ -n "${WISEPACK_RESULTS_DIR:-}" ] && export WISEPACK_RESULTS_DIR
+
+# --- resolved configuration, printed once ----------------------------------
+# Everything an operator needs to know to find the simulation, and nothing that
+# should not be published: no secrets and never this host's SSH port.
+echo "$LOG ----------------------------------------------------------------"
+echo "$LOG  view mode     : $VIEW_MODE"
+echo "$LOG  headless      : $([ "$HEADLESS" = "1" ] && echo yes || echo no)"
+echo "$LOG  DISPLAY       : ${DISPLAY:-<none>}"
+echo "$LOG  streaming     : $([ "$STREAMING" = "1" ] && echo enabled || echo disabled)"
+if [ "$STREAMING" = "1" ]; then
+    echo "$LOG  advertised host: $STREAM_HOST"
+    echo "$LOG  signalling    : ${SIGNAL_PORT}/TCP"
+    echo "$LOG  media         : ${STREAM_PORT}/UDP"
+    echo "$LOG  watch it with : NVIDIA Isaac Sim WebRTC Streaming Client -> $VIEWER_URL"
+    echo "$LOG                  (a browser cannot display this stream)"
+elif [ "$VIEW_MODE" = "desktop" ]; then
+    echo "$LOG  watch it on   : the host desktop (${DISPLAY:-?}) via your own"
+    echo "$LOG                  NoMachine / Sunshine+Moonlight / VNC session"
+else
+    echo "$LOG  watch it via  : telemetry only — no video in this mode"
+fi
+echo "$LOG ----------------------------------------------------------------"
 
 exec "$ISAAC_ROOT/python.sh" "$REPO/simulators/isaac/wisepack_isaac.py" \
     "${ISAAC_ARGS[@]}"

@@ -59,6 +59,7 @@ from wisepack_core.artifacts import (                              # noqa: E402
     write_validation_report,
 )
 from wisepack_core.domain import Strategy                          # noqa: E402
+from wisepack_core.execution import physical_presets              # noqa: E402
 from wisepack_core.events import (                                 # noqa: E402
     DynamicEvent, DynamicEventType, Stage,
 )
@@ -110,6 +111,10 @@ class DemoState:
         self.fiware_connected: Optional[bool] = None
         self.fiware_last_error = ""
         self.notice = ""
+        #: True once the operator has edited the draft. Until then the draft
+        #: tracks the active run; afterwards the operator owns it and no poll
+        #: may overwrite their selection.
+        self.settings_touched = False
         self.settings: Dict[str, Any] = {
             "preset": "mixed_pipes_dense",
             "seed": 42,
@@ -492,26 +497,66 @@ def api_state():
     scenario = snap.scenario or {}
     active_preset = scenario.get("preset")
     active_seed = scenario.get("seed")
-    if active_preset:
-        settings = {**settings, "preset": active_preset}
-    if active_seed is not None:
-        settings["seed"] = active_seed
 
-    # And while a run is live or waiting for a decision, the controls are
-    # READ-ONLY. Letting an operator scroll the preset away from the scenario
-    # they are being asked to approve is precisely how a screen comes to
-    # misrepresent what is about to be executed.
-    locked_stages = ("WAIT_FOR_OPERATOR_APPROVAL", "PICK_ITEM", "VERIFY_PICK",
-                     "PLACE_ITEM", "VERIFY_PLACEMENT", "UPDATE_CONTAINER_STATE",
-                     "NEXT_ITEM", "REPLAN")
-    settings_locked = snap.stage in locked_stages
+    # The draft is seeded from the active run ONLY while the operator has not
+    # chosen anything yet. Overwriting it on every poll — which is what this
+    # did — meant a selection was reverted within a second of being made, and
+    # made the dropdown feel broken even when it was not locked.
+    if not STATE.settings_touched:
+        if active_preset:
+            settings = {**settings, "preset": active_preset}
+        if active_seed is not None:
+            settings = {**settings, "seed": active_seed}
+
+    # ACTIVE SCENARIO vs DRAFT — two different things, and conflating them made
+    # the preset dropdown unusable in every live mode.
+    #
+    # Every launcher starts a run automatically, so the workflow is at
+    # WAIT_FOR_OPERATOR_APPROVAL within seconds of the page loading. The controls
+    # were locked in exactly that state, which meant the operator never got a
+    # chance to choose a preset at all — the UI said "cannot be changed until it
+    # finishes or is reset" from the moment it appeared.
+    #
+    # The controls are therefore a DRAFT for the NEXT run. They never mutate the
+    # running scenario: only "Generate & plan" does, and only when the operator
+    # asks for it. The header and the Digital Twin keep showing the ACTIVE
+    # scenario, so the two are always distinguishable.
+    running_stages = ("WAIT_FOR_OPERATOR_APPROVAL", "PICK_ITEM", "VERIFY_PICK",
+                      "PLACE_ITEM", "VERIFY_PLACEMENT", "UPDATE_CONTAINER_STATE",
+                      "NEXT_ITEM", "REPLAN")
+    run_active = snap.control_stage in running_stages
     payload.update({
+        # The draft the controls edit. Seeded from the active run the first time
+        # the page loads; after that the browser owns it (see the frontend), so
+        # a poll can never overwrite a selection mid-edit.
         "settings": settings,
-        "settings_locked": settings_locked,
-        "settings_locked_reason": (
-            "a run is active or awaiting your decision — the scenario controls "
-            "show the running scenario and cannot be changed until it finishes "
-            "or is reset" if settings_locked else ""),
+        # Presets this backend can actually execute. The Isaac backend is a
+        # bench-scale Panda: offering it the 40-item industrial benchmark would
+        # be offering a run that cannot physically happen.
+        # Which presets the ACTIVE backend can physically instantiate and reach.
+        # The dashboard marks the rest unavailable with the reason, rather than
+        # offering a run whose first pick is impossible.
+        "preset_compatibility": (physical_presets()
+                                 if snap.execution_backend == "isaac" else {}),
+        "default_preset": ("isaac_cylinders_smoke"
+                           if snap.execution_backend == "isaac"
+                           else "mixed_pipes_dense"),
+        # Explicitly NOT locked any more. Kept in the payload because the
+        # frontend and the tests both assert on it.
+        "settings_locked": False,
+        "settings_locked_reason": "",
+        # Is a run in progress or awaiting a decision? Not a lock — a reason to
+        # ASK before discarding it.
+        "run_active": run_active,
+        "run_active_reason": (
+            "a run is active or awaiting your decision — generating a new "
+            "scenario will discard it" if run_active else ""),
+        # What is ACTUALLY running, for the header and the Digital Twin.
+        "active_scenario": {
+            "preset": active_preset,
+            "seed": active_seed,
+            "scenario_id": scenario.get("scenario_id"),
+        },
         "active_preset": active_preset,
         "presets": sorted(PRESETS),
         "container_specs": {k: v["description"] for k, v in CONTAINER_SPECS.items()},
@@ -600,6 +645,22 @@ def api_execution():
         "max_position_error_mm": round(max(errors), 1) if errors else None,
     }
     return payload
+
+
+@app.post("/api/draft")
+def api_draft(payload: Dict[str, Any]):
+    """Record the operator's DRAFT scenario for the next run.
+
+    Never touches the running scenario — that only changes on an explicit
+    `reset` ("Generate & plan"). Recording it server-side is what lets the draft
+    survive a page switch to Container Inventory or Diagnostics and back.
+    """
+    with STATE.lock:
+        for key, value in (payload or {}).items():
+            if key in STATE.settings:
+                STATE.settings[key] = value
+        STATE.settings_touched = True
+        return {"ok": True, "settings": dict(STATE.settings)}
 
 
 @app.get("/api/visualization")
@@ -747,6 +808,27 @@ async def api_command(payload: Dict[str, Any]):
     """
     command = str(payload.get("command", "")).strip()
     args = payload.get("args", {}) or {}
+
+    # STALE-REVISION GUARD, enforced here and not only in the UI.
+    #
+    # The dashboard pins the plan_id a decision was taken against. If the plan
+    # has been replaced since — a re-plan, an injected item, a strategy change —
+    # the operator is answering a question that no longer exists, and approving
+    # a superseded plan is exactly the authorisation mistake the gate exists to
+    # prevent. A disabled button is a courtesy; this is the check.
+    if command in ("approve", "reject") and args.get("plan_id"):
+        snap = _provider().snapshot()
+        current = snap.control_plan_id
+        if current and args["plan_id"] != current:
+            raise HTTPException(
+                status_code=409,
+                detail=(f"that decision was taken against plan "
+                        f"{args['plan_id']}, but the current plan is {current}. "
+                        "The plan changed while you were deciding — review the "
+                        "new one and decide again."))
+        # The orchestrator's command vocabulary does not take a plan_id; it is a
+        # dashboard-side revision token only, so it is dropped before publishing.
+        args = {k: v for k, v in args.items() if k != "plan_id"}
 
     if SOURCE != "sim":
         from ros_observer import publish_operator_command           # noqa: PLC0415

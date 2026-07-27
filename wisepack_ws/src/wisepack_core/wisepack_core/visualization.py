@@ -139,6 +139,16 @@ class VisualizationDescriptor:
     #: therefore links out instead of rendering an iframe that could only ever
     #: stay blank.
     embeddable: bool = False
+    #: Transport ports, reported separately. A viewer needs BOTH for WebRTC:
+    #: negotiation is TCP, media is UDP. Collapsing them into one "endpoint"
+    #: hides why a TCP-only tunnel produces a connection but no picture.
+    signal_port: Optional[int] = None
+    media_port: Optional[int] = None
+    #: THREE DIFFERENT FACTS, deliberately not one. A listening port is not an
+    #: attached client, and an attached client is not verified video.
+    #: None = not reported (the backend cannot tell), not False.
+    client_connected: Optional[bool] = None
+    frames_verified: bool = False
     #: Operator-facing explanation. Always set for UNAVAILABLE and ERROR, so the
     #: dashboard never has to invent a reason.
     message: str = ""
@@ -173,6 +183,10 @@ class VisualizationDescriptor:
             "camera_name": self.camera_name,
             "interactive": bool(self.interactive),
             "embeddable": bool(self.embeddable),
+            "signal_port": self.signal_port,
+            "media_port": self.media_port,
+            "client_connected": self.client_connected,
+            "frames_verified": bool(self.frames_verified),
             "message": self.message,
             "client_hint": self.client_hint,
             "detail": dict(self.detail),
@@ -209,6 +223,10 @@ class VisualizationDescriptor:
             camera_name=doc.get("camera_name"),
             interactive=bool(doc.get("interactive", False)),
             embeddable=bool(doc.get("embeddable", False)),
+            signal_port=doc.get("signal_port"),
+            media_port=doc.get("media_port"),
+            client_connected=doc.get("client_connected"),
+            frames_verified=bool(doc.get("frames_verified", False)),
             message=str(doc.get("message", "")),
             client_hint=str(doc.get("client_hint", "")),
             detail=dict(doc.get("detail", {}) or {}),

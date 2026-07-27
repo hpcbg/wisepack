@@ -101,6 +101,7 @@ class IsaacRosBridge(Node):
     def publish(self, state: IsaacState, run_id: str, *,
                 item_id: Optional[str] = None, sequence_index: int = -1,
                 container_id: Optional[str] = None,
+                scenario_revision: int = 0,
                 dimensions=None, source_pose: Optional[Pose] = None,
                 target_pose: Optional[Pose] = None,
                 actual_pose: Optional[Pose] = None,
@@ -111,6 +112,7 @@ class IsaacRosBridge(Node):
         feedback = IsaacFeedback(
             state=state, run_id=run_id, item_id=item_id,
             sequence_index=sequence_index, container_id=container_id,
+            scenario_revision=scenario_revision,
             dimensions=dimensions, source_pose=source_pose,
             target_pose=target_pose, actual_pose=actual_pose,
             position_error_mm=position_error_mm, message=message,

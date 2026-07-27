@@ -225,7 +225,16 @@ def describe(config: StreamingConfig, *,
             "NOTE: Kit binds this port on ALL interfaces, so restricting access "
             "is a firewall decision — the stream is unauthenticated."),
         detail={**(extra or {}), "stream": config.to_dict(),
-                "required_extensions": list(REQUIRED_EXTENSIONS)})
+                "required_extensions": list(REQUIRED_EXTENSIONS)},
+        # Ports are surfaced separately because the operator needs BOTH: the
+        # client negotiates on TCP and receives media on UDP, so an SSH TCP
+        # tunnel alone cannot carry the video.
+        signal_port=config.signal_port,
+        media_port=config.stream_port,
+        # "the TCP port is listening" is NOT "a client is attached" and is NOT
+        # "frames were rendered". None means not reported rather than false.
+        client_connected=None,
+        frames_verified=False)
 
 
 def desktop_descriptor(display: str, note: str = "") -> VisualizationDescriptor:

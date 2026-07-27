@@ -132,10 +132,22 @@ class IsaacExecutionBridge:
         #: diagnostic surface, not a second audit trail.
         self.results: list = []
         self._degraded = False
+        #: SCENE GATE. The scenario revision the PHYSICAL scene is known to
+        #: correspond to, and the one currently required. Until they match,
+        #: nothing may be approved and nothing may be picked — the objects from
+        #: the previous run are still lying in the container while the new plan
+        #: assumes they are back at their source poses.
+        self.scene_revision: int = -1
+        self.required_revision: int = 0
+        self.reset_in_progress: bool = False
+        self.reset_failed_reason: str = ""
+        self._reset_requested_at: float = 0.0
+        self.reset_timeout_s: float = 180.0
         #: The backend-neutral visualization descriptor the simulator reported
         #: with READY. Passed through verbatim — the orchestrator does not know
         #: what a WebRTC port is and must not learn.
         self.visualization: Optional[Dict[str, Any]] = None
+        self.simulator_version: Optional[str] = None
 
     # ------------------------------------------------------------------ #
     # Introspection (the dashboard diagnostics read this)
@@ -154,7 +166,66 @@ class IsaacExecutionBridge:
             "items_completed": self.gate.completed_count,
             "results": list(self.results[-12:]),
             "visualization": self.visualization,
+            "simulator_version": self.simulator_version,
+            "scene_revision": self.scene_revision,
+            "required_revision": self.required_revision,
+            "scene_ready": self.scene_ready,
+            "reset_in_progress": self.reset_in_progress,
+            "reset_failed_reason": self.reset_failed_reason,
         }
+
+    @property
+    def scene_ready(self) -> bool:
+        """Is the PHYSICAL scene rebuilt for the scenario now being executed?
+
+        Exact equality, not `>=`: a SCENE_READY for an older revision must never
+        authorise a newer scenario, and a stale simulator replaying an old
+        SCENE_READY must not satisfy the gate either.
+        """
+        return (not self.reset_in_progress
+                and not self.reset_failed_reason
+                and self.scene_revision == self.required_revision)
+
+    def scene_block_reason(self) -> str:
+        """Why physical execution is not authorised, in the operator's words."""
+        if self.reset_failed_reason:
+            return f"the simulator could not rebuild the scene: {self.reset_failed_reason}"
+        if self.reset_in_progress:
+            return "the simulator is rebuilding the physical scene"
+        if self.scene_revision != self.required_revision:
+            return ("the physical scene has not been rebuilt for this scenario "
+                    "yet — the previous run's objects may still be in the "
+                    "container")
+        return ""
+
+    def request_scene_reset(self, engine, revision: int) -> None:
+        """Ask the backend to rebuild its scene for `revision`, and gate on it.
+
+        Called whenever a NEW scenario is generated. Generating a new software
+        scenario is NOT sufficient to reset a physical backend, and treating it
+        as sufficient is what let the arm be sent after objects that were
+        already sitting in the container.
+        """
+        self.required_revision = int(revision)
+        self.reset_in_progress = True
+        self.reset_failed_reason = ""
+        self._reset_requested_at = time.monotonic()
+        self._in_flight = None
+        self._in_flight_command = None
+        scenario = engine.scenario
+        self._publish(IsaacCommand(
+            command=IsaacCommandType.RESET_SCENE,
+            run_id=engine.run_id,
+            preset=scenario.preset if scenario else engine.config.preset,
+            seed=int(scenario.seed if scenario else engine.config.seed),
+            total_items=len(scenario.items) if scenario else 0,
+            scenario_revision=self.required_revision))
+        engine.note_physical_progress(
+            None, "isaac_scene_reset_requested", None, None,
+            f"physical scene rebuild requested for scenario revision "
+            f"{self.required_revision}",
+            details={"scenario_revision": self.required_revision,
+                     "preset": scenario.preset if scenario else ""})
 
     # ------------------------------------------------------------------ #
     # Outbound
@@ -185,6 +256,14 @@ class IsaacExecutionBridge:
         self._in_flight_command = None
         self._run_opened_at = time.monotonic()
         self.results = []
+        # THE INITIAL SCENE IS TRUSTED, and only the initial one. Isaac builds
+        # its scene at startup from the (preset, seed) the launcher passed —
+        # the same pair this run was planned from — and warns loudly if they
+        # disagree. Every LATER scenario needs an explicit rebuild, which is
+        # what request_scene_reset gates.
+        if self.scene_revision < 0:
+            self.required_revision = int(getattr(engine, "scenario_revision", 0))
+            self.scene_revision = self.required_revision
 
         scenario = engine.scenario
         self._publish(IsaacCommand(
@@ -255,6 +334,11 @@ class IsaacExecutionBridge:
         if not self.simulator_ready:
             return self._await_simulator(engine)
 
+        # THE SCENE GATE. Nothing may be picked until the physical scene has
+        # been rebuilt for THIS scenario revision.
+        if not self.scene_ready:
+            return self._await_scene(engine)
+
         if self._in_flight is not None:
             self._check_item_timeout(engine)
             return True
@@ -273,6 +357,35 @@ class IsaacExecutionBridge:
             f"Check that the simulator is running on the host with the same "
             f"ROS_DOMAIN_ID, and that {T.ISAAC_FEEDBACK} has a publisher "
             f"(`ros2 topic info {T.ISAAC_FEEDBACK}`).")
+        return False
+
+    def _await_scene(self, engine) -> bool:
+        """Wait for SCENE_READY, bounded. On timeout, HOLD — never proceed.
+
+        Proceeding with stale scene contents is the failure this whole handshake
+        exists to prevent, so a timeout degrades the run rather than continuing.
+        """
+        if self.reset_failed_reason:
+            if not self._degraded:
+                self._degraded = True
+                engine.enter_degraded(
+                    f"Isaac Sim could not rebuild the physical scene: "
+                    f"{self.reset_failed_reason}. Execution is HELD — the "
+                    "previous run's objects may still be in the container.")
+            return False
+        waited = time.monotonic() - self._reset_requested_at
+        if waited < self.reset_timeout_s:
+            return True
+        if not self._degraded:
+            self._degraded = True
+            self.reset_failed_reason = (
+                f"no SCENE_READY for revision {self.required_revision} within "
+                f"{self.reset_timeout_s:.0f}s")
+            engine.enter_degraded(
+                f"Isaac Sim did not report SCENE_READY for scenario revision "
+                f"{self.required_revision} within {self.reset_timeout_s:.0f}s. "
+                "Execution is HELD rather than run against a stale scene. "
+                "Restart the simulator, or check its log.")
         return False
 
     def _check_item_timeout(self, engine) -> None:
@@ -367,6 +480,7 @@ class IsaacExecutionBridge:
             preset=scenario.preset if scenario else "",
             seed=int(scenario.seed if scenario else 0),
             total_items=len(scenario.items) if scenario else 0,
+            scenario_revision=self.required_revision,
         )
 
     # ------------------------------------------------------------------ #
@@ -412,6 +526,7 @@ class IsaacExecutionBridge:
             # restarts with streaming newly enabled must be able to correct a
             # previously-published "unavailable".
             self.visualization = feedback.detail.get("visualization")
+            self.simulator_version = feedback.detail.get("simulator_version")
             if not self.simulator_ready:
                 self.simulator_ready = True
                 self.node.get_logger().info(
@@ -429,6 +544,11 @@ class IsaacExecutionBridge:
         # non-READY report fail to apply — the orchestrator saw the simulator
         # come up and then heard nothing more, and eventually timed the item out
         # while the arm had in fact completed it. Measured end to end.
+        if state in (IsaacState.RESET_REQUESTED, IsaacState.RESETTING,
+                     IsaacState.SCENE_READY, IsaacState.RESET_FAILED):
+            self._on_reset_state(engine, feedback)
+            return
+
         if feedback.is_run_terminal:
             self._on_run_terminal(engine, feedback)
             return
@@ -446,6 +566,44 @@ class IsaacExecutionBridge:
             feedback.message or f"Isaac Sim: {state.value}",
             robot_state=robot_state_for_isaac_state(state),
             details={**feedback.detail, "isaac_state": state.value})
+        self.node.publish_execution()
+
+    def _on_reset_state(self, engine, feedback: IsaacFeedback) -> None:
+        """Track the scene-rebuild lifecycle and open the gate on SCENE_READY."""
+        state = feedback.state
+        if state is IsaacState.SCENE_READY:
+            if feedback.scenario_revision != self.required_revision:
+                # A SCENE_READY for a DIFFERENT revision must not open the gate.
+                self.node.get_logger().warn(
+                    f"{LOG} ignoring SCENE_READY for revision "
+                    f"{feedback.scenario_revision}; this run needs "
+                    f"{self.required_revision}")
+                return
+            self.scene_revision = feedback.scenario_revision
+            self.reset_in_progress = False
+            self.reset_failed_reason = ""
+            self.gate.adopt(engine.run_id)     # a rebuilt scene is a fresh run
+            self.node.get_logger().info(
+                f"{LOG} scene rebuilt for revision {self.scene_revision}")
+            engine.note_physical_progress(
+                None, "isaac_scene_ready", None, None,
+                f"physical scene rebuilt for scenario revision "
+                f"{self.scene_revision}",
+                details={**feedback.detail,
+                         "scenario_revision": self.scene_revision})
+        elif state is IsaacState.RESET_FAILED:
+            self.reset_in_progress = False
+            self.reset_failed_reason = feedback.message or "reset failed"
+            engine.note_physical_progress(
+                None, "isaac_scene_reset_failed", None, None,
+                f"physical scene rebuild FAILED: {self.reset_failed_reason}",
+                details=dict(feedback.detail))
+        else:
+            self.reset_in_progress = True
+            engine.note_physical_progress(
+                None, f"isaac_scene_{state.value.lower()}", None, None,
+                feedback.message or f"Isaac Sim: {state.value}",
+                details=dict(feedback.detail))
         self.node.publish_execution()
 
     def _on_item_terminal(self, engine, feedback: IsaacFeedback) -> None:

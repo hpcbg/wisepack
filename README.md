@@ -1236,7 +1236,9 @@ Schema `wisepack-isaac/1.0`, defined once in `wisepack_core/isaac_contract.py`
 and imported by **both** ends from that same file. A mismatched schema MAJOR is
 refused rather than best-effort parsed. Feedback states — `READY`,
 `MOVING_TO_PICK`, `GRASPING`, `LIFTING`, `MOVING_TO_CONTAINER`, `RELEASING`,
-`SETTLING`, `ITEM_COMPLETED`, `ITEM_FAILED`, `RUN_COMPLETED`, `RUN_FAILED` — map
+`SETTLING`, `ITEM_COMPLETED`, `ITEM_FAILED`, `RUN_COMPLETED`, `RUN_FAILED`, plus
+the scene lifecycle `RESET_REQUESTED`, `RESETTING`, `SCENE_READY`,
+`RESET_FAILED` — map
 onto the **existing** workflow stages, so the timeline, the audit trail and the
 FIWARE `stage` attribute keep their vocabulary. There is no parallel
 dashboard-only state machine.
@@ -1250,6 +1252,69 @@ joint. A real robot cell answering these two topics is a drop-in replacement, an
 `wisepack_orchestration/isaac_bridge.py` would not change: it contains no
 simulator imports. Nothing outside `simulators/isaac/` imports `isaacsim`,
 `omni`, `carb` or `pxr`, and a test asserts it.
+
+### Starting a new scenario: the scene-reset handshake
+
+Generating a new scenario changes the *software* world. Isaac's world is
+physical, and it does not change by itself: the previous run's cylinders are
+still lying in the container, and a new plan assumes every one of them is back at
+its source pose. Dispatching against that sends the arm after objects that are
+not there.
+
+So a new scenario is a **command**, not a redraw:
+
+```
+operator: "Reset run & generate"
+  orchestrator ──RESET_SCENE(scenario_revision=N)──▶ Isaac
+  Isaac        ──RESETTING───────────────────────────▶
+               stop the arm · release the grasp joint · home the Panda
+               stop the timeline · delete every item · rebuild from (preset,seed)
+               play · re-home · zero velocities · settle · PROVE it is usable
+  Isaac        ──SCENE_READY(scenario_revision=N)────▶
+  orchestrator: approval and picking unblock — for revision N exactly
+```
+
+Until `SCENE_READY` arrives **for that exact revision**, the orchestrator refuses
+approval and refuses to dispatch, and says which of the two it is waiting for. A
+reset that does not complete within its budget becomes `RESET_FAILED` → hold and
+`DEGRADED`; it never silently proceeds. Every pick is additionally sanity-checked
+before any motion: right revision, item exists, no grasp joint still attached,
+pose readable, and the item is not already sitting in the destination container.
+
+**The stage is mutated only while the timeline is stopped.** This is the
+load-bearing detail. Deleting a rigid body while physics is playing invalidates
+the PhysX *tensor simulation view* for the whole stage — the Franka articulation
+included — and the first live attempt did exactly that: items rebuilt correctly,
+`SCENE_READY` published, and the very next read of the arm's joints raised
+`Simulation view object is invalidated`. A scene that reports ready while the
+robot is unusable is the failure this handshake exists to prevent, so the order
+is stop → mutate → play, and `SCENE_READY` is published only after the rebuilt
+world has been *proven* usable (joints readable and finite, every item's pose
+readable, no grasp joint surviving).
+
+In-process reset is therefore **enabled** — "Reset run & generate" works in the
+Isaac modes and no launcher restart is required. That is not an assumption; it is
+what the bounded live validation measures:
+
+```bash
+./scripts/run_wisepack_isaac.sh --reset-test --max-runtime 900
+```
+
+It executes one item for real, requests a new scenario, and asserts on the
+rebuilt world. Latest run:
+
+| check | result |
+|---|---|
+| item placed in the container before the reset | 1 |
+| container cleared by the reset | yes |
+| source objects respawned at their source poses | 4 / 4 |
+| Panda returned home | max joint error 0.001 rad |
+| grasp joint released | released |
+| first item of the *new* run executed | completed, settled in the container |
+
+The scenario dropdown is restricted to presets a physical cell can actually
+execute (≤ 8 items, ≤ 78 mm diameter); the 40-item benchmark is a software
+scenario and stays one.
 
 ### Coordinates
 
@@ -1310,9 +1375,80 @@ timestamps, measured poses. Rendered frames never travel on those paths: they
 would bloat the regulatory record with data that has no audit value and make the
 dashboard's poll loop as slow as the renderer. The picture comes over WebRTC.
 
+#### Choose how to watch Isaac
+
+One variable picks the whole configuration, because the individual switches
+interact — WebRTC needs headless, desktop needs a display. Copy-paste one of
+these.
+
+**A. GUI on the host desktop (NoMachine / Sunshine+Moonlight)**
+
+```bash
+WISEPACK_ISAAC_VIEW_MODE=desktop \
+WISEPACK_ISAAC_HEADLESS=0 \
+./run_wisepack_dashboard.sh isaac
+```
+
+An Isaac Sim window opens on the active display. **No WebRTC variables and no
+stream ports are involved.** Watch the host desktop with your existing NoMachine
+or Moonlight session — WISEPACK does not install, start or manage those. The
+launcher refuses this mode when no display exists rather than failing inside the
+renderer.
+
+**B. Headless WebRTC server**
+
+```bash
+WISEPACK_ISAAC_VIEW_MODE=webrtc \
+WISEPACK_ISAAC_STREAMING=1 \
+WISEPACK_ISAAC_HEADLESS=1 \
+WISEPACK_ISAAC_STREAM_HOST=<reachable-server-address> \
+./run_wisepack_dashboard.sh isaac
+```
+
+**No Isaac window opens.** Two ports, and a client needs *both*:
+
+| port | protocol | purpose |
+|---|---|---|
+| 49100 | **TCP** | signalling / negotiation |
+| 47998 | **UDP** | media |
+
+**A normal browser cannot display this stream, and an SSH TCP tunnel alone
+cannot carry it** — the media is UDP, and Isaac Sim 6.0.1 ships no in-browser
+client. Use NVIDIA's **Isaac Sim WebRTC Streaming Client** with direct or VPN
+connectivity to both ports.
+
+**C. GUI *and* WebRTC at the same time**
+
+**Not supported here — choose desktop or webrtc.** In Isaac Sim 6.0.1 the
+livestream extension captures the application framebuffer and the shipped
+configuration (`isaacsim.exp.full.streaming.kit`, and the standalone
+`livestream.py` example) runs it headless with `--no-window`. I did not find a
+supported way to render an on-screen GUI window *and* serve the same framebuffer
+over WebRTC, and I did not verify one experimentally, so the launcher makes the
+two modes mutually exclusive rather than letting you configure something that
+half-works.
+
+**D. Telemetry only**
+
+```bash
+WISEPACK_ISAAC_VIEW_MODE=none \
+WISEPACK_ISAAC_HEADLESS=1 \
+./run_wisepack_dashboard.sh isaac
+```
+
+Physical execution still runs and remains fully visible as **state and
+telemetry** — stages, item outcomes, measured poses, the audit trail. There is
+simply no video.
+
+The launcher prints the resolved configuration at startup — view mode, headless,
+DISPLAY, streaming, advertised host, signalling and media ports, and where to
+watch — so what you got is never in doubt. It never prints secrets or this
+host's SSH port.
+
 #### Streaming environment variables
 
 ```
+WISEPACK_ISAAC_VIEW_MODE          # desktop | webrtc | none  (picks the rest)
 WISEPACK_ISAAC_STREAMING=1        # opt-in; off by default
 WISEPACK_ISAAC_STREAM_HOST        # default 127.0.0.1 (loopback)
 WISEPACK_ISAAC_SIGNAL_PORT        # default 49100  (TCP, negotiation)

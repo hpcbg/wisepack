@@ -98,6 +98,13 @@ class MotionConfig:
     #: An instantaneous zero happens at the top of a bounce.
     settle_stable_time: float = 0.35
 
+    #: How far an item may be from the source pose the plan was built against
+    #: before a pick is REFUSED. Items settle and can be nudged by a neighbour,
+    #: so a few centimetres is normal; a large drift means the physical scene
+    #: and the plan disagree, and moving toward it would be uncontrolled motion
+    #: rather than a pick.
+    max_source_drift_m: float = 0.08
+
     #: Yaw offset, in degrees, applied to the top-down gripper orientation when
     #: grasping. The pick row lays every item along world X and the Panda hand's
     #: fingers must close ACROSS that axis. 0 means the default downward
@@ -149,6 +156,7 @@ class MotionConfig:
                 "WISEPACK_ISAAC_ANGULAR_VELOCITY_THRESHOLD", 0.10),
             settle_stable_time=_env_float("WISEPACK_ISAAC_SETTLE_STABLE_TIME", 0.35),
             grasp_yaw_offset_deg=_env_float("WISEPACK_ISAAC_GRASP_YAW_OFFSET_DEG", 0.0),
+            max_source_drift_m=_env_float("WISEPACK_ISAAC_MAX_SOURCE_DRIFT", 0.08),
         )
         cfg.validate()
         return cfg
@@ -166,6 +174,7 @@ class MotionConfig:
             "angular_velocity_threshold": self.angular_velocity_threshold,
             "settle_stable_time": self.settle_stable_time,
             "grasp_yaw_offset_deg": self.grasp_yaw_offset_deg,
+            "max_source_drift_m": self.max_source_drift_m,
         }
 
 

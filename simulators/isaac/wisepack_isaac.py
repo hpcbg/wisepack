@@ -90,6 +90,14 @@ def _parse_args():
                         help=("Build the scene, report READY, then exit without "
                               "waiting for commands. Proves the simulator, the "
                               "GPU and the ROS bridge work."))
+    parser.add_argument("--reset-test", action="store_true",
+                        help=("Bounded live validation of the scene-reset "
+                              "handshake: execute one item, rebuild the scene "
+                              "for a NEW scenario, verify the container is "
+                              "empty and every source object respawned, then "
+                              "execute the first item of the new run."))
+    parser.add_argument("--reset-seed", type=int, default=1234,
+                        help="Seed for the second scenario in --reset-test")
     parser.add_argument("--smoke-test", type=int, default=0, metavar="N",
                         help=("Self-driving physical validation: plan locally "
                               "with the SAME optimizer the stack uses, then "
@@ -262,6 +270,10 @@ class WisepackIsaacApp:
         self._last_command: IsaacCommand = None         # type: ignore[assignment]
         #: >0 in --smoke-test mode: how many items to self-drive. Also switches
         #: on the SMOKE-* marker lines the validator greps for.
+        #: Scenario revision the CURRENT scene corresponds to. None until a
+        #: reset has happened; the startup build is revision-agnostic and is
+        #: trusted by the orchestrator (see isaac_bridge.open_run).
+        self._scene_revision = None
         self.smoke_items = 0
         self._smoke_queue: list = []
         self._smoke_publisher = None
@@ -383,6 +395,13 @@ class WisepackIsaacApp:
             self._begin_run(command)
             return
 
+        if command.command is IsaacCommandType.RESET_SCENE:
+            # Deliberately NOT run-gated: a reset is how a new run becomes
+            # legitimate, so gating it on the previous run's id would make the
+            # scene un-resettable exactly when it most needs resetting.
+            self._reset_scene(command)
+            return
+
         reason = self.bridge.gate.reject_reason(
             command.run_id, command.sequence_index, command.attempt)
         if reason:
@@ -446,6 +465,7 @@ class WisepackIsaacApp:
                 # How to WATCH this run, in the backend-neutral shape. Metadata
                 # only: rendered frames never travel on this path.
                 "visualization": self.visualization(),
+                "simulator_version": _isaac_version(),
             })
         self._ready_announced = True
 
@@ -520,6 +540,212 @@ class WisepackIsaacApp:
             self.bridge.gate.mark_done(command.sequence_index, command.attempt)
         self._last_command = None
 
+    def _reset_scene(self, command: IsaacCommand) -> None:
+        """Rebuild the physical scene for a NEW scenario, then report SCENE_READY.
+
+        THE SAFETY OPERATION. Everything that could carry state from the previous
+        run is undone here, in an order that matters: stop the arm before
+        touching what it might be holding, drop the weld before deleting the
+        body it welds to, and only then rebuild.
+        """
+        revision = command.scenario_revision
+        preset = command.preset or self.config.preset
+        seed = int(command.seed or self.config.seed)
+        self.bridge.publish(
+            IsaacState.RESETTING, command.run_id,
+            scenario_revision=revision,
+            message=f"rebuilding the scene for {preset} seed {seed} "
+                    f"(revision {revision})")
+        print(f"{LOG_APP} RESET_SCENE -> {preset} seed {seed} rev {revision}")
+
+        try:
+            # 1. Stop the arm and drop anything it is holding. Order matters:
+            #    abort() detaches the grasp joint BEFORE any body is deleted.
+            self.sequence.abort("scene reset requested")
+            self.pending = None
+            self._last_command = None
+
+            # 2. Cancel the previous run outright. Late feedback for it is
+            #    rejected from here on because the gate no longer knows that id.
+            self.run_active = False
+            self._run_ended = False
+            self.items_completed = 0
+            self.items_failed = 0
+            self.bridge.gate.adopt(command.run_id)
+
+            # 3. Home the robot with an open gripper, and let it get there
+            #    before the world changes underneath it.
+            self.robot.open_gripper()
+            self.robot.reset_to_default_pose()
+            for _ in range(60):
+                simulation_app.update()
+
+            # 4. STOP THE TIMELINE BEFORE TOUCHING THE STAGE.
+            #
+            #    Not optional, and not a tidiness measure. Deleting a rigid-body
+            #    prim while physics is playing invalidates the PhysX *tensor
+            #    simulation view* — and that view is shared by every prim in the
+            #    stage, the Franka articulation included. Measured on a live
+            #    run: the items were removed and respawned correctly, the reset
+            #    reported success, and the very next read of the arm's joints
+            #    raised
+            #
+            #        "Simulation view object is invalidated and cannot be used
+            #         again to call getDofPositions"
+            #
+            #    i.e. the scene looked ready while the robot was unusable. That
+            #    is precisely the failure this whole handshake exists to
+            #    prevent, so the stage is mutated only while stopped, and the
+            #    views are rebuilt by the subsequent play().
+            app_utils.stop()
+            for _ in range(5):
+                simulation_app.update()
+
+            # 5. Rebuild the objects from the NEW preset and seed. This removes
+            #    every previous cylinder — including the ones lying in the
+            #    container — so the container is empty by construction.
+            self.scenario = build_scenario(preset, seed=seed)
+            self.config.preset, self.config.seed = preset, seed
+            self.scene.reset_items(self.scenario)
+
+            # 6. Start physics again. Prims created while stopped acquire their
+            #    views here, which is why step 5 runs between stop and play.
+            app_utils.play()
+            simulation_app.update()
+
+            # 7. Re-command the home pose. stop() restores the AUTHORED joint
+            #    values, which is not the ready pose the sequence assumes, and
+            #    the drives would otherwise drift there over the first seconds
+            #    of the new run — the same undefined starting configuration that
+            #    startup already guards against.
+            self.robot.open_gripper()
+            self.robot.reset_to_default_pose()
+
+            # 8. Zero velocities and let contacts settle before anything is
+            #    reported ready.
+            def _update(frames):
+                for _ in range(frames):
+                    simulation_app.update()
+            self.scene.settle_items(_update, frames=120)
+
+            # 9. PROVE the rebuilt world is usable before claiming it is. A
+            #    scene that reports SCENE_READY with a dead articulation view or
+            #    an unreadable item is worse than one that reports RESET_FAILED,
+            #    because the orchestrator would authorise motion against it.
+            self._verify_scene_usable()
+
+            summary = {
+                "preset": preset, "seed": seed,
+                "items": sorted(self.scene.items),
+                "containers": {k: v.to_dict()
+                               for k, v in self.scene.containers.items()},
+                "scenario_id": self.scenario.scenario_id,
+            }
+            self._scene_revision = revision
+            self.bridge.publish(
+                IsaacState.SCENE_READY, command.run_id,
+                scenario_revision=revision,
+                message=f"scene rebuilt for {self.scenario.scenario_id} "
+                        f"({len(self.scene.items)} items)",
+                detail=summary)
+            print(f"{LOG_APP} SCENE_READY revision {revision}: "
+                  f"{len(self.scene.items)} items, container empty")
+        except Exception as exc:                        # noqa: BLE001
+            # Reported, never swallowed: the orchestrator HOLDS on RESET_FAILED
+            # rather than running against a stale scene.
+            carb.log_error(f"{LOG_APP} scene reset failed: {exc!r}")
+            self.bridge.publish(
+                IsaacState.RESET_FAILED, command.run_id,
+                scenario_revision=revision,
+                message=f"{type(exc).__name__}: {exc}")
+
+    def _verify_scene_usable(self) -> None:
+        """Raise unless the rebuilt world can actually be commanded and read.
+
+        Called between rebuilding and announcing SCENE_READY. Every check here
+        corresponds to something that has been observed to survive a rebuild
+        looking healthy:
+
+          * the articulation's physics view can be invalidated by a stage
+            mutation and still answer ``is_valid``-style questions — reading the
+            joints is what actually proves it;
+          * a freshly created RigidPrim whose view failed to initialise returns
+            no pose, and a plan built against that item would send the arm to a
+            pose nobody computed;
+          * a grasp joint left attached means the gripper still owns a body that
+            no longer exists.
+        """
+        import numpy as _np                              # noqa: PLC0415
+
+        dof = self.robot.get_dof_positions().numpy()[0]
+        if not _np.all(_np.isfinite(dof)):
+            raise RuntimeError(
+                "the arm reported non-finite joint positions after the rebuild")
+
+        unreadable = [item for item in self.scene.items
+                      if self.scene.item_world_pose(item) is None]
+        if unreadable:
+            raise RuntimeError(
+                f"{len(unreadable)} item(s) have no readable pose after the "
+                f"rebuild: {', '.join(sorted(unreadable))}")
+
+        if self.sequence.grasp.is_attached:
+            raise RuntimeError(
+                f"the grasp joint for {self.sequence.grasp.attached_item} "
+                "survived the reset")
+
+    def _pre_pick_refusal(self, command: IsaacCommand) -> str:
+        """Physical sanity checks before ANY motion. "" when it is safe to pick.
+
+        Every one of these is a way the arm could otherwise be sent somewhere
+        the plan does not describe. When one fails the correct response is to
+        stop and report — NOT to move toward an object at an unexpected place,
+        which is how a mis-synchronised scene becomes uncontrolled motion.
+        """
+        item = command.item_id or ""
+        if command.scenario_revision and self._scene_revision is not None \
+                and command.scenario_revision != self._scene_revision:
+            return (f"command is for scenario revision "
+                    f"{command.scenario_revision} but the scene was built for "
+                    f"{self._scene_revision}")
+        if not self.scene.has_item(item):
+            return f"{item} does not exist in the current scene"
+        if self.sequence.grasp.is_attached:
+            return (f"a grasp joint for {self.sequence.grasp.attached_item} is "
+                    "still attached — the previous item was never released")
+        pose = self.scene.item_world_pose(item)
+        if pose is None:
+            return f"{item} has no readable pose"
+
+        import numpy as _np                              # noqa: PLC0415
+        from wisepack_core.isaac_transform import pose_to_world as _to_world  # noqa: PLC0415
+        actual = _np.asarray(pose[0], dtype=float)
+
+        # Already in the destination container? Then the plan and the world
+        # disagree about where this item is, and picking is meaningless.
+        if command.target_pose is not None:
+            origin = self.layout.container_origin_for(
+                command.container_id or "CNT-01")
+            inner = command.container_inner_mm or {}
+            from wisepack_core.isaac_transform import mm_to_m as _mm  # noqa: PLC0415
+            inside = (origin[0] <= actual[0] <= origin[0] + _mm(inner.get("x", 0))
+                      and origin[1] <= actual[1] <= origin[1] + _mm(inner.get("y", 0))
+                      and actual[2] >= origin[2] - 0.02)
+            if inside:
+                return (f"{item} is ALREADY inside {command.container_id} — the "
+                        "physical scene does not match the plan (was the scene "
+                        "reset skipped?)")
+
+        # Near the pose the plan was built against?
+        if command.source_pose is not None:
+            expected, _ = _to_world(command.source_pose, self.layout)
+            drift = float(_np.linalg.norm(actual - _np.asarray(expected)))
+            if drift > self.config.motion.max_source_drift_m:
+                return (f"{item} is {drift*1000:.0f} mm from its expected source "
+                        f"pose (limit {self.config.motion.max_source_drift_m*1000:.0f} "
+                        "mm) — the scene does not match the plan")
+        return ""
+
     # -- self-driving smoke mode ----------------------------------------- #
 
     def prepare_smoke_run(self, count: int) -> None:
@@ -551,6 +777,14 @@ class WisepackIsaacApp:
         run_id = f"smoke-{self.config.preset}-{self.config.seed}"
         index_of = {i.item_id: n for n, i in enumerate(self.scenario.items)}
         self.smoke_items = max(1, int(count))
+        # RESET THE DISPATCH COUNTER, or a second run after a scene reset never
+        # starts. The pump releases an EXECUTE_ITEM only when the resolved count
+        # has caught up with the dispatched count, and a scene reset zeroes the
+        # resolved counters — so a stale dispatched count from the previous run
+        # holds the queue closed forever. Observed exactly that way: the rebuilt
+        # scene reached SCENE_READY, RUN_BEGIN round-tripped, READY was
+        # published, and then nothing was ever sent.
+        self._smoke_dispatched = 0
         self._smoke_publisher = self.bridge.create_publisher(
             String, WT.ISAAC_COMMAND, qos_for(WT.ISAAC_COMMAND))
 
@@ -572,7 +806,8 @@ class WisepackIsaacApp:
                 container_id=container.container_id,
                 container_inner_mm=container.inner_size.to_dict(),
                 plan_id=plan.plan_id, preset=self.config.preset,
-                seed=self.config.seed))
+                seed=self.config.seed,
+                scenario_revision=int(self._scene_revision or 0)))
         self._smoke_queue.append(IsaacCommand(
             command=IsaacCommandType.RUN_END, run_id=run_id))
         print(f"{LOG_APP} smoke queue: {len(self._smoke_queue)} commands")
@@ -612,6 +847,121 @@ class WisepackIsaacApp:
         if head.command is IsaacCommandType.EXECUTE_ITEM:
             self._smoke_dispatched += 1
         self._smoke_publisher.publish(String(data=head.to_json()))
+
+    def _run_reset_validation(self) -> int:
+        """Execute an item, rebuild for a NEW scenario, verify, execute again.
+
+        Prints RESET-VALIDATE markers so a shell script can assert on them
+        without parsing Isaac's own log.
+        """
+        import numpy as _np                                      # noqa: PLC0415
+        from wisepack_core.isaac_transform import (               # noqa: PLC0415
+            pose_to_world as _to_world, table_pose_for_index as _table,
+        )
+
+        def pump(frames=1):
+            for _ in range(frames):
+                simulation_app.update()
+                self.bridge.spin_once()
+                self._pump_smoke_queue()
+                if self.pending is not None and not self.sequence.busy:
+                    command = self.pending
+                    self.pending = None
+                    self._last_command = command
+                    refusal = self._pre_pick_refusal(command)
+                    if refusal:
+                        print(f"RESET-VALIDATE REFUSED {command.item_id} {refusal}")
+                        self._on_item_done(command.item_id or "",
+                                           _refused_outcome(command, refusal))
+                    elif not self.sequence.begin(command):
+                        self._on_item_done(command.item_id or "",
+                                           _missing_item_outcome(command))
+                self.sequence.step()
+
+        # --- phase 1: one item of the ORIGINAL scenario --------------------
+        first_preset, first_seed = self.config.preset, self.config.seed
+        self.prepare_smoke_run(1)
+        deadline = time.monotonic() + 240
+        while (self.items_completed + self.items_failed) < 1 \
+                and time.monotonic() < deadline:
+            pump()
+        print(f"RESET-VALIDATE PHASE1 completed={self.items_completed} "
+              f"failed={self.items_failed}")
+
+        placed = [i for i in self.scene.items
+                  if self._is_in_container(i)]
+        print(f"RESET-VALIDATE PHASE1-IN-CONTAINER {len(placed)}")
+
+        # --- phase 2: rebuild for a NEW scenario ---------------------------
+        new_seed = int(getattr(ARGS, "reset_seed", 1234))
+        self._reset_scene(IsaacCommand(
+            command=IsaacCommandType.RESET_SCENE, run_id="reset-validate-2",
+            preset=first_preset, seed=new_seed, scenario_revision=2))
+        pump(30)
+
+        if self._scene_revision != 2:
+            print("RESET-VALIDATE RESULT FAIL scene was not rebuilt")
+            return 2
+
+        # --- phase 3: verify the rebuilt world -----------------------------
+        still_in_container = [i for i in self.scene.items
+                              if self._is_in_container(i)]
+        print(f"RESET-VALIDATE CONTAINER-CLEARED "
+              f"{'yes' if not still_in_container else 'no ' + str(still_in_container)}")
+
+        expected = self.scenario.items
+        respawned, at_source = len(self.scene.items), 0
+        for index, item in enumerate(expected):
+            pose = self.scene.item_world_pose(item.item_id)
+            if pose is None:
+                continue
+            want, _ = _to_world(_table(index, item, self.layout), self.layout)
+            drift = float(_np.linalg.norm(
+                _np.asarray(pose[0]) - _np.asarray(want)))
+            if drift <= self.config.motion.max_source_drift_m:
+                at_source += 1
+        print(f"RESET-VALIDATE RESPAWNED {respawned}/{len(expected)} "
+              f"at-source={at_source}/{len(expected)}")
+
+        dof = self.robot.get_dof_positions().numpy()[0]
+        home = _np.array([0.012, -0.568, 0.0, -2.811, 0.0, 3.037, 0.741])
+        home_err = float(_np.max(_np.abs(dof[:7] - home)))
+        print(f"RESET-VALIDATE ROBOT-HOME max_joint_error={home_err:.3f} rad")
+        print(f"RESET-VALIDATE GRASP-JOINT "
+              f"{'attached' if self.sequence.grasp.is_attached else 'released'}")
+
+        # --- phase 4: first item of the NEW run ----------------------------
+        self.items_completed = self.items_failed = 0
+        self.prepare_smoke_run(1)
+        deadline = time.monotonic() + 240
+        while (self.items_completed + self.items_failed) < 1 \
+                and time.monotonic() < deadline:
+            pump()
+        print(f"RESET-VALIDATE PHASE2 completed={self.items_completed} "
+              f"failed={self.items_failed}")
+
+        ok = (not still_in_container and respawned == len(expected)
+              and at_source == len(expected) and home_err < 0.35
+              and not self.sequence.grasp.is_attached
+              and self.items_completed == 1)
+        print(f"RESET-VALIDATE RESULT {'PASS' if ok else 'FAIL'}")
+        return 0 if ok else 2
+
+    def _is_in_container(self, item_id: str) -> bool:
+        """True when this item is sitting inside container CNT-01."""
+        import numpy as _np                                      # noqa: PLC0415
+        from wisepack_core.isaac_transform import mm_to_m as _mm  # noqa: PLC0415
+        pose = self.scene.item_world_pose(item_id)
+        if pose is None:
+            return False
+        origin = self.layout.container_origin_for("CNT-01")
+        inner = self.scene.containers.get("CNT-01")
+        if inner is None:
+            return False
+        p = _np.asarray(pose[0], dtype=float)
+        return bool(origin[0] <= p[0] <= origin[0] + _mm(inner.x)
+                    and origin[1] <= p[1] <= origin[1] + _mm(inner.y)
+                    and p[2] >= origin[2] - 0.02)
 
     def _end_run(self, reason: str) -> None:
         if not self.run_active:
@@ -684,6 +1034,8 @@ class WisepackIsaacApp:
 
         if self.smoke_items:
             self.prepare_smoke_run(self.smoke_items)
+        if getattr(ARGS, "reset_test", False):
+            return self._run_reset_validation()
 
         while simulation_app.is_running():
             simulation_app.update()
@@ -694,7 +1046,14 @@ class WisepackIsaacApp:
                 command = self.pending
                 self.pending = None
                 self._last_command = command
-                if not self.sequence.begin(command):
+                # PHYSICAL SANITY BEFORE MOTION. Refuse rather than approach an
+                # object that is not where the plan says it is.
+                refusal = self._pre_pick_refusal(command)
+                if refusal:
+                    print(f"{LOG_APP} REFUSING to pick {command.item_id}: {refusal}")
+                    self._on_item_done(command.item_id or "",
+                                       _refused_outcome(command, refusal))
+                elif not self.sequence.begin(command):
                     self._on_item_done(
                         command.item_id or "",
                         _missing_item_outcome(command))
@@ -713,6 +1072,30 @@ class WisepackIsaacApp:
         return 0
 
 
+def _isaac_version() -> str:
+    """The INSTALLED Isaac Sim version, read from the installation itself.
+
+    The adapter knows which installation it launched, so reporting "—" in the
+    Simulator View was withholding information it already had.
+    """
+    root = os.environ.get("ISAAC_SIM_ROOT") or os.environ.get("ISAAC_PATH", "")
+    try:
+        with open(os.path.join(root, "VERSION"), encoding="utf-8") as fh:
+            return f"Isaac Sim {fh.read().strip()}"
+    except OSError:
+        return "Isaac Sim (version file not readable)"
+
+
+def _refused_outcome(command: IsaacCommand, reason: str):
+    """A pre-pick refusal, reported as ITEM_FAILED with the exact reason."""
+    from simulators.isaac.result import PlacementOutcome                # noqa: PLC0415
+    return PlacementOutcome(
+        ok=False, reasons=[f"pre-pick check failed: {reason}"], notes=[],
+        actual_pose=None, target_pose=command.target_pose,
+        position_error_mm=None, axis_error_deg=None, settled=False,
+        timed_out=False, detail={"pre_pick_refusal": reason})
+
+
 def _missing_item_outcome(command: IsaacCommand):
     from simulators.isaac.result import PlacementOutcome           # noqa: PLC0415
     reason = (f"{command.item_id} is not in the Isaac scene; it was not part of "
@@ -729,12 +1112,14 @@ def main() -> int:
     config = AppConfig(
         preset=ARGS.preset, seed=ARGS.seed, headless=bool(ARGS.headless),
         exit_on_complete=bool(ARGS.exit_on_complete or ARGS.self_test
-                              or ARGS.smoke_test),
+                              or ARGS.smoke_test or ARGS.reset_test),
         max_runtime_s=float(ARGS.max_runtime),
         motion=motion, physics=PhysicsConfig.from_env())
 
     app = WisepackIsaacApp(config)
     app.smoke_items = int(getattr(ARGS, "smoke_test", 0) or 0)
+    if getattr(ARGS, "reset_test", False):
+        app.smoke_items = 1        # enables the SMOKE-* markers too
     try:
         app.build()
         return app.run()

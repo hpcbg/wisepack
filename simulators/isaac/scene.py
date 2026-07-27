@@ -270,6 +270,53 @@ class WisepackScene:
         camera.CreateFocalLengthAttr(20.0)
 
     # ------------------------------------------------------------------ #
+    # Scene reset
+    # ------------------------------------------------------------------ #
+
+    def reset_items(self, scenario: Scenario) -> None:
+        """Put the world back to the start of a NEW scenario.
+
+        REMOVES every previous item rather than repositioning it. A new scenario
+        can have different ids, different dimensions and a different count, so
+        "move the old cylinders back" is not the same world — and any item the
+        new scenario does not contain would otherwise be left lying in the
+        container, where the packer has no model of it.
+
+        Container CONTENTS are cleared by construction: the containers are
+        static geometry and hold nothing of their own, so removing the items
+        empties them.
+        """
+        stage = stage_utils.get_current_stage(backend="usd")
+        removed = 0
+        for item_id in list(self.items):
+            path = item_path(item_id)
+            if stage.GetPrimAtPath(path):
+                stage.RemovePrim(path)
+                removed += 1
+        self.items.clear()
+        self.item_specs.clear()
+        self.item_index.clear()
+        print(f"{LOG_SCENE} removed {removed} item(s) from the previous scenario")
+        self.build_items(scenario)
+
+    def settle_items(self, updater, frames: int = 90) -> None:
+        """Let freshly spawned bodies resolve contact before anything is picked.
+
+        Also zeroes their velocities first: a body created where another one
+        used to be can otherwise inherit an impulse and creep away from the
+        pose the plan was built against.
+        """
+        for item_id, body in self.items.items():
+            try:
+                body.set_velocities(np.zeros((1, 3)), np.zeros((1, 3)))
+            except Exception:                            # noqa: BLE001
+                # Velocity reset is best-effort BEFORE the first physics step,
+                # where the tensor view may not be populated yet; the settle
+                # frames below achieve the same thing.
+                pass
+        updater(frames)
+
+    # ------------------------------------------------------------------ #
     # Read-back
     # ------------------------------------------------------------------ #
 

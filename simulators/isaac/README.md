@@ -176,6 +176,77 @@ WISEPACK_ISAAC_PHYSICS_DEVICE                cpu
 
 ---
 
+## Scene reset — the safety path
+
+A new WISEPACK scenario does not redraw this world; it **commands** it. The
+previous run's cylinders are still in the container, and the new plan assumes
+they are back at their source poses.
+
+`RESET_SCENE` is handled in `_reset_scene()` and the order is not cosmetic:
+
+1. **abort the sequence** — this detaches the temporary grasp joint *before* any
+   body it welds to can be deleted;
+2. cancel the previous run and re-key the run gate, so late feedback for it is
+   rejected rather than attributed to the new run;
+3. open the gripper and home the arm, and let it get there before the world
+   changes underneath it;
+4. **stop the timeline**, then delete every item and rebuild from the new
+   `(preset, seed)`, then **play** again;
+5. re-command the home pose (`stop()` restores *authored* joint values, not the
+   ready pose the sequence assumes) and zero item velocities;
+6. settle;
+7. **prove the world is usable** — `_verify_scene_usable()`;
+8. only then publish `SCENE_READY` with the scenario revision.
+
+**Why step 4 is stop-mutate-play.** Deleting a rigid body while physics is
+playing invalidates the PhysX tensor simulation view for the *whole stage*,
+including the Franka articulation. Measured on a live run before this ordering
+existed: the items rebuilt perfectly, `SCENE_READY` was published, and the next
+joint read failed with
+
+```
+Simulation view object is invalidated and cannot be used again to call
+getDofPositions
+```
+
+— a scene reporting ready with an unusable robot, which is the exact hazard the
+handshake exists to remove. `_verify_scene_usable()` is the belt to that braces:
+it *reads* the joints (asking a wrapper whether it is valid does not prove the
+view survived), reads every item's pose, and refuses if a grasp joint survived.
+Anything it rejects becomes `RESET_FAILED`, and the orchestrator holds.
+
+Before any motion, `_pre_pick_refusal()` refuses a pick whose scenario revision
+does not match the built scene, whose item does not exist or has no readable
+pose, whose predecessor's grasp joint is still attached, or whose item is already
+inside the destination container. Each of those is a way a de-synchronised scene
+becomes uncontrolled motion.
+
+### Bounded live validation
+
+```bash
+./scripts/run_wisepack_isaac.sh --reset-test --max-runtime 900
+```
+
+Executes one item for real, requests a new scenario, verifies the rebuilt world,
+then executes the first item of the *new* run. Prints `RESET-VALIDATE` markers
+and exits non-zero on failure:
+
+```
+RESET-VALIDATE PHASE1 completed=1 failed=0
+RESET-VALIDATE PHASE1-IN-CONTAINER 1
+RESET-VALIDATE CONTAINER-CLEARED yes
+RESET-VALIDATE RESPAWNED 4/4 at-source=4/4
+RESET-VALIDATE ROBOT-HOME max_joint_error=0.001 rad
+RESET-VALIDATE GRASP-JOINT released
+RESET-VALIDATE PHASE2 completed=1 failed=0
+RESET-VALIDATE RESULT PASS
+```
+
+In-process reset is consequently **enabled** in the Isaac modes; a launcher
+restart is not required.
+
+---
+
 ## Coordinates — one conversion layer, and only one
 
 `wisepack_core/isaac_transform.py` is the **only** place WISEPACK units become

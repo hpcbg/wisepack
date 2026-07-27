@@ -83,6 +83,51 @@ class ExecutionBackend(str, Enum):
         }[self.value]
 
 
+#: Item-count ceiling a bench-scale physical cell can reasonably run. Above this
+#: a "run" is twenty minutes of watching an arm, and the presets that large are
+#: sized for an industrial container the Panda cannot reach across anyway.
+PHYSICAL_MAX_ITEMS = 8
+
+#: Gripper opening, millimetres. An item wider than this cannot be grasped at
+#: all, so offering such a preset would be offering a run that cannot happen.
+PHYSICAL_MAX_DIAMETER_MM = 78
+
+
+def preset_physical_compatibility(preset: str) -> tuple:
+    """(compatible, reason) for running ``preset`` on a physical backend.
+
+    The dashboard must not offer the operator a scenario the physical adapter
+    cannot instantiate and reach. `mixed_pipes_dense` exists in the software
+    generator and is a perfectly good PACKING benchmark — it is simply not
+    something a bench-scale Panda can execute, and letting it be selected in an
+    Isaac run produces a plan whose first pick is impossible.
+
+    Import-light on purpose: the generator is imported lazily so this stays
+    usable from the dashboard without pulling the whole core in at module load.
+    """
+    from .generator import PRESETS, preset_config                # noqa: PLC0415
+    if preset not in PRESETS:
+        return False, f"unknown preset {preset!r}"
+    try:
+        cfg = preset_config(preset, seed=0)
+    except Exception as exc:                                     # noqa: BLE001
+        return False, f"cannot be configured: {exc}"
+    if cfg.item_count > PHYSICAL_MAX_ITEMS:
+        return False, (f"{cfg.item_count} items — a physical cell runs at most "
+                       f"{PHYSICAL_MAX_ITEMS} in one demonstration")
+    widest = max(cfg.diameter_range_mm)
+    if widest > PHYSICAL_MAX_DIAMETER_MM:
+        return False, (f"items up to {widest} mm across exceed the "
+                       f"{PHYSICAL_MAX_DIAMETER_MM} mm gripper opening")
+    return True, ""
+
+
+def physical_presets() -> dict:
+    """{preset: reason} for every known preset; reason is "" when compatible."""
+    from .generator import PRESETS                                # noqa: PLC0415
+    return {name: preset_physical_compatibility(name)[1] for name in sorted(PRESETS)}
+
+
 def parse_backend(value: Optional[str]) -> ExecutionBackend:
     """Parse a backend name from a launch argument, env var or CLI flag.
 
@@ -113,6 +158,14 @@ ISAAC_STATE_STAGE: Dict[IsaacState, Optional[Stage]] = {
     # workflow stage: the plan may still be awaiting approval when Isaac comes
     # up, and advancing the stage there would show a pick before authorisation.
     IsaacState.READY: None,
+
+    # The scene-reset lifecycle is about the SIMULATOR, not about an item, so
+    # like READY none of it moves the workflow stage. The orchestrator gates
+    # authorisation on SCENE_READY separately — see isaac_bridge.
+    IsaacState.RESET_REQUESTED: None,
+    IsaacState.RESETTING: None,
+    IsaacState.SCENE_READY: None,
+    IsaacState.RESET_FAILED: None,
 
     IsaacState.MOVING_TO_PICK: Stage.PICK_ITEM,
     IsaacState.GRASPING: Stage.PICK_ITEM,
@@ -158,6 +211,8 @@ def robot_state_for_isaac_state(state: IsaacState) -> str:
 
 
 __all__ = [
-    "ExecutionBackend", "parse_backend", "ISAAC_STATE_STAGE",
+    "ExecutionBackend", "parse_backend", "PHYSICAL_MAX_ITEMS",
+    "PHYSICAL_MAX_DIAMETER_MM", "preset_physical_compatibility",
+    "physical_presets", "ISAAC_STATE_STAGE",
     "stage_for_isaac_state", "robot_state_for_isaac_state",
 ]

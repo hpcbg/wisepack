@@ -143,12 +143,19 @@ function render(d){
 
   const title = $("#stage-title"), detail = $("#stage-detail"), stage = $("#stage");
   const connect = $("#connect"), full = $("#fullscreen"), copy = $("#copy");
-  const canConnect = !!(d.available && d.viewer_url);
-
-  connect.disabled = !canConnect;
-  full.disabled = !canConnect;
+  // Connect / Open full screen only exist when a BROWSER can actually show the
+  // stream. Isaac Sim 6.0.1 ships no in-browser client, so for WebRTC they are
+  // hidden rather than disabled — offering a control that cannot work, next to
+  // "embeddable: no", is what made the previous wording contradict itself.
+  const browserCanShow = !!(d.available && d.viewer_url && d.embeddable);
+  connect.hidden = !browserCanShow;
+  full.hidden = !browserCanShow;
+  connect.disabled = !browserCanShow;
+  full.disabled = !browserCanShow;
+  copy.hidden = !d.viewer_url;
   copy.disabled = !d.viewer_url;
   connect.textContent = CONNECTED ? "Reconnect" : "Connect";
+  const canConnect = browserCanShow;
 
   // Only replace the stage content when we are NOT showing an embedded viewer,
   // so a live embed is not torn down by the metadata poll every two seconds.
@@ -157,9 +164,27 @@ function render(d){
     const msg = el("div",{class:"msg"});
     msg.append(el("div",{class:"big",id:"stage-title"}, d.status_label || status));
     const small = el("div",{class:"small",id:"stage-detail"});
-    small.textContent = d.message
-      || (canConnect ? "The stream is up. Use Connect or Open full screen."
-                     : "No visual stream is offered by the active execution backend.");
+    // Wording per TRANSPORT. Each case says what to actually do, and none of
+    // them implies the browser will render frames when it cannot.
+    if (d.transport === "webrtc" && !d.embeddable) {
+      small.textContent =
+        "Open this stream using the NVIDIA Isaac Sim WebRTC Streaming Client.\n" +
+        "This browser cannot display the stream — Isaac Sim 6.0.1 ships no " +
+        "in-browser client.\n" +
+        `Signalling ${d.signal_port || "?"}/TCP · media ${d.media_port || "?"}/UDP` +
+        " — the client needs BOTH, so an SSH TCP tunnel alone is not enough.\n" +
+        "Use “Copy endpoint” and paste it into the client.";
+    } else if (d.transport === "desktop") {
+      small.textContent =
+        "Isaac GUI is running on the host desktop.\n" +
+        "View it through NoMachine or Sunshine/Moonlight — WISEPACK does not " +
+        "manage those services.";
+    } else if (browserCanShow) {
+      small.textContent = "The stream is up. Use Connect or Open full screen.";
+    } else {
+      small.textContent = d.message
+        || "No visual stream is offered by the active execution backend.";
+    }
     msg.append(small);
     stage.append(msg);
   }
@@ -175,8 +200,16 @@ function render(d){
     ["camera", d.camera_name || "—"],
     ["stream id", d.stream_id || "—"],
     ["endpoint", d.viewer_url || "—"],
+    ["signalling port", d.signal_port ? `${d.signal_port}/TCP` : "—"],
+    ["media port", d.media_port ? `${d.media_port}/UDP` : "—"],
     ["interactive", d.interactive ? "yes" : "no"],
-    ["embeddable", d.embeddable ? "yes" : "no — opens in a separate client"],
+    ["browser playback", d.embeddable ? "supported"
+                                      : "not supported — use the native client"],
+    // THREE DIFFERENT THINGS, never collapsed into one "Connected".
+    ["service ready", d.available ? "yes" : "no"],
+    ["native client connected", d.client_connected === true ? "yes"
+      : (d.client_connected === false ? "no" : "unknown — not reported")],
+    ["rendered frames verified", d.frames_verified === true ? "yes" : "no"],
   ];
   for (const [k,v] of rows){
     conn.append(el("div",{class:"k"},k));

@@ -568,9 +568,22 @@ class HitLOrchestrator(Node):
 
     # -- inbound ----------------------------------------------------------- #
 
+    def _scene_refusal(self) -> str:
+        """Why physical authorisation must be refused right now, or ""."""
+        if self.isaac is None:
+            return ""
+        return self.isaac.scene_block_reason()
+
     def _on_approval(self, msg: String) -> None:
         decision = (msg.data or "").strip().upper()
         if decision == T.APPROVE:
+            refusal = self._scene_refusal()
+            if refusal:
+                # Approval authorises PHYSICAL action. Refusing here is the
+                # last line of defence behind the disabled button.
+                self.get_logger().warn(f"approval refused: {refusal}")
+                self.publish_state()
+                return
             try:
                 if (self.engine.selected
                         and self.engine.selected.approval_state
@@ -624,6 +637,9 @@ class HitLOrchestrator(Node):
         engine = self.engine
 
         if command == "approve":
+            refusal = self._scene_refusal()
+            if refusal:
+                raise ValueError(f"cannot approve: {refusal}")
             engine.approve(operator=args.get("operator", "fiware/dashboard"))
             self.auto_step = True
             self.publish_plans()
@@ -730,6 +746,16 @@ class HitLOrchestrator(Node):
         elif command == "acknowledge_anomaly":
             engine.acknowledge_anomaly(args.get("operator", "dashboard operator"))
             self._publish_anomaly_state()
+            # Republish the CANONICAL plan and state too, not just the anomaly.
+            #
+            # Acknowledging a critical anomaly returns the workflow to the
+            # approval gate, and the plan topic is TRANSIENT_LOCAL — it is only
+            # resent when something explicitly republishes it. Publishing only
+            # the anomaly state left the dashboard's copy of the plan (and
+            # therefore its approval state) exactly as it was, so nothing told
+            # the operator's controls that a decision was possible again.
+            self.publish_plans()
+            self.publish_state()
 
         elif command == "reset":
             self._reset_run(args)
@@ -1018,6 +1044,14 @@ class HitLOrchestrator(Node):
             self.isaac.abort_run(previous_engine,
                                  "operator reset — starting a new run")
             self.isaac.run_open = False
+            # A NEW SOFTWARE SCENARIO IS NOT A PHYSICAL RESET. Ask the backend
+            # to rebuild, and gate approval and every pick on SCENE_READY for
+            # this exact revision. Without it the previous run's cylinders are
+            # still lying in the container while the new plan assumes they are
+            # back on the table, and the arm is sent after objects that are not
+            # there.
+            self.isaac.request_scene_reset(self.engine,
+                                           self.engine.scenario_revision)
 
         # Drive straight to the approval gate — never past it.
         self.engine.generate_or_load_scenario()

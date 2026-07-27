@@ -435,6 +435,70 @@ async function api(path, opts) {
   }
   return r.json();
 }
+// Guards a decision that is in flight. Read by renderHeader so a poll landing
+// mid-submission cannot re-enable the button underneath the operator's cursor.
+let APPROVAL_IN_FLIGHT = false;
+
+//: How long to wait for the orchestrator to ACKNOWLEDGE a decision by moving
+//: off the approval gate. Generous enough for a loaded DDS domain, short enough
+//: that a lost command does not leave a permanently dead button.
+const APPROVAL_ACK_TIMEOUT_MS = 8000;
+
+// Approve / Reject travel the SAME documented DDS path as every other operator
+// command — this only adds the local UI states the operator needs: no double
+// submission, visible progress, and an explicit failure if nothing acknowledges.
+async function decide(cmd, label) {
+  if (APPROVAL_IN_FLIGHT) return;                 // double-click / double-submit
+  const btn = $(cmd === "approve" ? "#c-approve" : "#c-reject");
+  const before = STATE.control || {};
+  // Pin the revision this decision was taken against. If the plan is replaced
+  // while the command is in flight, the acknowledgement below must not be
+  // satisfied by a DIFFERENT plan's state.
+  const planId = before.plan_id || null;
+
+  APPROVAL_IN_FLIGHT = true;
+  const original = btn ? btn.textContent : "";
+  if (btn) { btn.disabled = true; btn.textContent = label; }
+  $("#notice").textContent = label;
+
+  try {
+    const res = await api("/api/command", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ command: cmd, args: { plan_id: planId } })
+    });
+    if (res && res.ok === false) throw new Error(res.detail || "command refused");
+
+    // ACKNOWLEDGED means the canonical workflow actually left the gate for this
+    // plan — not merely that the POST returned. In live mode the POST only says
+    // "published on DDS".
+    const deadline = Date.now() + APPROVAL_ACK_TIMEOUT_MS;
+    let acked = false;
+    while (Date.now() < deadline) {
+      await new Promise(r => setTimeout(r, 250));
+      let doc;
+      try { doc = await api("/api/state"); } catch (e) { continue; }
+      const c = doc.control || {};
+      if (c.plan_id !== planId || c.stage !== "WAIT_FOR_OPERATOR_APPROVAL"
+          || c.approval_state !== "pending") { acked = true; STATE = doc; break; }
+    }
+    if (!acked) {
+      throw new Error(
+        `no acknowledgement within ${APPROVAL_ACK_TIMEOUT_MS / 1000}s — the ` +
+        "orchestrator did not leave the approval gate. The command may not " +
+        "have reached it; check the ROS 2 / DDS connection and try again.");
+    }
+    $("#notice").textContent = `${cmd}: acknowledged`;
+  } catch (e) {
+    $("#notice").textContent = `${cmd} failed — ${e.message}`;
+  } finally {
+    // Always restore. renderHeader re-derives the correct enabled state from
+    // the canonical control block on the next paint.
+    APPROVAL_IN_FLIGHT = false;
+    if (btn) btn.textContent = original;
+    await refreshAll();
+  }
+}
+
 async function command(cmd, args = {}) {
   try {
     const res = await api("/api/command", {
@@ -610,20 +674,37 @@ function renderHeader(s) {
   renderAnomaly(s.anomaly);
   const box = $("#approval-warn");
   box.innerHTML = "";
-  if (stage === "WAIT_FOR_OPERATOR_APPROVAL") {
+  const ctlEarly = s.control || {};
+  if (ctlEarly.stage === "WAIT_FOR_OPERATOR_APPROVAL" && ctlEarly.block_reason) {
+    // NEVER say "awaiting your decision" while every decision control is dead
+    // without saying why. The reason comes from the canonical control state,
+    // so it is the actual blocker and not a guess.
+    box.append(el("div", { class: "warnbox" },
+      "Decision required, but Approve is unavailable: " + ctlEarly.block_reason + "."));
+  } else if (stage === "WAIT_FOR_OPERATOR_APPROVAL") {
     box.append(el("div", { class: "warnbox" },
       "Plan awaiting your decision. No physical action is authorised until it is approved."));
   } else if (stage === "DEGRADED") {
     box.append(el("div", { class: "warnbox" },
       "DEGRADED — the system is held. " + (s.degraded_reason || "")));
   }
-  const awaiting = stage === "WAIT_FOR_OPERATOR_APPROVAL";
+  // OPERATOR CONTROLS ARE ENABLED FROM CANONICAL ROS/DDS STATE, never from the
+  // FIWARE readback. In FIWARE mode `stage` above is deliberately the value
+  // Orion-LD echoed back — that echo is the audit proof and drives the badge —
+  // but it lags the workflow by the DDS->NGSI-LD bridge plus a poll, and making
+  // a safety-relevant button wait for it added seconds of dead time for no
+  // safety benefit. The orchestrator re-checks the invariant itself when the
+  // command arrives, so the gate is not weakened by enabling promptly.
+  const ctl = s.control || {};
   const approved = s.approval_state === "approved";
   const done = stage === "COMPLETE" || stage === "DEGRADED";
   const enable = {
-    "#c-approve": awaiting,
-    "#c-reject": awaiting,
-    "#c-alt": !done,
+    // Never merely "a plan is on screen": the guard also requires the plan to
+    // exist, be THIS revision, still be pending, and be valid. See
+    // DashboardSnapshot.can_approve.
+    "#c-approve": ctl.can_approve === true && !APPROVAL_IN_FLIGHT,
+    "#c-reject": ctl.can_reject === true && !APPROVAL_IN_FLIGHT,
+    "#c-alt": ctl.can_alternative === true,
     "#c-inject": !done,
     "#c-unavail": !done,
     "#c-grasp": approved && !done,
@@ -1089,28 +1170,114 @@ function readSettings() {
     pick_failure_probability: parseFloat($("#s-fail").value || "0.08"),
   };
 }
-// Keep the scenario controls pointed at the ACTIVE run, and lock them while one
-// is in flight. The options are only built once, but the SELECTED value and the
-// disabled state are refreshed on every poll — otherwise the form keeps showing
-// whatever it was left on while the header shows the scenario actually running,
-// and the same screen names two different scenarios.
+// THE DRAFT. The scenario controls edit a draft for the NEXT run; they never
+// mutate the running scenario. The header and the Digital Twin keep showing the
+// ACTIVE scenario, so the two are always distinguishable.
+//
+// The draft is seeded once — from the active run, or from the backend-specific
+// default — and after that the OPERATOR owns it. Re-applying server state on
+// every poll is what made the dropdown feel broken: a selection was reverted
+// within a second of being made.
+let DRAFT_TOUCHED = false;
+
+function draftKey() { return "wisepack-draft"; }
+
+function loadDraft() {
+  try { return JSON.parse(localStorage.getItem(draftKey()) || "null"); }
+  catch (e) { return null; }
+}
+function saveDraft(d) {
+  try { localStorage.setItem(draftKey(), JSON.stringify(d)); } catch (e) {}
+}
+
+function currentDraft() {
+  return {
+    preset: $("#s-preset") ? $("#s-preset").value : null,
+    seed: parseInt(($("#s-seed") || {}).value || "42", 10),
+    strategy: $("#s-strategy") ? $("#s-strategy").value : null,
+  };
+}
+
+// Called on every change of a scenario control. Persists locally (so switching
+// to Container Inventory and back keeps the selection) and server-side (so the
+// draft is not tied to one browser tab).
+async function onDraftChanged() {
+  DRAFT_TOUCHED = true;
+  const d = currentDraft();
+  saveDraft(d);
+  try {
+    await api("/api/draft", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(d)
+    });
+  } catch (e) { /* local copy still holds it */ }
+  syncScenarioControls(STATE);
+}
+
+// Shows what is RUNNING versus what the controls would generate. Never disables
+// anything: an active run is a reason to CONFIRM, not a reason to lock the
+// operator out of the only control that could start a different one.
 function syncScenarioControls(s) {
   const p = $("#s-preset");
   if (!p) return;
-  const active = (s.settings && s.settings.preset);
-  if (active && p.value !== active) p.value = active;
-  const seed = $("#s-seed");
-  if (seed && s.settings && s.settings.seed !== undefined && seed !== document.activeElement)
-    seed.value = s.settings.seed;
 
-  const locked = !!s.settings_locked;
+  if (!DRAFT_TOUCHED) {
+    const stored = loadDraft();
+    const seed = stored && stored.preset
+      ? stored.preset
+      : ((s.settings && s.settings.preset) || s.default_preset);
+    if (seed && p.value !== seed && [...p.options].some(o => o.value === seed)) {
+      p.value = seed;
+    }
+    if (stored) DRAFT_TOUCHED = true;      // a stored draft is the operator's
+    const sd = $("#s-seed");
+    if (sd && s.settings && s.settings.seed !== undefined
+        && sd !== document.activeElement) sd.value = s.settings.seed;
+  }
+
+  // Controls stay ENABLED. Only the wording changes.
   for (const sel of ["#s-preset", "#s-seed", "#s-strategy", "#s-container",
                      "#s-items", "#s-len", "#s-dia"]) {
     const node = $(sel);
-    if (node) { node.disabled = locked; node.title = locked ? (s.settings_locked_reason || "") : ""; }
+    if (node) { node.disabled = false; node.title = ""; }
   }
+
+  // Mark presets the ACTIVE backend cannot physically run. Disabled with the
+  // reason in the tooltip, not hidden: an operator who wonders why the packing
+  // benchmark is missing deserves the answer.
+  const compat = s.preset_compatibility || {};
+  for (const opt of p.options) {
+    const why = compat[opt.value];
+    opt.disabled = Boolean(why);
+    opt.title = why || "";
+    const base = opt.value;
+    opt.textContent = why ? `${base} — unavailable (${why})` : base;
+  }
+
+  const active = (s.active_scenario || {});
+  const draftPreset = p.value;
+  // ONE label, used by the button and quoted verbatim by the help text. They
+  // drifted apart before — the help said “Generate & plan” while the button
+  // said “Reset run & generate” — so there is now a single source for both.
+  const genLabel = s.run_active ? "Reset run & generate" : "Generate & plan";
+  const gen = $("#c-reset");
+  if (gen) gen.textContent = genLabel;
+
   const note = $("#s-lock-note");
-  if (note) note.textContent = locked ? (s.settings_locked_reason || "") : "";
+  if (note) {
+    const bits = [];
+    if (active.preset) bits.push(`Running now: ${active.scenario_id || active.preset}`);
+    if (active.preset && draftPreset && draftPreset !== active.preset) {
+      bits.push(`Next: ${draftPreset}`);
+    }
+    if ((s.execution || {}).physical && s.run_active) {
+      bits.push(`A physical run is in progress — “${genLabel}” stops it safely ` +
+                "and rebuilds the simulator scene before anything new starts");
+    } else {
+      bits.push(`Configure the next scenario and press “${genLabel}”`);
+    }
+    note.textContent = bits.join(" · ");
+  }
 }
 
 function fillSelects(s) {
@@ -1134,8 +1301,8 @@ function fillSelects(s) {
   }
 }
 
-$("#c-approve").onclick = () => command("approve");
-$("#c-reject").onclick = () => command("reject", { reason: "operator rejected from dashboard" });
+$("#c-approve").onclick = () => decide("approve", "Sending approval…");
+$("#c-reject").onclick = () => decide("reject", "Sending rejection…");
 // No explicit strategy: the orchestrator rotates deterministically, so pressing
 // the button repeatedly walks all three rather than toggling two.
 $("#c-alt").onclick = () => command("alternative_strategy", {});
@@ -1150,7 +1317,24 @@ $("#c-step").onclick = () => command("step");
 $("#c-artifacts").onclick = () => command("write_artifacts");
 // "Generate & plan" always carries the current form, in EVERY mode: the live
 // orchestrator builds the new run from exactly these values.
-$("#c-reset").onclick = () => command("reset", readSettings());
+$("#c-reset").onclick = async () => {
+  // Starting a new scenario DISCARDS whatever is running. When that matters —
+  // a plan awaiting a decision, or a physical Isaac run in progress — ask
+  // first. This is the one place the draft is allowed to become the active
+  // scenario; changing a dropdown never is.
+  if (STATE.run_active) {
+    const physical = (STATE.execution || {}).physical;
+    const what = physical
+      ? "A PHYSICAL Isaac Sim run is in progress. Reset it and generate a new plan?"
+      : "A run is active or awaiting your decision. Reset it and generate a new plan?";
+    if (!window.confirm(what)) return;
+  }
+  await command("reset", readSettings());
+  // The draft has become the active scenario; stop treating it as pending.
+  DRAFT_TOUCHED = false;
+  try { localStorage.removeItem(draftKey()); } catch (e) {}
+  await refreshAll();
+};
 $("#c-strategies").onclick = compareStrategies;
 
 // cut-aware controls
@@ -1180,6 +1364,13 @@ async function refreshState() {
   STATE = await api("/api/state");
   fillSelects(STATE);
   syncScenarioControls(STATE);
+  for (const sel of ["#s-preset", "#s-seed", "#s-strategy"]) {
+    const node = $(sel);
+    if (node && !node.dataset.draftBound) {
+      node.dataset.draftBound = "1";
+      node.addEventListener("change", onDraftChanged);
+    }
+  }
   renderHeader(STATE);
 }
 async function refreshPlans() {
