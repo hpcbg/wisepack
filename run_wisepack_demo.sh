@@ -5,9 +5,19 @@
 #     ./run_wisepack_demo.sh                 # full: Docker + ROS 2 + FIWARE
 #     ./run_wisepack_demo.sh --no-fiware     # ROS 2 only (no Orion-LD)
 #     ./run_wisepack_demo.sh --core-only     # pure Python, no Docker at all
+#     ./run_wisepack_demo.sh --isaac-sim     # + Isaac Sim PHYSICAL execution
+#     ./run_wisepack_demo.sh --isaac-sim --no-fiware
 #
 # A fresh machine with Docker can run the default form. Nothing else is needed:
 # no host ROS 2, no host Python packages, no manual configuration.
+#
+# --isaac-sim adds ONE stage: an optional physical smoke run in NVIDIA Isaac
+# Sim 6.0.1, executing a small 4-cylinder scenario with a Franka Panda. It
+# combines with every existing option and it CHANGES NOTHING ELSE — the packing
+# benchmark, its measured baseline-versus-optimized result and all eleven
+# existing stages run exactly as they do without the flag. Isaac needs a GPU and
+# runs on the host; when it is unavailable the stage SKIPS with a reason rather
+# than failing the demonstration.
 #
 # WHAT IT DOES, in order:
 #    1. build the Docker image
@@ -43,14 +53,27 @@ DDS_DIR="$REPO/wisepack_ws/src/wisepack_fiware/dds"
 
 WITH_FIWARE=1
 CORE_ONLY=0
+WITH_ISAAC=0
 for arg in "$@"; do
     case "$arg" in
         --no-fiware) WITH_FIWARE=0 ;;
         --core-only) CORE_ONLY=1; WITH_FIWARE=0 ;;
-        -h|--help) sed -n '2,30p' "$0"; exit 0 ;;
-        *) echo "unknown option: $arg" >&2; exit 2 ;;
+        --isaac-sim) WITH_ISAAC=1 ;;
+        -h|--help) sed -n '2,40p' "$0"; exit 0 ;;
+        *) echo "unknown option: $arg" >&2
+           echo "known options: --no-fiware --core-only --isaac-sim --help" >&2
+           exit 2 ;;
     esac
 done
+
+if [ "$CORE_ONLY" -eq 1 ] && [ "$WITH_ISAAC" -eq 1 ]; then
+    # Not a silent precedence rule: --core-only promises "no Docker, no ROS,
+    # no hardware", and running a GPU simulator under it would break that promise
+    # in the one mode whose whole point is having no external dependencies.
+    echo "--core-only and --isaac-sim are mutually exclusive:" >&2
+    echo "  --core-only is pure Python with no ROS; Isaac execution needs both." >&2
+    exit 2
+fi
 
 mkdir -p "$WISEPACK_RESULTS_DIR"
 
@@ -64,6 +87,9 @@ BANNER
 info "preset       : $PRESET (seed $SEED)"
 info "results      : $WISEPACK_RESULTS_DIR"
 info "FIWARE       : $([ "$WITH_FIWARE" -eq 1 ] && echo "enabled ($ORION)" || echo disabled)"
+info "execution    : $([ "$WITH_ISAAC" -eq 1 ] \
+        && echo "simulated benchmark + Isaac Sim physical smoke run" \
+        || echo "simulated")"
 
 # ---- Stage 0: core-only shortcut -------------------------------------------
 if [ "$CORE_ONLY" -eq 1 ]; then
@@ -183,6 +209,32 @@ if [ "$WITH_FIWARE" -eq 1 ]; then
     fi
 fi
 
+# ---- Stage 10b: optional Isaac Sim physical smoke run -----------------------
+# ADDITIVE. Everything above ran exactly as it does without --isaac-sim: the
+# packing benchmark, the measured baseline-versus-optimized comparison and the
+# audit trail are untouched. This stage answers a different question — can the
+# accepted plan be executed by a real robot against real physics — on a small
+# 4-cylinder scenario chosen for the arm, not for the packer.
+if [ "$WITH_ISAAC" -eq 1 ]; then
+    head_ "10b. Isaac Sim physical execution smoke test"
+    info "This is a PHYSICAL run: a Franka Panda picks each cylinder, carries it"
+    info "over the container, opens the gripper and lets PhysX settle it. Nothing"
+    info "is teleported into the bin. It does not affect the packing figures above."
+    if "$REPO/scripts/validate_isaac_sim.sh"; then
+        pass "Isaac Sim physical smoke test passed"
+    else
+        ISAAC_RC=$?
+        if [ "$ISAAC_RC" -eq 77 ]; then
+            # 77 is the skip code: no simulator, no GPU, no display. That is an
+            # absent optional dependency, not a WISEPACK failure, and failing the
+            # acceptance demonstration for it would be wrong.
+            info "Isaac Sim smoke test SKIPPED (simulator or GPU unavailable)"
+        else
+            fail "Isaac Sim smoke test reported failures (exit $ISAAC_RC)"
+        fi
+    fi
+fi
+
 # ---- Stage 11: artefacts ----------------------------------------------------
 head_ "11. Result artefacts and figures"
 if python3 "$REPO/scripts/generate_demo_artifacts.py" > /tmp/wisepack_artifacts.log 2>&1; then
@@ -206,6 +258,7 @@ if [ "$FAILURES" -eq 0 ]; then
     pass "WISEPACK acceptance demonstration PASSED"
     info "dashboard:  ./run_wisepack_dashboard.sh          (live)"
     info "            ./run_wisepack_dashboard.sh sim      (no ROS, no FIWARE)"
+    info "            ./run_wisepack_dashboard.sh isaac    (Isaac Sim physics)"
 else
     fail "$FAILURES stage(s) failed"
 fi

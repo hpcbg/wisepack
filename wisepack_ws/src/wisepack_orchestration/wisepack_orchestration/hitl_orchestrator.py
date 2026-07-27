@@ -47,9 +47,12 @@ from wisepack_core.artifacts import (
 )
 from wisepack_core.domain import ApprovalState, Source, Strategy
 from wisepack_core.events import Actor, DynamicEvent, DynamicEventType, Stage
+from wisepack_core.execution import ExecutionBackend, parse_backend
 from wisepack_core.packing import OptimizerConfig
+from wisepack_core.anomaly import AnomalyEvent
 from wisepack_core.workflow import (
-    ApprovalRequired, RobotSimConfig, WorkflowConfig, WorkflowEngine, WorkflowError,
+    AnomalyHold, ApprovalRequired, RobotSimConfig, WorkflowConfig, WorkflowEngine,
+    WorkflowError,
 )
 
 
@@ -142,7 +145,15 @@ class AwaitApproval(_EngineBehaviour):
 
 
 class ExecuteLoop(_EngineBehaviour):
-    """One placement per tick: pick, verify, place, verify, update."""
+    """One placement per tick: pick, verify, place, verify, update.
+
+    BACKEND-AGNOSTIC BY CONSTRUCTION. The gating logic below — approval first,
+    then the pause gate, then a re-plan check afterwards — is identical for both
+    execution backends and is the safety-relevant part. Only the single line that
+    actually advances a placement differs, and the two alternatives share a
+    return contract (True while more remains, False when the run is done) so
+    there is no second control flow to get wrong.
+    """
 
     def update(self):
         if self.engine.finished:
@@ -156,8 +167,20 @@ class ExecuteLoop(_EngineBehaviour):
         # never went back to AwaitApproval — the stage stayed at NEXT_ITEM after
         # a re-plan, i.e. execution continued on a plan nobody had approved.
         # Measured on the live stack before this was corrected.
+        # An anomaly hold blocks execution deterministically, before approval.
+        # A warning holds an approved plan (resume after acknowledgement); a
+        # critical also revoked approval, so it drops through to the gate below.
+        if self.engine.anomaly_hold:
+            return py_trees.common.Status.RUNNING
+
         plan = self.engine.selected
         if plan is None or plan.approval_state is not ApprovalState.APPROVED:
+            # A physical backend may have an item in flight when approval is
+            # withdrawn. Tell it to stop before returning to the gate, or the
+            # arm carries on placing an item from a superseded plan.
+            if self.owner.isaac is not None:
+                self.owner.isaac.abort_run(
+                    self.engine, "plan is no longer approved")
             return py_trees.common.Status.FAILURE       # back to the gate
 
         if not getattr(self.owner, "auto_step", True):
@@ -165,10 +188,19 @@ class ExecuteLoop(_EngineBehaviour):
             # rather than asking for approval a second time.
             return py_trees.common.Status.RUNNING
         try:
-            more = self.engine.step_execution()
-        except ApprovalRequired as exc:
-            # Structurally unreachable behind AwaitApproval; if it ever fires,
-            # something re-planned underneath us and the tree must go back.
+            # BOTH backends go through the same gate. The dispatch differs
+            # (Isaac executes physically, the simulated model resolves a seeded
+            # coin flip); the exception handling does not, and must not — an
+            # anomaly hold stops a PHYSICAL run exactly as it stops a simulated
+            # one, and returning to the tree is the only safe response to either.
+            if self.owner.isaac is not None:
+                more = self.owner.isaac.tick(self.engine)
+            else:
+                more = self.engine.step_execution()
+        except (ApprovalRequired, AnomalyHold) as exc:
+            # Structurally unreachable behind AwaitApproval / the anomaly gate;
+            # if it fires, something changed underneath us and the tree must
+            # re-evaluate rather than execute.
             self.owner.get_logger().warn(f"execution gated: {exc}")
             return py_trees.common.Status.FAILURE
         self.owner.publish_execution()
@@ -214,11 +246,22 @@ class HitLOrchestrator(Node):
         self.declare_parameter("pick_failure_probability", 0.08)
         self.declare_parameter("results_dir", "results")
         self.declare_parameter("tick_period_s", 0.7)
+        # WHO EXECUTES, not where the dashboard reads from. See
+        # wisepack_core.execution for why those are different concepts.
+        self.declare_parameter("execution_backend",
+                               ExecutionBackend.SIMULATED.value)
+        self.declare_parameter("isaac_ready_timeout_s", 240.0)
+        self.declare_parameter("isaac_item_timeout_s", 180.0)
 
         preset = self.get_parameter("preset").value
         seed = int(self.get_parameter("seed").value)
         self.results_dir = self.get_parameter("results_dir").value
         self.auto_approve = bool(self.get_parameter("auto_approve").value)
+        # An unknown backend name raises here, before any publisher exists. A
+        # typo that quietly selected `simulated` would produce a run that
+        # reported physical execution it never performed.
+        self.execution_backend = parse_backend(
+            self.get_parameter("execution_backend").value)
 
         events = []
         if bool(self.get_parameter("dynamic_events").value):
@@ -240,7 +283,8 @@ class HitLOrchestrator(Node):
                     self.get_parameter("pick_failure_probability").value),
                 seed=seed),
             dynamic_events=events,
-            auto_approve=self.auto_approve))
+            auto_approve=self.auto_approve,
+            execution_backend=self.execution_backend))
 
         # -- publishers: exactly one writer per topic -------------------------
         def pub(topic, msg_type):
@@ -254,6 +298,24 @@ class HitLOrchestrator(Node):
         self.p_optimized = pub(T.PLAN_OPTIMIZED, String)
         self.p_selected = pub(T.PLAN_SELECTED, String)
         self.p_plan_summary = pub(T.PLAN_SUMMARY, String)
+        self.p_comparison = pub(T.PLAN_STRATEGY_COMPARISON, String)
+        # Anomaly monitoring. The orchestrator is the single writer of
+        # the recorded stream and the state; it INGESTS from the external seam.
+        self.p_anomaly = pub(T.ANOMALY_EVENT, String)
+        self.p_anomaly_state = pub(T.ANOMALY_STATE, String)
+        # Whole-process layer: SIMULATED cutting, container inventory, SIMULATED
+        # logistics. The orchestrator is the single writer of every one.
+        self.p_cut_proposal = pub(T.CUTTING_PROPOSAL, String)
+        self.p_cut_state = pub(T.CUTTING_STATE, String)
+        self.p_cut_result = pub(T.CUTTING_RESULT, String)
+        self.p_cut_request = pub(T.CUTTING_REQUEST, String)
+        self.p_inv_state = pub(T.INVENTORY_CONTAINER_STATE, String)
+        self.p_inv_summary = pub(T.INVENTORY_SUMMARY, String)
+        self.p_inv_event = pub(T.INVENTORY_CONTAINER_EVENT, String)
+        self.p_inv_reservation = pub(T.INVENTORY_RESERVATION, String)
+        self.p_log_task = pub(T.LOGISTICS_CONTAINER_TASK, String)
+        self.p_log_task_state = pub(T.LOGISTICS_CONTAINER_TASK_STATE, String)
+        self.p_log_robot = pub(T.LOGISTICS_MOBILE_ROBOT_STATE, String)
         self.p_state = pub(T.EXECUTION_STATE, String)
         # Published with the OFFERING profile: Deadline + Liveliness are
         # offered so a strict external consumer can use them. Subscribers in
@@ -263,6 +325,7 @@ class HitLOrchestrator(Node):
         self.p_item = pub(T.EXECUTION_CURRENT_ITEM, String)
         self.p_container = pub(T.EXECUTION_CURRENT_CONTAINER, String)
         self.p_progress = pub(T.EXECUTION_PROGRESS_PCT, Float32)
+        self.p_backend = pub(T.EXECUTION_BACKEND, String)
         self.p_ready = pub(T.SYSTEM_READINESS, Bool)
         self.p_event = pub(T.ACTION_EVENT, String)
         self.p_sequence = pub(T.ACTION_SEQUENCE, Int32)
@@ -286,10 +349,37 @@ class HitLOrchestrator(Node):
                                  qos_for(T.OPERATOR_APPROVAL))
         self.create_subscription(String, T.OPERATOR_COMMAND, self._on_command,
                                  qos_for(T.OPERATOR_COMMAND))
+        # Ingest seam: a future external Topic #2 detector (or the bundled
+        # simulator) publishes structured events here.
+        self.create_subscription(String, T.ANOMALY_EXTERNAL, self._on_anomaly,
+                                 qos_for(T.ANOMALY_EXTERNAL))
+        # Separate cut-approval channel and inventory-request channel — both
+        # written by Orion-LD from a mapped NGSI-LD attribute PATCH (brief §6/§13).
+        self.create_subscription(String, T.CUTTING_APPROVAL, self._on_cut_approval,
+                                 qos_for(T.CUTTING_APPROVAL))
+        self.create_subscription(String, T.INVENTORY_REQUEST, self._on_inventory_request,
+                                 qos_for(T.INVENTORY_REQUEST))
 
         # Every action event goes out on DDS the moment it is recorded. This is
         # the audit path; nothing batches it and nothing bypasses it.
         self.engine.log.add_sink(self._publish_event)
+
+        # THE EXECUTION BACKEND. When this is None the simulated robot model in
+        # WorkflowEngine.step_execution runs, exactly as it always has. When it
+        # is an IsaacExecutionBridge, step_execution is never called at all — see
+        # ExecuteLoop — so the two backends can never both claim a placement.
+        self.isaac = None
+        if self.execution_backend is ExecutionBackend.ISAAC:
+            from .isaac_bridge import IsaacExecutionBridge      # noqa: PLC0415
+            self.isaac = IsaacExecutionBridge(
+                self,
+                ready_timeout_s=float(
+                    self.get_parameter("isaac_ready_timeout_s").value),
+                item_timeout_s=float(
+                    self.get_parameter("isaac_item_timeout_s").value))
+            self.get_logger().info(
+                "execution backend: ISAAC SIM — the simulated robot model is "
+                "disabled for this run; placements are executed physically")
 
         self.tree = build_tree(self)
         self.tree.setup_with_descendants()
@@ -297,6 +387,10 @@ class HitLOrchestrator(Node):
         # Gates the ExecuteLoop behaviour. Approving sets it; `pause` clears it
         # WITHOUT touching approval, so `resume` needs no second approval.
         self.auto_step = True
+        # (proposal_id, approval_revision) of the last CUTTING_REQUEST emitted —
+        # the dedup authority lives in WholeProcess.build_cut_request(); this is
+        # kept for observability and a belt-and-braces guard.
+        self._last_cut_request_key = None
 
         self._heartbeat = 0
         period = float(self.get_parameter("tick_period_s").value)
@@ -308,9 +402,12 @@ class HitLOrchestrator(Node):
         self.create_timer(ORCHESTRATOR_PERIOD_S, self.publish_state)
         self.create_timer(ORCHESTRATOR_PERIOD_S, self._publish_heartbeat)
 
+        self._publish_anomaly_state()          # latch an initial "no anomaly" state
+        self.publish_whole_process()           # latch initial inventory/logistics
         self.get_logger().info(
             f"WISEPACK orchestrator up — preset={preset} seed={seed} "
-            f"auto_approve={self.auto_approve}")
+            f"auto_approve={self.auto_approve} "
+            f"execution_backend={self.execution_backend.value}")
 
     # -- tick ------------------------------------------------------------- #
 
@@ -349,6 +446,15 @@ class HitLOrchestrator(Node):
                 self.publish_scenario()
                 self.publish_plans()
                 self.publish_state()
+                # The batch just changed: overwrite the latched comparison topic
+                # with a "cleared" marker stamped with the NEW revision, so a
+                # late subscriber never renders a comparison from the old batch.
+                self.p_comparison.publish(String(data=json.dumps({
+                    "schema_version": "1.0", "status": "cleared",
+                    "scenario_revision": self.engine.scenario_revision,
+                    "scenario_id": (self.engine.scenario.scenario_id
+                                    if self.engine.scenario else None),
+                    "results": []})))
             except Exception as exc:                    # noqa: BLE001
                 self.get_logger().warn(f"post-replan publish failed: {exc}")
 
@@ -393,6 +499,7 @@ class HitLOrchestrator(Node):
             "selected": engine.selected.summary() if engine.selected else None,
             "selected_plan_id": engine.selected.plan_id if engine.selected else None,
             "selection_reason": engine.selection_reason,
+            "scenario_revision": engine.scenario_revision,
         }, default=str)))
         self.publish_kpis()
 
@@ -407,6 +514,21 @@ class HitLOrchestrator(Node):
         self.p_ready.publish(Bool(data=not engine.finished
                                   and engine.stage is not Stage.DEGRADED))
         self.p_progress.publish(Float32(data=float(engine.progress_pct)))
+        # Latched, so a dashboard attaching mid-run learns which backend is
+        # authoritative rather than defaulting to "simulated" and mislabelling a
+        # physical run. The payload carries the live simulator status too, so
+        # "isaac selected" and "isaac actually up" stay distinguishable.
+        backend = {"backend": self.execution_backend.value,
+                   "label": self.execution_backend.label,
+                   "detail": self.execution_backend.detail,
+                   "physical": self.execution_backend.is_physical}
+        if self.isaac is not None:
+            backend["isaac"] = self.isaac.status()
+            # Backend-neutral: the dashboard reads `visualization` without
+            # knowing which backend produced it, so a future real cell needs no
+            # dashboard change.
+            backend["visualization"] = self.isaac.visualization
+        self.p_backend.publish(String(data=json.dumps(backend, default=str)))
 
     def publish_execution(self) -> None:
         engine = self.engine
@@ -483,7 +605,7 @@ class HitLOrchestrator(Node):
             return
         try:
             self._apply_command(command, args)
-        except (ApprovalRequired, WorkflowError, ValueError) as exc:
+        except (ApprovalRequired, AnomalyHold, WorkflowError, ValueError) as exc:
             # A command that is not legal in the current stage is an operator
             # mistake, not a node fault. Log it and carry on serving.
             self.get_logger().warn(f"command {command} refused: {exc}")
@@ -582,8 +704,32 @@ class HitLOrchestrator(Node):
                             message="automatic execution resumed by operator")
 
         elif command == "step":
-            engine.step_execution()
+            # MUST route through the active backend. Calling step_execution()
+            # here unconditionally would run the SIMULATED robot model for one
+            # placement in the middle of a physical run — a fabricated outcome
+            # for an item the arm never touched, recorded in the audit trail as
+            # though it had been.
+            if self.isaac is not None:
+                self.isaac.tick(engine)
+            else:
+                engine.step_execution()
             self.publish_execution()
+
+        elif command == "compare_strategies":
+            self._compare_strategies(args)
+
+        elif command == "inject_anomaly":
+            # Operator-injected SIMULATED anomaly. Same deterministic path as an
+            # event arriving on the ingest seam.
+            cls = args.get("anomaly_class", "camera_view_lost")
+            event = AnomalyEvent.simulate(
+                cls, severity=args.get("severity"),
+                confidence=args.get("confidence"))
+            self._ingest_anomaly(event)
+
+        elif command == "acknowledge_anomaly":
+            engine.acknowledge_anomaly(args.get("operator", "dashboard operator"))
+            self._publish_anomaly_state()
 
         elif command == "reset":
             self._reset_run(args)
@@ -595,6 +741,228 @@ class HitLOrchestrator(Node):
                             message=f"artefacts written ({len(paths)} files)",
                             details={"files": paths})
 
+        # -- cut-aware HITL controls (brief §6) --
+        elif command == "compare_cut_aware":
+            engine.wp.generate_cut_alternatives()
+            self.auto_step = False
+            self.publish_whole_process()
+
+        elif command == "select_cut_alternative":
+            engine.wp.select_alternative(args.get("label", "no_cut"))
+            self.publish_whole_process()
+
+        elif command == "limit_cuts":
+            engine.wp.limit_cuts(int(args.get("max_cuts", 1)))
+            self.publish_whole_process()
+
+        elif command == "set_min_segment":
+            engine.wp.set_minimum_segment_mm(int(args.get("mm", 400)))
+            self.publish_whole_process()
+
+        elif command == "prefer_no_cut":
+            engine.wp.set_prefer_no_cut(bool(args.get("prefer", True)))
+            self.publish_whole_process()
+
+        elif command == "approve_cut":
+            engine.wp.approve_cut(args.get("operator", "fiware/dashboard"))
+            self.publish_whole_process()
+
+        elif command == "reject_cut":
+            engine.wp.reject_cut(args.get("reason", "operator preferred no cutting"))
+            self.publish_whole_process()
+
+        elif command == "simulate_cut":
+            engine.wp.simulate_cut(deviation_mm=int(args.get("deviation_mm", 0)))
+            self.publish_plans()
+            self.publish_whole_process()
+
+        elif command == "simulate_cut_failure":
+            engine.wp.simulate_cut_failure(args.get("reason", "blade jam (simulated)"))
+            self.publish_whole_process()
+
+        # -- inventory + logistics controls (brief §13) --
+        elif command == "init_inventory":
+            engine.wp.initialise_simulated_inventory(int(args.get("count", 4)))
+            self.publish_whole_process()
+
+        elif command == "check_containers":
+            engine.wp.check_container_availability()
+            engine.wp.run_logistics_to_quiescence()
+            self.publish_whole_process()
+
+        elif command in ("reserve_container", "release_container",
+                         "request_delivery", "mark_container_unavailable",
+                         "restore_container", "mark_container_full"):
+            op = {
+                "reserve_container": "reserve",
+                "release_container": "release_reservation",
+                "request_delivery": "request_delivery",
+                "mark_container_unavailable": "mark_unavailable",
+                "restore_container": "restore",
+                "mark_container_full": "mark_full",
+            }[command]
+            cid = args.get("container_id")
+            if not cid:
+                raise ValueError(f"{command} requires container_id")
+            engine.wp.inventory_operation(
+                op, cid, actor=args.get("operator", "dashboard"),
+                reason=args.get("reason", ""),
+                holder=args.get("holder", engine.selected.plan_id
+                                if engine.selected else "operator"))
+            engine.wp.run_logistics_to_quiescence()
+            self.publish_whole_process()
+
+        elif command == "collect_full_containers":
+            engine.wp.collect_full_containers()
+            self.publish_whole_process()
+
+    def _on_anomaly(self, msg: String) -> None:
+        """Ingest an anomaly from the external seam and react deterministically."""
+        import time as _time
+        received = _time.monotonic()
+        try:
+            event = AnomalyEvent.from_dict(json.loads(msg.data))
+        except (ValueError, KeyError) as exc:
+            self.get_logger().warn(f"rejected malformed anomaly: {exc}")
+            return
+        self._ingest_anomaly(event, received)
+
+    def _ingest_anomaly(self, event: AnomalyEvent,
+                        received_monotonic: Optional[float] = None) -> None:
+        """React to an anomaly and publish the recorded stream + state.
+
+        Safety-critical response is LOCAL and deterministic (anomaly -> engine
+        -> pause/hold), and does NOT wait for FIWARE. The FIWARE path is an
+        ADDITIONAL analytics/traceability route, not the stopping mechanism.
+        """
+        record = self.engine.apply_anomaly(event, received_monotonic)
+        # Record the anomaly on the canonical stream (this is what maps to FIWARE).
+        self.p_anomaly.publish(String(data=json.dumps(record, default=str)))
+        self._publish_anomaly_state()
+        # A critical anomaly revoked approval; republish plans/state so the
+        # dashboard shows the workflow back at the gate.
+        if record.get("reaction") == "hold":
+            self.auto_step = False
+            self.publish_plans()
+        self.publish_state()
+
+    def _publish_anomaly_state(self) -> None:
+        self.p_anomaly_state.publish(
+            String(data=json.dumps(self.engine.anomaly_snapshot(), default=str)))
+
+    # -- whole-process (cutting / inventory / logistics) ------------------- #
+
+    def _on_cut_approval(self, msg: String) -> None:
+        """A PATCH of WISEPACKSystem.cutApproval — approves cutting ONLY."""
+        decision = (msg.data or "").strip().upper()
+        try:
+            if decision in ("APPROVE_CUT", "APPROVE"):
+                self.engine.wp.approve_cut("fiware/dashboard")
+            elif decision in ("REJECT_CUT", "REJECT"):
+                self.engine.wp.reject_cut("rejected via cut-approval channel")
+            else:
+                self.get_logger().warn(f"unknown cut approval {msg.data!r}")
+                return
+        except Exception as exc:                            # noqa: BLE001
+            self.get_logger().warn(f"cut approval refused: {exc}")
+            return
+        self.publish_whole_process()
+        self.publish_state()
+
+    def _on_inventory_request(self, msg: String) -> None:
+        """A PATCH of WISEPACKSystem.inventoryRequest — a JSON {command,args}."""
+        try:
+            payload = json.loads(msg.data or "{}")
+        except ValueError:
+            self.get_logger().warn(f"malformed inventory request: {msg.data!r}")
+            return
+        command = payload.get("command", "")
+        args = payload.get("args", {}) or {}
+        if command not in T.OPERATOR_COMMANDS:
+            self.get_logger().warn(f"unknown inventory command {command!r}")
+            return
+        try:
+            self._apply_command(command, args)
+        except Exception as exc:                            # noqa: BLE001
+            self.get_logger().warn(f"inventory command {command} refused: {exc}")
+        self.publish_state()
+
+    def publish_whole_process(self) -> None:
+        """Publish the cutting / inventory / logistics state on their topics."""
+        wp = self.engine.wp
+        cut = wp.cut_snapshot()
+        if cut is not None:
+            self.p_cut_proposal.publish(String(data=json.dumps(cut, default=str)))
+            self.p_cut_state.publish(String(data=json.dumps(
+                {"stage": self.engine.stage.value,
+                 "cut_approval_state": cut["cut_approval_state"],
+                 "selected_label": cut["selected_label"]}, default=str)))
+            # Emit the request to the EXTERNAL FUTURE cutting skill EXACTLY ONCE
+            # per approved proposal revision. build_cut_request() returns a new
+            # request only on the first call after an approval and None on every
+            # periodic republication, so this cannot create duplicates.
+            request = wp.build_cut_request()
+            if request is not None:
+                self._last_cut_request_key = (request["proposal_id"],
+                                              request["approval_revision"])
+                self.p_cut_request.publish(String(data=json.dumps(
+                    request, default=str)))
+            if cut.get("latest_cut_result"):
+                self.p_cut_result.publish(String(data=json.dumps(
+                    cut["latest_cut_result"], default=str)))
+        inv = wp.inventory
+        self.p_inv_state.publish(String(data=json.dumps(
+            inv.semantic_states(), default=str)))
+        self.p_inv_summary.publish(String(data=json.dumps(
+            inv.summary(), default=str)))
+        log = wp.logistics
+        self.p_log_robot.publish(String(data=json.dumps(
+            log.robot.to_dict(), default=str)))
+        self.p_log_task.publish(String(data=json.dumps(
+            log.facility_map(), default=str)))
+        active = log.tasks.get(log.robot.current_task_id or "")
+        if active is not None:
+            self.p_log_task_state.publish(String(data=json.dumps(
+                active.to_dict(), default=str)))
+
+    def _compare_strategies(self, args: Dict[str, Any]) -> None:
+        """Run + validate every strategy and publish a structured comparison.
+
+        Authoritative in ROS/FIWARE modes: the dashboard has no engine, so this
+        is the ONLY place a live comparison is produced. It is decision support
+        and mutates no plan (see WorkflowEngine.build_strategy_comparison), so
+        the rejection rules below guard state consistency, not safety.
+        """
+        engine = self.engine
+        if engine.scenario is None:
+            raise WorkflowError("no scenario — generate a plan first")
+        # Revision guard: if the dashboard names a revision, it must be current.
+        req_rev = args.get("scenario_revision")
+        if req_rev is not None and int(req_rev) != engine.scenario_revision:
+            raise WorkflowError(
+                f"scenario revision {req_rev} is stale "
+                f"(current is {engine.scenario_revision})")
+        # One comparison at a time.
+        if getattr(self, "_comparing", False):
+            raise WorkflowError("a strategy comparison is already in progress")
+        # Not while a plan is being (re)generated.
+        if engine.stage in (Stage.GENERATE_BASELINE_PLAN,
+                            Stage.GENERATE_OPTIMIZED_PLAN, Stage.REPLAN):
+            raise WorkflowError("planning in progress — try again shortly")
+
+        self._comparing = True
+        try:
+            strategies = args.get("strategies") or None
+            comparison = engine.build_strategy_comparison(strategies)
+        finally:
+            self._comparing = False
+
+        self.p_comparison.publish(
+            String(data=json.dumps(comparison, default=str)))
+        self.get_logger().info(
+            f"strategy comparison {comparison['comparison_id']} published "
+            f"(revision {comparison['scenario_revision']})")
+
     def _reset_run(self, args: Dict[str, Any]) -> None:
         """Build a brand-new run from the operator's scenario settings.
 
@@ -603,6 +971,7 @@ class HitLOrchestrator(Node):
         the previous run's counters and frozen placements is exactly the kind of
         state that makes a demo behave differently the second time it is shown.
         """
+        previous_engine = self.engine
         preset = args.get("preset", self.engine.config.preset)
         seed = int(args.get("seed", self.engine.config.seed))
         strategy = Strategy(args.get("strategy", self.engine.config.strategy.value))
@@ -637,8 +1006,18 @@ class HitLOrchestrator(Node):
                 seed=seed),
             dynamic_events=events,
             generator_overrides=overrides,
-            auto_approve=self.auto_approve))
+            auto_approve=self.auto_approve,
+            execution_backend=self.execution_backend))
         self.engine.log.add_sink(self._publish_event)
+
+        # A reset is a NEW run with a new run_id, so the physical scene has to be
+        # rebuilt around the new scenario. Abort whatever the simulator was doing
+        # before the old engine goes out of scope; the bridge re-opens on its
+        # next tick when it notices the run_id changed.
+        if self.isaac is not None:
+            self.isaac.abort_run(previous_engine,
+                                 "operator reset — starting a new run")
+            self.isaac.run_open = False
 
         # Drive straight to the approval gate — never past it.
         self.engine.generate_or_load_scenario()

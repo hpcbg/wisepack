@@ -1,0 +1,25 @@
+# CURATED CUT-AWARE DEMONSTRATION DATASET — read the caveat before quoting.
+#
+# Hand-built (see wisepack_core/generator.py::build_cut_scenario) so that one
+# cuttable pipe forces a SECOND container when packed whole, but fits residual
+# cavities in the first container once segmented:
+#
+#   * container is the standard_box (inner 1500 x 800 x 600 mm);
+#   * pipe-A and pipe-B (800 mm, OD 360) leave two 700 mm floor cavities;
+#   * pipe-C (1300 mm, OD 340, cut_allowed, max 2 cuts, min segment 400 mm) fits
+#     whole only by opening a second container, but two ~650 mm segments drop
+#     into the cavities.
+#
+# NO container count is asserted here. The no-cut plan needs 2 and the cut plan
+# needs 1 because that is what the geometry-aware packer computes on this input.
+# The cut is charged its real process cost (cutting time, kerf, complexity) and
+# is recommended only because a saved container outweighs that cost.
+scenario:
+  preset: cut_avoids_extra_container
+  seed: 7
+  strategy: max_density
+
+optimizer:
+  restarts: 6
+
+dynamic_events: []

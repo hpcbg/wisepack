@@ -1,0 +1,17 @@
+# CURATED CUT-AWARE DEMONSTRATION DATASET — the HONEST-DECLINE case.
+#
+# Hand-built (see wisepack_core/generator.py::build_cut_scenario) with a single
+# cuttable pipe (1400 mm, OD 300) that already packs into ONE standard_box.
+# Cutting cannot reduce the container count here, so the whole-process planner —
+# using the SAME untouched scoring as the saving case — charges the cut its cost
+# and returns "No cut recommended". This scenario exists to prove the scoring is
+# not tuned only to make cutting look good.
+scenario:
+  preset: cut_not_worthwhile
+  seed: 7
+  strategy: max_density
+
+optimizer:
+  restarts: 6
+
+dynamic_events: []

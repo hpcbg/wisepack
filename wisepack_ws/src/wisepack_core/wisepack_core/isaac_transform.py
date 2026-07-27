@@ -1,0 +1,483 @@
+"""THE ONE PLACE WISEPACK COORDINATES BECOME ISAAC WORLD COORDINATES.
+
+There are exactly two coordinate conventions in play and they disagree about
+both units and origin:
+
+    WISEPACK   integer MILLIMETRES. A placement's ``position`` is the MIN CORNER
+               of the item's axis-aligned bounding box, expressed in the target
+               container's INNER frame (origin at the inner min corner). An
+               item's orientation is one of three axis-aligned choices, named by
+               which world axis its LENGTH points along.
+
+    Isaac Sim  floating-point METRES, Z up, one shared world frame. A rigid body
+               is posed by the CENTRE of its geometry plus a quaternion.
+
+Every conversion between them lives in this module and nowhere else. That is a
+hard rule, not a style preference: axis swaps and unit factors sprinkled through
+scene code, robot code and validation code are individually plausible and
+collectively unfalsifiable, and the failure they produce — a robot placing items
+in a mirrored container — looks like a physics problem rather than an arithmetic
+one. Concentrating them here means the whole conversion is covered by tests that
+need no GPU and no simulator (``tests/test_isaac_backend.py``).
+
+THREE FRAMES, NAMED
+-------------------
+``world``            Isaac's world. Metres, Z up, robot base at
+                     (0, 0, ``table_top_z_m``).
+``table``            Where items are picked from. Millimetres, axes parallel to
+                     world, origin at ``table_frame_origin_m``. This is the
+                     frame the contract's ``source_pose`` uses.
+``container:<id>``   Millimetres, axes parallel to world, origin at the
+                     container's inner min corner. This is exactly the frame
+                     ``domain.Placement.position`` is already expressed in, so a
+                     placement needs no reinterpretation — only a corner-to-centre
+                     shift and a unit conversion.
+
+WHY THE PICK LAYOUT IS NOT ``WasteItem.source_position``
+--------------------------------------------------------
+The generator scatters ``source_position`` through a 900x700x250 mm volume: a
+loose bin, which is the right abstraction for a perception problem and the wrong
+one for a Panda with a 80 mm parallel gripper and no vision. This module lays the
+same items out in a deterministic single row on the table instead, derived from
+the item's index in the scenario. The layout is ground truth by construction and
+is documented as such — see ``simulators/isaac/README.md``. When real perception
+arrives it replaces ``table_pose_for_index``, and nothing else changes.
+"""
+
+from __future__ import annotations
+
+import math
+from dataclasses import dataclass
+from typing import Dict, Optional, Sequence, Tuple
+
+from .domain import Axis, Container, Placement, Vec3, WasteItem
+from .isaac_contract import Pose
+
+#: Quaternions are (w, x, y, z) throughout — Isaac's convention for
+#: ``set_world_poses``. Written out rather than assumed, because the other
+#: common convention (x, y, z, w) produces a plausible-looking wrong rotation.
+Quaternion = Tuple[float, float, float, float]
+
+_SQRT_HALF = math.sqrt(0.5)
+
+#: A USD cylinder's axis is Z by default, so the rotation needed to lay the
+#: item's length along each world axis is fixed and enumerable. Keeping it as a
+#: literal table rather than composing rotations at call sites means the values
+#: can be asserted directly in a test.
+_AXIS_QUATERNION: Dict[Axis, Quaternion] = {
+    #: identity — the cylinder already points along +Z
+    Axis.Z: (1.0, 0.0, 0.0, 0.0),
+    #: +90 deg about Y maps local +Z onto world +X
+    Axis.X: (_SQRT_HALF, 0.0, _SQRT_HALF, 0.0),
+    #: -90 deg about X maps local +Z onto world +Y
+    Axis.Y: (_SQRT_HALF, -_SQRT_HALF, 0.0, 0.0),
+}
+
+
+def mm_to_m(value: float) -> float:
+    return float(value) / 1000.0
+
+
+def m_to_mm(value: float) -> float:
+    return float(value) * 1000.0
+
+
+def quaternion_for_axis(axis: Axis) -> Quaternion:
+    """The world orientation that lays a Z-aligned cylinder along ``axis``."""
+    return _AXIS_QUATERNION[Axis(axis)]
+
+
+def axis_from_quaternion(quaternion: Sequence[float]) -> Axis:
+    """Which world axis a cylinder's own axis is closest to, given (w,x,y,z).
+
+    Used on the way BACK: after PhysX has settled a dropped item, its
+    orientation is arbitrary, and the honest way to report "which way is it
+    lying" is to rotate the body's local +Z into world coordinates and pick the
+    nearest world axis. This is a measurement, not a claim that the item landed
+    exactly axis-aligned; the residual angle is reported separately by
+    ``axis_deviation_deg``.
+    """
+    w, x, y, z = (float(v) for v in quaternion)
+    # Third column of the rotation matrix: R @ (0, 0, 1).
+    local_z = (2.0 * (x * z + w * y),
+               2.0 * (y * z - w * x),
+               1.0 - 2.0 * (x * x + y * y))
+    magnitudes = (abs(local_z[0]), abs(local_z[1]), abs(local_z[2]))
+    return (Axis.X, Axis.Y, Axis.Z)[magnitudes.index(max(magnitudes))]
+
+
+def axis_deviation_deg(quaternion: Sequence[float], axis: Axis) -> float:
+    """Angle in degrees between the body's own axis and ``axis``, folded to [0, 90].
+
+    Folded because a cylinder is symmetric end-for-end: lying along +X and along
+    -X are the same physical placement, and reporting 180 deg of "error" for a
+    perfect result would be nonsense.
+    """
+    w, x, y, z = (float(v) for v in quaternion)
+    local_z = (2.0 * (x * z + w * y),
+               2.0 * (y * z - w * x),
+               1.0 - 2.0 * (x * x + y * y))
+    target = {Axis.X: (1.0, 0.0, 0.0), Axis.Y: (0.0, 1.0, 0.0),
+              Axis.Z: (0.0, 0.0, 1.0)}[Axis(axis)]
+    dot = sum(a * b for a, b in zip(local_z, target))
+    return math.degrees(math.acos(min(1.0, abs(dot))))
+
+
+# --------------------------------------------------------------------------- #
+# Scene layout
+# --------------------------------------------------------------------------- #
+
+
+@dataclass(frozen=True)
+class SceneLayout:
+    """Where everything sits in the Isaac world. Metres, Z up.
+
+    The defaults are sized for a Franka Emika Panda (roughly 0.855 m reach from
+    its base) working on a table, with the pick row in front of the robot and the
+    container to its left. Both regions are inside reach at the heights the
+    sequence actually visits — ``validate()`` checks that rather than trusting it,
+    because an unreachable target does not fail loudly in Isaac: the IK simply
+    converges to the closest achievable pose and the gripper closes on air.
+    """
+
+    #: Table top surface. The robot base is mounted ON the table at (0, 0).
+    table_top_z_m: float = 0.40
+    table_size_m: Tuple[float, float, float] = (1.20, 1.30, 0.40)
+    #: Table centre in the world XY plane. Offset forward and left so the table
+    #: covers both the pick row and the container without the robot standing on
+    #: its edge.
+    table_centre_xy_m: Tuple[float, float] = (0.22, 0.06)
+
+    #: Pick row. Items lie with their LENGTH along world X, spaced along Y, so a
+    #: top-down gripper whose fingers close along world Y closes across the
+    #: cylinder rather than along it.
+    pick_row_x_m: float = 0.48
+    pick_row_y_start_m: float = -0.32
+    pick_row_y_pitch_m: float = 0.11
+
+    #: Outer bottom-left corner of the first container, ON the table top. The
+    #: INNER origin — the frame every placement is expressed in — is derived from
+    #: this plus the wall thickness, so the two can never be set inconsistently.
+    #:
+    #: Positioned so the bin's CENTRE sits around 0.46 m from the base — the
+    #: middle of the Panda's usable shell. A manipulator workspace is bounded at
+    #: both ends: pushing the bin out puts its far corner past the reach limit,
+    #: and pulling it in puts its near corner inside the folded-arm region where
+    #: the IK has no comfortable solution. validate() checks all four corners
+    #: against both bounds rather than assuming which one is worst.
+    #: Moved outward from an earlier (0.07, 0.29) after a measured failure: the
+    #: pre-place pose sits above the bin at rim + clearance, which for a close-in
+    #: bin is HIGH and NEAR — the region where the Panda must fold its elbow and
+    #: damped least squares converges slowly. The carry timed out there while the
+    #: pick and lift succeeded. Reachability is bounded at both ends and this is
+    #: the far end of "too close", not the near end of "too far".
+    container_outer_xy_m: Tuple[float, float] = (0.09, 0.32)
+    #: Additional containers are laid out along +X at this pitch. The smoke
+    #: scenario uses one; a plan that opens a second must still be renderable.
+    container_pitch_x_m: float = 0.55
+    container_wall_thickness_m: float = 0.008
+
+    #: Robot reach envelope, measured from the base at (0, 0, table_top_z_m).
+    #: Conservative: the nominal Panda reach is ~0.855 m and the last few
+    #: centimetres are only achievable at unhelpful wrist configurations.
+    robot_max_reach_m: float = 0.78
+    robot_min_reach_m: float = 0.20
+
+    @property
+    def table_frame_origin_m(self) -> Tuple[float, float, float]:
+        """World position of the ``table`` frame origin.
+
+        The origin is the robot base projected onto the table top, so a table
+        pose of (0, 0, 0) mm is "at the robot's feet" and the numbers in a
+        ``source_pose`` read naturally against the robot.
+        """
+        return (0.0, 0.0, self.table_top_z_m)
+
+    def container_outer_origin_for(self, container_id: str
+                                   ) -> Tuple[float, float, float]:
+        """World position of one container's OUTER bottom-left corner."""
+        slot = container_slot(container_id)
+        x, y = self.container_outer_xy_m
+        return (x + slot * self.container_pitch_x_m, y, self.table_top_z_m)
+
+    def container_origin_for(self, container_id: str) -> Tuple[float, float, float]:
+        """World position of one container's INNER min corner.
+
+        This is the origin of the ``container:<id>`` frame — the frame the
+        optimizer's placements are already expressed in — so it is the single
+        anchor the whole placement conversion hangs off.
+        """
+        x, y, z = self.container_outer_origin_for(container_id)
+        t = self.container_wall_thickness_m
+        return (x + t, y + t, z + t)
+
+    def validate(self, container_inner_mm: Vec3, item_count: int,
+                 clearance_m: float = 0.15) -> None:
+        """Raise if the layout puts anything outside the robot's usable envelope.
+
+        ``clearance_m`` is the height above the container rim the sequence rises
+        to before moving laterally, and the container check is done at THAT
+        height rather than at table level, where everything trivially fits.
+
+        This is checked rather than assumed because an unreachable target does
+        not fail loudly in Isaac. Differential IK converges to the nearest
+        achievable pose and the gripper closes on air, which looks like a grasp
+        tuning problem and is actually a layout arithmetic problem.
+        """
+        problems = []
+        for index in range(max(1, item_count)):
+            x, y = self.pick_xy_m(index)
+            reach = math.hypot(x, y)
+            if not self.robot_min_reach_m <= reach <= self.robot_max_reach_m:
+                problems.append(
+                    f"pick slot {index} at ({x:.3f}, {y:.3f}) is {reach:.3f} m "
+                    f"from the base, outside "
+                    f"[{self.robot_min_reach_m}, {self.robot_max_reach_m}]")
+
+        ox, oy, oz = self.container_origin_for("CNT-01")
+        inner_x = mm_to_m(container_inner_mm.x)
+        inner_y = mm_to_m(container_inner_mm.y)
+        height = oz + mm_to_m(container_inner_mm.z) + clearance_m - self.table_top_z_m
+        # All four corners: which one is worst depends on where the bin sits
+        # relative to the base, and hard-coding "the far one" was wrong as soon
+        # as the bin moved behind the robot's Y axis.
+        for cx, cy in ((ox, oy), (ox + inner_x, oy),
+                       (ox, oy + inner_y), (ox + inner_x, oy + inner_y)):
+            reach = math.sqrt(cx ** 2 + cy ** 2 + height ** 2)
+            if reach > self.robot_max_reach_m:
+                problems.append(
+                    f"container corner ({cx:.3f}, {cy:.3f}) at retreat height is "
+                    f"{reach:.3f} m from the base, beyond "
+                    f"{self.robot_max_reach_m} m — the arm will not reach it and "
+                    "the IK will silently settle short")
+            elif math.hypot(cx, cy) < self.robot_min_reach_m:
+                problems.append(
+                    f"container corner ({cx:.3f}, {cy:.3f}) is only "
+                    f"{math.hypot(cx, cy):.3f} m from the base, inside the "
+                    f"{self.robot_min_reach_m} m folded-arm region")
+        if problems:
+            raise ValueError(
+                "Isaac scene layout is not reachable:\n  - " + "\n  - ".join(problems))
+
+    # -- pick side ---------------------------------------------------------- #
+
+    def pick_xy_m(self, index: int) -> Tuple[float, float]:
+        """World XY of the ``index``-th pick slot."""
+        return (self.pick_row_x_m,
+                self.pick_row_y_start_m + index * self.pick_row_y_pitch_m)
+
+
+DEFAULT_LAYOUT = SceneLayout()
+
+
+def container_slot(container_id: str) -> int:
+    """0-based layout slot for a container id such as ``"CNT-1"``.
+
+    Unparseable ids fall back to slot 0 rather than raising: a container whose id
+    does not end in a number is a naming change, not a reason to refuse to draw
+    the scene. The ids the generator issues always do.
+    """
+    suffix = str(container_id).rsplit("-", 1)[-1]
+    if suffix.isdigit():
+        return max(0, int(suffix) - 1)
+    return 0
+
+
+# --------------------------------------------------------------------------- #
+# WISEPACK -> contract poses (millimetres, named frames)
+# --------------------------------------------------------------------------- #
+
+
+def table_pose_for_index(index: int, item: WasteItem,
+                         layout: SceneLayout = DEFAULT_LAYOUT) -> Pose:
+    """The deterministic pick pose of the ``index``-th item, in the table frame.
+
+    GROUND TRUTH, BY CONSTRUCTION. No perception produced this; the item is
+    spawned exactly here and the robot is told exactly here. That is the
+    documented limitation of this first iteration (see the module docstring).
+
+    The item lies along world X and rests on the table, so its centre sits one
+    radius above the surface.
+    """
+    x_m, y_m = layout.pick_xy_m(index)
+    origin = layout.table_frame_origin_m
+    radius_mm = item.outer_diameter_mm / 2.0
+    return Pose(
+        x_mm=m_to_mm(x_m - origin[0]),
+        y_mm=m_to_mm(y_m - origin[1]),
+        z_mm=radius_mm,
+        axis=Axis.X.value,
+        frame="table",
+    )
+
+
+def placement_pose(placement: Placement) -> Pose:
+    """A planned placement as a contract pose, in its container's inner frame.
+
+    The only arithmetic here is min-corner -> centre. The frame, the units and
+    the axis are already what the domain model uses, which is precisely why the
+    contract was defined in millimetres rather than converting at the boundary.
+    """
+    return Pose(
+        x_mm=placement.position.x + placement.size.x / 2.0,
+        y_mm=placement.position.y + placement.size.y / 2.0,
+        z_mm=placement.position.z + placement.size.z / 2.0,
+        axis=placement.axis.value,
+        frame=f"container:{placement.container_id}",
+    )
+
+
+def dimensions_for(item: WasteItem):
+    """The contract ``Dimensions`` for a domain item."""
+    from .isaac_contract import Dimensions            # local: keeps the cycle out
+    return Dimensions(
+        length_mm=item.length_mm,
+        outer_diameter_mm=item.outer_diameter_mm,
+        inner_diameter_mm=item.inner_diameter_mm,
+    )
+
+
+# --------------------------------------------------------------------------- #
+# Contract poses -> Isaac world (metres)
+# --------------------------------------------------------------------------- #
+
+
+def pose_to_world(pose: Pose, layout: SceneLayout = DEFAULT_LAYOUT
+                  ) -> Tuple[Tuple[float, float, float], Quaternion]:
+    """Convert any contract pose into an Isaac world (position_m, quaternion).
+
+    Dispatches on the pose's declared frame. An unknown frame raises: guessing
+    would place a physical object somewhere nobody specified.
+    """
+    if pose.frame == "table":
+        origin = layout.table_frame_origin_m
+    elif pose.frame.startswith("container:"):
+        origin = layout.container_origin_for(pose.frame.split(":", 1)[1])
+    else:
+        raise ValueError(
+            f"unknown pose frame {pose.frame!r}; expected 'table' or "
+            "'container:<id>'")
+    position = (origin[0] + mm_to_m(pose.x_mm),
+                origin[1] + mm_to_m(pose.y_mm),
+                origin[2] + mm_to_m(pose.z_mm))
+    return position, quaternion_for_axis(Axis(pose.axis))
+
+
+def world_to_pose(position_m: Sequence[float], quaternion: Sequence[float],
+                  frame: str, layout: SceneLayout = DEFAULT_LAYOUT) -> Pose:
+    """The exact inverse of :func:`pose_to_world`, for reporting a MEASURED pose.
+
+    This is what turns "where PhysX left the cylinder" back into the frame the
+    optimizer planned in, so target and outcome can be subtracted meaningfully.
+    """
+    if frame == "table":
+        origin = layout.table_frame_origin_m
+    elif frame.startswith("container:"):
+        origin = layout.container_origin_for(frame.split(":", 1)[1])
+    else:
+        raise ValueError(
+            f"unknown pose frame {frame!r}; expected 'table' or 'container:<id>'")
+    return Pose(
+        x_mm=m_to_mm(float(position_m[0]) - origin[0]),
+        y_mm=m_to_mm(float(position_m[1]) - origin[1]),
+        z_mm=m_to_mm(float(position_m[2]) - origin[2]),
+        axis=axis_from_quaternion(quaternion).value,
+        frame=frame,
+    )
+
+
+def container_frame(container_id: str) -> str:
+    return f"container:{container_id}"
+
+
+# --------------------------------------------------------------------------- #
+# Containment check (frame-local, so it is testable without Isaac)
+# --------------------------------------------------------------------------- #
+
+
+@dataclass(frozen=True)
+class ContainmentVerdict:
+    """Did the settled item end up where a container can hold it?"""
+
+    inside_footprint: bool
+    above_floor: bool
+    below_rim_overflow: bool
+    in_scene: bool
+    detail: str = ""
+
+    @property
+    def ok(self) -> bool:
+        return (self.inside_footprint and self.above_floor
+                and self.below_rim_overflow and self.in_scene)
+
+
+def check_containment(actual: Pose, container_inner: Vec3,
+                      dimensions_length_mm: float,
+                      diameter_mm: float,
+                      footprint_tolerance_mm: float = 30.0,
+                      overflow_allowance_mm: float = 250.0) -> ContainmentVerdict:
+    """Verify a settled item against its container, in the container's own frame.
+
+    Deliberately generous and deliberately explicit about being so. This is a
+    check that the object is IN THE BOX, not that it landed on the millimetre:
+    a released cylinder rolls, and a first-iteration drop that ends 20 mm from
+    the planned centre is a success, not a failure. The pose ERROR is reported
+    separately and is never rounded away (see ``IsaacFeedback``).
+
+    ``footprint_tolerance_mm`` allows the item's centre to sit slightly outside
+    the strict inner footprint — an item leaning on a wall genuinely is in the
+    container. ``overflow_allowance_mm`` catches the opposite failure: an item
+    perched ON the rim or on top of the pile rather than inside.
+    """
+    half_length = max(dimensions_length_mm, diameter_mm) / 2.0
+    reasons = []
+
+    inside = (-footprint_tolerance_mm <= actual.x_mm
+              <= container_inner.x + footprint_tolerance_mm
+              and -footprint_tolerance_mm <= actual.y_mm
+              <= container_inner.y + footprint_tolerance_mm)
+    if not inside:
+        reasons.append(
+            f"centre ({actual.x_mm:.0f}, {actual.y_mm:.0f}) mm is outside the "
+            f"{container_inner.x}x{container_inner.y} mm footprint "
+            f"(+/-{footprint_tolerance_mm:.0f} mm tolerance)")
+
+    # The floor is z = 0 in the container frame. A centre below its own radius
+    # means the body is intersecting or has fallen through the floor.
+    above_floor = actual.z_mm >= diameter_mm / 2.0 - footprint_tolerance_mm
+    if not above_floor:
+        reasons.append(
+            f"centre z {actual.z_mm:.0f} mm is below the container floor")
+
+    below_overflow = actual.z_mm <= container_inner.z + overflow_allowance_mm
+    if not below_overflow:
+        reasons.append(
+            f"centre z {actual.z_mm:.0f} mm is more than "
+            f"{overflow_allowance_mm:.0f} mm above the {container_inner.z} mm "
+            "rim — the item is resting on top, not inside")
+
+    # A body that fell out of the world entirely: PhysX reports enormous
+    # coordinates rather than deleting it, so an explicit sanity bound is the
+    # only way to distinguish "gone" from "badly placed".
+    in_scene = (abs(actual.x_mm) < 1e5 and abs(actual.y_mm) < 1e5
+                and -1e4 < actual.z_mm < 1e5 and half_length > 0)
+    if not in_scene:
+        reasons.append("item is not in the scene any more")
+
+    return ContainmentVerdict(
+        inside_footprint=inside, above_floor=above_floor,
+        below_rim_overflow=below_overflow, in_scene=in_scene,
+        detail="; ".join(reasons))
+
+
+def container_inner_size(container: Optional[Container]) -> Vec3:
+    return container.inner_size if container else Vec3(0, 0, 0)
+
+
+__all__ = [
+    "Quaternion", "SceneLayout", "DEFAULT_LAYOUT", "ContainmentVerdict",
+    "mm_to_m", "m_to_mm", "quaternion_for_axis", "axis_from_quaternion",
+    "axis_deviation_deg", "container_slot", "table_pose_for_index",
+    "placement_pose", "dimensions_for", "pose_to_world", "world_to_pose",
+    "container_frame", "check_containment", "container_inner_size",
+]

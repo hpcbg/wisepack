@@ -264,7 +264,10 @@ def test_dashboard_and_orchestrator_advertise_the_same_commands():
         source = fh.read()
     handler = source[source.index("def _apply_command("):]
     for cmd in topics.OPERATOR_COMMANDS:
-        assert f'== "{cmd}"' in handler, (
+        # Implemented either as an explicit `== "cmd"` branch or inside a grouped
+        # `command in ("cmd", ...)` dispatch — both leave the command as a quoted
+        # literal in the handler, so a dead button is still caught.
+        assert (f'== "{cmd}"' in handler) or (f'"{cmd}"' in handler), (
             f"the orchestrator does not implement the advertised command "
             f"{cmd!r} — it would be a dead button in live mode")
 
@@ -280,3 +283,39 @@ def test_full_plans_are_published_not_summaries():
     for plan in ("baseline", "optimized", "selected"):
         assert f"engine.{plan}.to_dict()" in body, (
             f"{plan} must be published in full; a summary cannot be drawn")
+
+
+# --------------------------------------------------------------------------- #
+# Clean shutdown
+# --------------------------------------------------------------------------- #
+
+def test_ros_observer_catches_external_shutdown():
+    """Ctrl+C must not print an ExternalShutdownException traceback.
+
+    Verified live (no traceback, Orion-LD/Mongo persist); this pins the source so
+    it cannot regress. The observer's spin thread must catch the expected
+    shutdown exception and still report unexpected ones.
+    """
+    with open(os.path.join(REPO, "web", "ros_observer.py"), encoding="utf-8") as fh:
+        src = fh.read()
+    assert "ExternalShutdownException" in src, (
+        "the observer spin thread must catch ExternalShutdownException so Ctrl+C "
+        "does not print a traceback")
+    spin = src[src.index("def spin("):]
+    spin = spin[:spin.index("_thread = threading.Thread")]
+    assert "except (ExternalShutdownException, KeyboardInterrupt)" in spin
+    # Unexpected exceptions must still surface.
+    assert "unexpected error" in spin
+
+
+def test_fiware_launch_does_not_tear_down_orion_or_mongo():
+    """Ctrl+C must leave Orion-LD and Mongo-DDS running (no compose down)."""
+    with open(os.path.join(REPO, "run_wisepack_dashboard.sh"), encoding="utf-8") as fh:
+        sh = fh.read()
+    assert "docker compose -f docker-compose.dds.yml down" not in sh, (
+        "the dashboard launcher must never tear down the Orion-LD/Mongo stack")
+    # The cleanup trap must only kill the dashboard's own launch process group,
+    # not a broad pattern. Ignore comment lines (the script documents the
+    # rejected `pkill -f wisepack_` to explain why it is not used).
+    code = "\n".join(l for l in sh.splitlines() if not l.lstrip().startswith("#"))
+    assert "pkill -f wisepack_" not in code

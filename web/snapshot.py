@@ -102,6 +102,10 @@ class DashboardSnapshot:
     optimized: Optional[Dict[str, Any]] = None
     selected: Optional[Dict[str, Any]] = None
     selected_plan_id: Optional[str] = None
+    scenario_revision: int = 0
+    strategy_comparison: Optional[Dict[str, Any]] = None
+    anomaly: Optional[Dict[str, Any]] = None
+    whole_process: Optional[Dict[str, Any]] = None
     selection_reason: str = ""
     plan_status: Optional[Dict[str, Any]] = None
     detected_count: int = 0
@@ -111,6 +115,22 @@ class DashboardSnapshot:
     action_count: int = 0
     stats: Dict[str, Any] = field(default_factory=dict)
     dynamic_events: List[Dict[str, Any]] = field(default_factory=list)
+
+    # -- execution backend --------------------------------------------------- #
+    # WHO EXECUTED, which is a different question from where this snapshot was
+    # READ (that is `mode`). Both are shown, separately, and neither is inferred
+    # from the other — labelling a simulated run as physical, or the reverse, is
+    # the one mistake this panel exists to prevent.
+    execution_backend: str = "simulated"
+    execution_backend_label: str = "SIMULATED EXECUTION"
+    execution_backend_detail: str = ""
+    execution_backend_known: bool = False
+    isaac: Optional[Dict[str, Any]] = None
+    isaac_results: List[Dict[str, Any]] = field(default_factory=list)
+    #: Backend-neutral visualization descriptor, as published by whichever
+    #: backend is executing. None until one is heard from. The dashboard reads
+    #: ONLY this — it never learns which simulator produced it.
+    visualization: Optional[Dict[str, Any]] = None
 
     # -- connectivity ------------------------------------------------------- #
     fiware_connected: Optional[bool] = None
@@ -142,15 +162,46 @@ class DashboardSnapshot:
                 }
             return {"source": "fiware", "label": "FIWARE", "live": True,
                     "detail": "every panel read back from Orion-LD over NGSI-LD"}
+        if self.mode == "fiware":
+            # FIWARE was SELECTED but no panel could be read back from it. Say
+            # exactly that. Falling through to a plain "ROS 2 / DDS" badge is
+            # what let the launcher, the header and the FIWARE pill assert three
+            # different things at once on the same screen.
+            return {
+                "source": "fiware-degraded", "label": "FIWARE DEGRADED → ROS 2 / DDS",
+                "live": True,
+                "detail": ("the FIWARE source was requested but Orion-LD "
+                           "returned nothing readable; every panel below is "
+                           "coming from ROS 2 / DDS instead. The audit trail is "
+                           "NOT being read back from FIWARE in this run."),
+            }
         return {
             "source": "ros", "label": "ROS 2 / DDS", "live": True,
             "detail": ("live ROS 2 topics over Fast DDS; robot outcomes remain "
                        "simulated"),
         }
 
+    def backend_badge(self) -> Dict[str, Any]:
+        """The EXECUTION badge, separate from the data-source badge.
+
+        Never claims physics it did not perform: the label comes from the
+        orchestrator's own published backend, and until that has been received
+        `known` is False so the frontend can show "—" instead of asserting
+        "SIMULATED" about a run it has not heard from yet.
+        """
+        return {
+            "backend": self.execution_backend,
+            "label": self.execution_backend_label,
+            "detail": self.execution_backend_detail,
+            "physical": self.execution_backend == "isaac",
+            "known": self.execution_backend_known,
+            "isaac": self.isaac,
+        }
+
     def to_state(self) -> Dict[str, Any]:
         return {
             "badge": self.badge(),
+            "execution": self.backend_badge(),
             "mode": self.mode,
             "panel_sources": dict(self.panel_sources),
             "stage": self.stage,
@@ -168,6 +219,10 @@ class DashboardSnapshot:
             "scenario": self.scenario,
             "detected_count": self.detected_count,
             "selected_plan_id": self.selected_plan_id,
+            "scenario_revision": self.scenario_revision,
+            "anomaly": self.anomaly,
+            "plan_container_status": (self.whole_process or {}).get(
+                "plan_container_status"),
             "selection_reason": self.selection_reason,
             "action_count": self.action_count,
             "stats": self.stats,
@@ -176,6 +231,93 @@ class DashboardSnapshot:
             "fiware": {"connected": self.fiware_connected,
                        "error": self.fiware_error},
         }
+
+    def to_strategies(self) -> Dict[str, Any]:
+        """The strategy comparison, or an explicit reason it is not shown.
+
+        A comparison from a DIFFERENT scenario revision is reported ``stale`` and
+        never rendered as if it were current — that is the whole point of
+        stamping it with a revision.
+        """
+        comp = self.strategy_comparison
+        if not comp or not comp.get("results"):
+            status = (comp or {}).get("status", "none")
+            return {"ready": False, "status": status,
+                    "source": self.panel_sources.get("plans", self.mode),
+                    "scenario_revision": self.scenario_revision,
+                    "error": (comp or {}).get("error")}
+        comp_rev = comp.get("scenario_revision")
+        stale = comp_rev is not None and comp_rev != self.scenario_revision
+        return {
+            "ready": not stale,
+            "stale": stale,
+            "status": "stale" if stale else comp.get("status", "completed"),
+            "source": comp.get("source", self.mode),
+            "scenario_revision": self.scenario_revision,
+            "comparison": comp,
+        }
+
+    def to_whole_process(self) -> Dict[str, Any]:
+        """Cut-aware comparison + inventory + logistics, from any source."""
+        wp = self.whole_process or {}
+        return {
+            "source": self.panel_sources.get("whole_process", self.mode),
+            "cut": wp.get("cut"),
+            "inventory": wp.get("inventory"),
+            "logistics": wp.get("logistics"),
+            "planning_result": wp.get("planning_result"),
+            "plan_container_status": wp.get("plan_container_status", "ok"),
+            "analytics": wp.get("analytics"),
+        }
+
+    def to_inventory(self) -> Dict[str, Any]:
+        wp = self.whole_process or {}
+        inv = wp.get("inventory") or {}
+        return {
+            "source": self.panel_sources.get("whole_process", self.mode),
+            "ready": bool(inv.get("containers")),
+            "summary": inv.get("summary", {}),
+            "containers": inv.get("containers", []),
+            "shortage_events": inv.get("shortage_events", []),
+            "planning_result": wp.get("planning_result"),
+            "analytics": (wp.get("analytics") or {}).get("inventory"),
+        }
+
+    def to_logistics(self) -> Dict[str, Any]:
+        wp = self.whole_process or {}
+        log = wp.get("logistics") or {}
+        return {
+            "source": self.panel_sources.get("whole_process", self.mode),
+            "ready": bool(log.get("tasks") is not None),
+            "facility_map": log.get("facility_map", {}),
+            "tasks": log.get("tasks", []),
+            "robot": log.get("robot", {}),
+            "analytics": log.get("analytics"),
+        }
+
+    def to_visualization(self) -> Dict[str, Any]:
+        """The visualization descriptor, ALWAYS well-formed.
+
+        A missing descriptor becomes an explicit `unavailable` with a reason
+        rather than a null the frontend has to guess about. That is what keeps
+        the Simulator View from ever rendering an empty box or a permanent
+        spinner: every path ends in a named state with wording attached.
+        """
+        from wisepack_core.visualization import (                   # noqa: PLC0415
+            VisualizationDescriptor, unavailable,
+        )
+        backend = self.execution_backend
+        if self.visualization is None:
+            if backend != "isaac":
+                return unavailable(
+                    backend,
+                    "the simulated execution backend has no renderer and "
+                    "offers no visual stream").to_dict()
+            return unavailable(
+                backend,
+                "waiting for the simulator to report its visualization "
+                "capability").to_dict()
+        return VisualizationDescriptor.from_dict(self.visualization).to_dict()
 
     def to_plans(self) -> Dict[str, Any]:
         return {
@@ -240,6 +382,9 @@ class DashboardSnapshot:
             "replan_causes": list(self.stats.get("replan_causes", []) or []),
             "pick_attempts": int(self.stats.get("pick_attempts", 0) or 0),
             "pick_successes": int(self.stats.get("pick_successes", 0) or 0),
+            # Whole-process analytics (cutting / inventory / logistics) with the
+            # provenance labels the core attaches — measured / simulated / derived.
+            "whole_process": (self.whole_process or {}).get("analytics"),
         }
 
 
@@ -294,6 +439,12 @@ class SimSnapshotProvider(DashboardSnapshotProvider):
             snap.stats = engine.stats.to_dict()
             snap.dynamic_events = [e.to_dict() for e in engine.dynamic_events]
             snap.detected_count = len(engine.detected)
+            snap.scenario_revision = engine.scenario_revision
+            snap.anomaly = engine.anomaly_snapshot()
+            snap.whole_process = engine.wp.snapshot()
+            comp = engine.strategy_comparison
+            if comp:
+                snap.strategy_comparison = {**comp, "source": "sim"}
             if engine.scenario:
                 snap.scenario = engine.scenario.to_dict()
             if engine.baseline:
@@ -305,6 +456,16 @@ class SimSnapshotProvider(DashboardSnapshotProvider):
                 snap.selected_plan_id = engine.selected.plan_id
                 snap.approval_state = engine.selected.approval_state.value
             snap.selection_reason = engine.selection_reason
+
+            # sim mode drives the engine in THIS process, and it always uses the
+            # simulated robot model — there is no Isaac here and there must be no
+            # suggestion of one. Stated from the engine's own config rather than
+            # hard-coded, so it stays true if sim mode ever gains a backend.
+            backend = engine.config.execution_backend
+            snap.execution_backend = backend.value
+            snap.execution_backend_label = backend.label
+            snap.execution_backend_detail = backend.detail
+            snap.execution_backend_known = True
 
             if engine.baseline and engine.optimized and engine.selected:
                 report = engine.kpis(self._latency())
@@ -351,6 +512,41 @@ class RosSnapshotProvider(DashboardSnapshotProvider):
         snap.current_container_id = mirror.get("current_container_id")
         snap.detected_count = int(mirror.get("detected_count") or 0)
         snap.scenario = mirror.get("scenario")
+        # Scenario revision: prefer the plan-summary digest (published by the
+        # orchestrator), fall back to the comparison's own stamp.
+        summary = mirror.get("plan_summary") or {}
+        snap.scenario_revision = int(
+            summary.get("scenario_revision")
+            or (mirror.get("strategy_comparison") or {}).get("scenario_revision")
+            or 0)
+        snap.strategy_comparison = mirror.get("strategy_comparison")
+        snap.anomaly = mirror.get("anomaly")
+        # Whole-process, assembled from the cutting / inventory / logistics topics.
+        cut = mirror.get("cut")
+        inv_summary = mirror.get("inventory_summary") or {}
+        inv_containers = mirror.get("inventory_containers") or []
+        log_map = mirror.get("logistics_map") or {}
+        log_robot = mirror.get("logistics_robot") or {}
+        snap.whole_process = {
+            "cut": cut,
+            "inventory": {"containers": inv_containers, "summary": inv_summary,
+                          "shortage_events": []},
+            "logistics": {"facility_map": log_map, "robot": log_robot,
+                          "tasks": (log_map.get("pending_tasks", [])
+                                    + ([log_map["active_task"]]
+                                       if log_map.get("active_task") else [])),
+                          "analytics": (log_map.get("robot") or {})},
+            "planning_result": (cut or {}).get("planning_result"),
+            "plan_container_status": "ok",
+            "analytics": {
+                "cutting": {"provenance": "simulated_cutting_measured_packing",
+                            "recommend_cut": (cut or {}).get("recommend_cut"),
+                            "containers_avoided": (cut or {}).get("containers_saved")},
+                "inventory": {**inv_summary, "provenance": "software_state"},
+                "logistics": (log_map.get("analytics") if isinstance(
+                    log_map, dict) else {}) or {},
+            },
+        }
         snap.baseline = mirror.get("baseline")
         snap.optimized = mirror.get("optimized")
         snap.selected = mirror.get("selected")
@@ -360,6 +556,22 @@ class RosSnapshotProvider(DashboardSnapshotProvider):
         snap.degraded_reason = ("orchestrator reported DEGRADED"
                                 if snap.stage == "DEGRADED" else "")
         snap.robot_state = _robot_state_for(snap.stage)
+
+        # The execution backend, as published by the orchestrator. Absent until
+        # that topic arrives, and NOT defaulted to a claim: `known` stays False
+        # so the header renders "—" rather than asserting "SIMULATED" about a run
+        # it has not heard from. The topic is latched, so this fills in on the
+        # first snapshot after the observer connects.
+        backend_doc = mirror.get("execution_backend")
+        if isinstance(backend_doc, dict) and backend_doc.get("backend"):
+            snap.execution_backend = backend_doc["backend"]
+            snap.execution_backend_label = backend_doc.get(
+                "label", snap.execution_backend.upper())
+            snap.execution_backend_detail = backend_doc.get("detail", "")
+            snap.execution_backend_known = True
+            snap.isaac = backend_doc.get("isaac")
+            snap.visualization = backend_doc.get("visualization")
+        snap.isaac_results = list(mirror.get("isaac_results") or [])
 
         summary = mirror.get("plan_summary") or {}
         snap.selection_reason = summary.get("selection_reason", "")

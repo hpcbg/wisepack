@@ -17,6 +17,16 @@ passed inline.
     ros2 launch wisepack_bringup demo.launch.py
     ros2 launch wisepack_bringup demo.launch.py preset:=curated_volume_reduction
     ros2 launch wisepack_bringup demo.launch.py auto_approve:=true      # headless
+
+EXECUTION BACKEND. `execution_backend:=isaac` hands every approved placement to
+NVIDIA Isaac Sim instead of resolving it with the simulated robot model:
+
+    ros2 launch wisepack_bringup demo.launch.py execution_backend:=isaac
+
+That is a different axis from where the DASHBOARD reads state (sim / ros /
+fiware). Isaac is not another data source — it is who moves the item. Isaac Sim
+itself runs on the HOST in its own bundled Python, not from this launch file and
+not inside the WISEPACK container; see scripts/run_wisepack_isaac.sh.
 """
 
 from launch import LaunchDescription
@@ -36,6 +46,7 @@ def generate_launch_description() -> LaunchDescription:
     results_dir = LaunchConfiguration("results_dir")
     with_perception = LaunchConfiguration("with_perception")
     with_twin = LaunchConfiguration("with_twin")
+    execution_backend = LaunchConfiguration("execution_backend")
 
     # A LaunchConfiguration substitutes to a string; these parameters are
     # declared with non-string types, so state the type or startup is rejected.
@@ -61,7 +72,17 @@ def generate_launch_description() -> LaunchDescription:
                               description="Where run artefacts are written"),
         DeclareLaunchArgument("with_perception", default_value="true"),
         DeclareLaunchArgument("with_twin", default_value="true"),
+        DeclareLaunchArgument(
+            "execution_backend", default_value="simulated",
+            description=("Who performs the approved placements: `simulated` "
+                         "(the seeded robot model, the default and unchanged) "
+                         "or `isaac` (a Franka Panda in NVIDIA Isaac Sim on the "
+                         "host, with physical release and PhysX settling). This "
+                         "is NOT the dashboard data source.")),
+        DeclareLaunchArgument("with_anomaly", default_value="true",
+                              description="Start the SIMULATED anomaly source"),
     ]
+    with_anomaly = LaunchConfiguration("with_anomaly")
 
     orchestrator = Node(
         package="wisepack_orchestration",
@@ -75,6 +96,7 @@ def generate_launch_description() -> LaunchDescription:
             "dynamic_events": dyn_param,
             "results_dir": results_dir,
             "tick_period_s": 0.7,
+            "execution_backend": execution_backend,
         }],
         output="screen",
     )
@@ -100,4 +122,15 @@ def generate_launch_description() -> LaunchDescription:
         condition=IfCondition(with_twin),
     )
 
-    return LaunchDescription(args + [orchestrator, perception, twin])
+    # SIMULATED anomaly source. On-demand only (auto_interval_s=0):
+    # it publishes when the operator injects, never autonomously.
+    anomaly = Node(
+        package="wisepack_anomaly",
+        executable="anomaly_simulator",
+        name="wisepack_anomaly_simulator",
+        parameters=[{"auto_interval_s": 0.0}],
+        output="screen",
+        condition=IfCondition(with_anomaly),
+    )
+
+    return LaunchDescription(args + [orchestrator, perception, twin, anomaly])

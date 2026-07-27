@@ -1,0 +1,17 @@
+# CURATED CUT-AWARE DEMONSTRATION DATASET — the RESULT-DEVIATION case.
+#
+# Same geometry as cut_avoids_extra_container (hand-built, disclosed). Here the
+# demonstration drives the simulated cutting skill with an ACTUAL result that
+# deviates from the proposal (material shifts between the two outermost segments
+# while still conserving length). The lineage is updated from the real segment
+# sizes, the packing is re-planned on those actual dimensions, and a renewed
+# operator packing approval is required — cut approval never approves packing.
+scenario:
+  preset: cut_result_deviation
+  seed: 7
+  strategy: max_density
+
+optimizer:
+  restarts: 6
+
+dynamic_events: []

@@ -31,12 +31,14 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from .domain import (
     ApprovalState, Container, ContainerStatus, ItemStatus, PackingPlan,
-    Placement, Scenario, Source, Strategy, ValidationStatus,
+    Placement, Scenario, Source, Strategy, ValidationStatus, WasteItem,
 )
+from .anomaly import AnomalyEvent, Reaction
 from .events import (
     Actor, ActionLog, DynamicEvent, DynamicEventType, PRE_APPROVAL_STAGES,
-    Result, Stage, Stopwatch,
+    Result, Stage, Stopwatch, utc_now_iso,
 )
+from .execution import ExecutionBackend
 from .generator import build_scenario, inject_item
 from .kpi import ExecutionStats, KPIReport, compute_kpis
 from .packing import (
@@ -47,6 +49,10 @@ from .validator import DEFAULT_VALIDATION, PlacementValidator, ValidationConfig
 
 class ApprovalRequired(RuntimeError):
     """Raised when execution is attempted on a plan the operator has not approved."""
+
+
+class AnomalyHold(RuntimeError):
+    """Raised when execution is attempted while an anomaly holds the workflow."""
 
 
 class WorkflowError(RuntimeError):
@@ -97,11 +103,17 @@ class WorkflowConfig:
     auto_approve: bool = False
     generator_overrides: Dict[str, Any] = field(default_factory=dict)
     max_replans: int = 5
+    #: Who performs the approved placements. SIMULATED keeps the existing seeded
+    #: robot model; ISAAC hands each placement to Isaac Sim and waits for the
+    #: physical outcome. Planning, validation and the approval gate are identical
+    #: either way — see wisepack_core.execution.
+    execution_backend: ExecutionBackend = ExecutionBackend.SIMULATED
 
     def __post_init__(self) -> None:
         # Same coercion as OptimizerConfig: strategies reach here as strings from
         # YAML and from the dashboard.
         self.strategy = Strategy(self.strategy)
+        self.execution_backend = ExecutionBackend(self.execution_backend)
 
 
 # --------------------------------------------------------------------------- #
@@ -162,6 +174,12 @@ class WorkflowEngine:
         self.current_container_id: Optional[str] = None
         self.degraded_reason: str = ""
         self.finished = False
+        # -- anomaly monitoring & workflow response state -------------------- #
+        self.anomaly_hold = False                # execution blocked by an anomaly
+        self.anomaly_ack_required = False        # operator must acknowledge
+        self.latest_anomaly: Optional[Dict[str, Any]] = None
+        self.anomaly_history: List[Dict[str, Any]] = []
+        self._anomaly_seq = 0
         self._rng = random.Random(self.config.robot.seed)
         self._t_exec_start: Optional[float] = None
         self._strategy_plans: Dict[str, PackingPlan] = {}
@@ -170,12 +188,25 @@ class WorkflowEngine:
         # retirement is silently undone and the packer fills a box that is out
         # of service. See replan().
         self._comparison_scenario: Optional[Scenario] = None
+        # A monotonically increasing revision of the item/container problem.
+        # It bumps whenever the batch the optimizer sees changes (new scenario,
+        # injected/removed/reclassified item, container retired, re-plan). A
+        # strategy comparison is stamped with the revision it was computed
+        # against, so a comparison from a superseded batch is never rendered.
+        self.scenario_revision = 0
+        #: revision -> structured strategy-comparison dict (see build_...).
+        self._strategy_comparison: Optional[Dict[str, Any]] = None
         self._container_index_offset = 0
         self._retired_containers: Dict[str, Container] = {}
         # Set by the grasp_failure dynamic event. An explicit flag rather than
         # re-seeding the RNG and hoping its next draw lands below the failure
         # threshold — that was not actually deterministic.
         self._force_pick_failure = False
+        # The whole-process layer (cut-aware planning + container inventory +
+        # simulated logistics). Held here but self-contained in whole_process.py
+        # so the core packing workflow above is untouched.
+        from .whole_process import WholeProcess    # noqa: PLC0415 (avoid cycle)
+        self.wp = WholeProcess(self)
 
     # -- helpers ------------------------------------------------------------ #
 
@@ -209,6 +240,7 @@ class WorkflowEngine:
                 self.config.preset, self.config.seed,
                 **self.config.generator_overrides)
         self.scenario = scenario
+        self._bump_scenario_revision()
         self.log.set_context(scenario_id=scenario.scenario_id)
         if scenario.dynamic_events and not self.dynamic_events:
             self.dynamic_events = [DynamicEvent.from_dict(d)
@@ -382,6 +414,91 @@ class WorkflowEngine:
     def strategy_plans(self) -> Dict[str, PackingPlan]:
         return dict(self._strategy_plans)
 
+    def build_strategy_comparison(
+            self, strategies: Optional[List[str]] = None) -> Dict[str, Any]:
+        """Compute a structured, independently-validated strategy comparison.
+
+        This is decision support. It runs the optimizer once per strategy over
+        the CURRENT batch and validates each result with the same independent
+        validator the workflow uses — and it mutates NOTHING: not the selected
+        plan, not the approved plan, not the execution plan, not the approval
+        state. A comparison must never be a second source of planning truth.
+
+        The result is stamped with ``scenario_revision`` so a consumer can tell
+        whether it still describes the batch on screen. It is cached per
+        revision; the cache is dropped by ``_bump_scenario_revision`` whenever
+        the batch changes.
+        """
+        if self.scenario is None:
+            raise WorkflowError("compare_strategies before a scenario was loaded")
+
+        rev = self.scenario_revision
+        if self._strategy_comparison and self._strategy_comparison.get(
+                "scenario_revision") == rev and strategies is None:
+            return self._strategy_comparison
+
+        requested = strategies or [s.value for s in Strategy]
+        scenario = self._comparison_scenario or self.scenario
+        validator = self.validator
+        watch = Stopwatch()
+
+        results: List[Dict[str, Any]] = []
+        for name in requested:
+            strategy = Strategy(name)                    # rejects an unknown name
+            cfg = OptimizerConfig(
+                strategy=strategy,
+                restarts=self.config.optimizer.restarts,
+                time_budget_ms=self.config.optimizer.time_budget_ms,
+                improve=self.config.optimizer.improve,
+                seed=self.config.seed,
+                validation=self.config.validation)
+            plan = pack_optimized(
+                scenario, config=cfg,
+                plan_id=f"plan-{name}-{scenario.scenario_id}-rev{rev}")
+            # Independent re-validation. pack_optimized validates internally, but
+            # the comparison must be able to SHOW the verdict per strategy.
+            report = validator.validate_plan(plan, scenario)
+            results.append({
+                "strategy": name,
+                "plan_id": plan.plan_id,
+                "containers": plan.containers_required,
+                "utilization_pct": round(plan.utilization_pct, 2),
+                "required_capacity_m3": round(plan.required_capacity_mm3 / 1e9, 4),
+                "empty_capacity_m3": round(plan.unused_capacity_mm3 / 1e9, 4),
+                "unplaced_items": len(plan.unplaced_item_ids),
+                "optimization_time_ms": round(plan.computation_time_ms, 1),
+                "score": round(plan.objective_score, 4),
+                "valid": report.valid,
+                "violations": [str(v) for v in report.violations[:10]],
+            })
+
+        comparison = {
+            "schema_version": "1.0",
+            "comparison_id": f"cmp-{uuid.uuid4().hex[:10]}",
+            "revision": rev,
+            "scenario_id": scenario.scenario_id,
+            "scenario_revision": rev,
+            "run_id": self.run_id,
+            "generated_at": utc_now_iso(),
+            "status": "completed",
+            "selected_strategy": self.config.strategy.value,
+            "results": results,
+        }
+        if strategies is None:
+            self._strategy_comparison = comparison
+        self._emit(Stage(self.stage), "strategy_comparison", Actor.OPTIMIZER,
+                   duration_ms=watch.ms,
+                   message=f"compared {len(results)} strategies over revision {rev}",
+                   details={"comparison_id": comparison["comparison_id"],
+                            "scenario_revision": rev,
+                            "containers": {r["strategy"]: r["containers"]
+                                           for r in results}})
+        return comparison
+
+    @property
+    def strategy_comparison(self) -> Optional[Dict[str, Any]]:
+        return self._strategy_comparison
+
     # ------------------------------------------------------------------ #
     # Stage 7 — Human in the Loop
     # ------------------------------------------------------------------ #
@@ -455,6 +572,14 @@ class WorkflowEngine:
         item, which is what makes the behaviour tree's tick and the dashboard's
         animation frame the same unit of work.
         """
+        # An anomaly hold blocks execution before the approval check even runs.
+        # A safety-critical response must not depend on FIWARE or on the operator
+        # having noticed — it is deterministic and local.
+        if self.anomaly_hold:
+            raise AnomalyHold(
+                f"execution held by anomaly {self._latest_anomaly_class()} — "
+                "operator acknowledgement required")
+
         self._assert_approved()
         assert self.selected is not None                # narrowed by _assert_approved
 
@@ -607,6 +732,186 @@ class WorkflowEngine:
         self.cursor.retries = 0
         self.cursor.index += 1
         return True
+
+    # ------------------------------------------------------------------ #
+    # Stage 8-13 — PHYSICAL execution (execution_backend = isaac)
+    # ------------------------------------------------------------------ #
+    #
+    # These methods are the same workflow, driven from outside instead of from
+    # a coin flip. They deliberately reuse the identical stages, the identical
+    # counters and the identical completion path as ``step_execution``, so the
+    # audit trail, the KPIs, the progress percentage and the dashboard timeline
+    # do not change shape when the backend does. What changes is only WHERE the
+    # pick/place outcome comes from.
+    #
+    # The safety invariant is unchanged and is asserted in exactly the same
+    # place: nothing below may run on an unapproved plan.
+
+    def next_physical_placement(self
+                                ) -> Optional[Tuple[Placement, WasteItem, Container]]:
+        """The next placement to hand to a physical backend, or None.
+
+        Returns None when there is nothing to do *right now* — the plan is
+        finished, or a dynamic event has just forced a re-plan and the operator
+        has to authorise it again. The caller must not treat None as "run
+        complete"; ``finished`` says that.
+
+        Dynamic events fire here, before the item is dispatched, exactly as they
+        do in ``step_execution``. That ordering is what makes a late arrival
+        interrupt the run *between* items rather than while the gripper is shut.
+        """
+        self._assert_approved()
+        assert self.selected is not None                # narrowed above
+
+        self._fire_due_events(placement_index=self.cursor.index)
+        # Same guard as step_execution, and for the same measured reason: a
+        # re-plan leaves the stage at WAIT_FOR_OPERATOR_APPROVAL, not REPLAN, so
+        # the approval state is the authoritative test.
+        if self.stage in (Stage.REPLAN, Stage.WAIT_FOR_OPERATOR_APPROVAL):
+            return None
+        if (self.selected is None
+                or self.selected.approval_state is not ApprovalState.APPROVED):
+            return None
+
+        pending = [p for p in self.selected.ordered_placements if not p.executed]
+        if not pending:
+            return None
+
+        placement = pending[0]
+        item = self.scenario.item(placement.item_id) if self.scenario else None
+        container = self.selected.container(placement.container_id)
+        if item is None or container is None:            # pragma: no cover
+            raise WorkflowError(
+                f"placement {placement.item_id} lost its item or container")
+        return placement, item, container
+
+    def begin_physical_item(self, placement: Placement) -> None:
+        """Record that a physical pick of ``placement`` has been commanded."""
+        self._assert_approved()
+        self._set_stage(Stage.PICK_ITEM)
+        self.robot_state = "picking"
+        self.current_item_id = placement.item_id
+        self.current_container_id = placement.container_id
+        self.stats.pick_attempts += 1
+        self._emit(Stage.PICK_ITEM, "isaac_pick_commanded", Actor.ISAAC_SIM,
+                   Result.PENDING, item_id=placement.item_id,
+                   container_id=placement.container_id,
+                   source=Source.SIMULATED,
+                   message=f"Isaac Sim commanded to pick {placement.item_id}",
+                   details={"attempt": self.cursor.retries + 1,
+                            "sequence_index": self.cursor.index,
+                            "axis": placement.axis.value,
+                            "backend": ExecutionBackend.ISAAC.value})
+
+    def note_physical_progress(self, stage: Optional[Stage], action: str,
+                               item_id: Optional[str], container_id: Optional[str],
+                               message: str, robot_state: Optional[str] = None,
+                               details: Optional[Dict[str, Any]] = None) -> None:
+        """Record one intermediate physical state on the existing audit trail.
+
+        ``stage`` is the WISEPACK stage the physical state maps to (see
+        ``execution.stage_for_isaac_state``); None leaves the stage alone, which
+        is what a simulator-lifecycle report such as READY must do.
+        """
+        if stage is not None:
+            self._set_stage(stage)
+        if robot_state is not None:
+            self.robot_state = robot_state
+        self._emit(stage or self.stage, action, Actor.ISAAC_SIM,
+                   item_id=item_id, container_id=container_id,
+                   source=Source.SIMULATED, message=message,
+                   details=dict(details or {}))
+
+    def complete_physical_item(self, placement: Placement,
+                               details: Optional[Dict[str, Any]] = None) -> bool:
+        """Commit a physically executed placement. Returns False when the run ends.
+
+        ``details`` carries the MEASURED outcome — the settled pose and its
+        distance from the planned one. It is recorded verbatim; nothing here
+        overwrites a measured pose with the target it was aiming at.
+
+        Note what is NOT asserted: that the item landed where the optimizer
+        planned. A released cylinder settles under gravity and contact, and the
+        first iteration reports the resulting error rather than pretending it is
+        zero. The placement is marked executed because the item is physically in
+        the container, which is what ``executed`` has always meant.
+        """
+        self._assert_approved()
+        assert self.selected is not None
+        item = self.scenario.item(placement.item_id) if self.scenario else None
+        container = self.selected.container(placement.container_id)
+        if item is None or container is None:            # pragma: no cover
+            raise WorkflowError(
+                f"cannot complete {placement.item_id}: its item or container is gone")
+
+        detail = dict(details or {})
+        self.stats.pick_successes += 1
+        self.cursor.retries = 0
+        item.status = ItemStatus.PLACED
+
+        self._set_stage(Stage.UPDATE_CONTAINER_STATE)
+        placement.executed = True
+        container.status = ContainerStatus.FILLING
+        remaining = [p for p in self.selected.placements_for(container.container_id)
+                     if not p.executed]
+        if not remaining:
+            container.status = ContainerStatus.COMPLETE
+        self.robot_state = "idle"
+
+        self._emit(Stage.UPDATE_CONTAINER_STATE, "isaac_item_settled",
+                   Actor.ISAAC_SIM, item_id=item.item_id,
+                   container_id=container.container_id,
+                   source=Source.SIMULATED,
+                   message=f"{item.item_id} physically settled in "
+                           f"{container.container_id}",
+                   details={**detail,
+                            "container_status": container.status.value,
+                            "executed": sum(1 for p in self.selected.placements
+                                            if p.executed),
+                            "total": len(self.selected.placements),
+                            "progress_pct": round(self.progress_pct, 1),
+                            "backend": ExecutionBackend.ISAAC.value})
+
+        self.stats.cycles_attempted += 1
+        self.stats.cycles_completed += 1
+        self.cursor.index += 1
+        self._set_stage(Stage.NEXT_ITEM)
+        self._fire_due_events(elapsed_s=self._elapsed_s())
+
+        if not [p for p in self.selected.placements if not p.executed]:
+            return self._complete()
+        return True
+
+    def fail_physical_item(self, placement: Placement, reason: str,
+                           details: Optional[Dict[str, Any]] = None) -> bool:
+        """A physical attempt failed. Retries, then abandons, exactly as simulated.
+
+        The retry budget is ``RobotSimConfig.max_pick_retries`` — the same one the
+        simulated backend uses — so the two backends give up after the same
+        number of attempts and KPI2/KPI3 remain comparable between them.
+        """
+        self._set_stage(Stage.VERIFY_PICK)
+        self.robot_state = "idle"
+        self._emit(Stage.VERIFY_PICK, "isaac_item_failed", Actor.ISAAC_SIM,
+                   Result.FAILED, item_id=placement.item_id,
+                   container_id=placement.container_id,
+                   source=Source.SIMULATED,
+                   message=f"physical execution of {placement.item_id} failed: "
+                           f"{reason}",
+                   details={**dict(details or {}), "reason": reason,
+                            "backend": ExecutionBackend.ISAAC.value})
+        more = self._handle_pick_failure(placement, placement.item_id,
+                                         placement.container_id)
+        if self.selected and not [p for p in self.selected.placements
+                                  if not p.executed]:
+            return self._complete()
+        return more
+
+    def complete_physical_run(self) -> bool:
+        """End the run once the backend reports RUN_COMPLETED."""
+        if self.finished:
+            return False
+        return self._complete()
 
     def _complete(self) -> bool:
         self._set_stage(Stage.COMPLETE)
@@ -777,6 +1082,10 @@ class WorkflowEngine:
         self.validator.validate_plan(self.baseline, full)
         self.validator.validate_plan(self.optimized, full)
         self._comparison_scenario = full
+        # A re-plan is a new batch: any prior strategy comparison is stale.
+        # (Revision was already bumped by the batch-changing event; if the
+        # re-plan had another cause, bump defensively so the comparison clears.)
+        self._strategy_comparison = None
 
     def enter_degraded(self, reason: str) -> None:
         """Stop and hold. The demo never simulates unsafe autonomous continuation."""
@@ -799,11 +1108,148 @@ class WorkflowEngine:
                              elapsed_s=elapsed_s):
                 self.apply_dynamic_event(event)
 
+    #: Event types that change the batch the optimizer sees, and therefore
+    #: invalidate any strategy comparison computed against the old batch.
+    _BATCH_CHANGING = frozenset({
+        DynamicEventType.ITEM_INJECT, DynamicEventType.ITEM_REMOVED,
+        DynamicEventType.ITEM_RECLASSIFIED, DynamicEventType.CONTAINER_UNAVAILABLE,
+        DynamicEventType.SEGREGATION_RULE_CHANGE,
+    })
+
+    def _bump_scenario_revision(self) -> None:
+        """Advance the batch revision and discard any stale comparison."""
+        self.scenario_revision += 1
+        self._strategy_comparison = None
+
+    # ------------------------------------------------------------------ #
+    # Anomaly integration (EDF Topic #2 demonstration)
+    # ------------------------------------------------------------------ #
+
+    def _latest_anomaly_class(self) -> str:
+        return (self.latest_anomaly or {}).get("anomaly_class", "unknown")
+
+    def apply_anomaly(self, event: AnomalyEvent,
+                      received_monotonic: Optional[float] = None) -> Dict[str, Any]:
+        """React deterministically to an anomaly. SIMULATED integration only.
+
+        info     -> record and continue.
+        warning  -> PAUSE execution; operator acknowledgement required to resume.
+        critical -> HOLD: revoke execution authorisation, preserve completed
+                    placements, require an operator decision + new approval.
+
+        The reaction is local and deterministic: it does not wait for FIWARE and
+        does not depend on the operator having seen a dashboard. That is the
+        point of routing safety-critical response through the ROS topic straight
+        to the orchestrator, with FIWARE as an ADDITIONAL analytics path.
+        """
+        if self.scenario is not None:
+            event.scenario_id = self.scenario.scenario_id
+            event.scenario_revision = self.scenario_revision
+        event.cycle_id = self.cycle_id
+        self._anomaly_seq += 1
+        event.sequence = self._anomaly_seq
+
+        reaction = event.reaction
+        # Latency from when the reaction node received the event to acting on it.
+        latency_ms = 0.0
+        if received_monotonic is not None:
+            latency_ms = max(0.0, (time.monotonic() - received_monotonic) * 1000.0)
+
+        record = event.to_dict()
+        record["reaction_latency_ms"] = round(latency_ms, 2)
+        record["acknowledged"] = event.is_ok        # OK needs no acknowledgement
+        self.latest_anomaly = record
+        self.anomaly_history.append(record)
+
+        result = Result.OK
+        if reaction is Reaction.CONTINUE:
+            message = f"anomaly {event.anomaly_class.value} (info) — recorded"
+        elif reaction is Reaction.PAUSE:
+            self.anomaly_hold = True
+            self.anomaly_ack_required = True
+            result = Result.RETRY
+            message = (f"anomaly {event.anomaly_class.value} (warning) — execution "
+                       "PAUSED, operator acknowledgement required")
+        else:  # HOLD
+            self.anomaly_hold = True
+            self.anomaly_ack_required = True
+            result = Result.FAILED
+            # Revoke execution authorisation. Completed placements stay put.
+            if self.selected and self.selected.approval_state is ApprovalState.APPROVED:
+                self.selected.approval_state = ApprovalState.PENDING
+                self._set_stage(Stage.WAIT_FOR_OPERATOR_APPROVAL)
+            message = (f"anomaly {event.anomaly_class.value} (critical) — execution "
+                       "HELD, authorisation revoked, operator decision required")
+
+        self._emit(self.stage, f"anomaly:{event.anomaly_class.value}",
+                   Actor.EVENT_INJECTOR, result, source=Source.SIMULATED,
+                   message=message, details={**record, "reaction": reaction.value})
+        return record
+
+    def acknowledge_anomaly(self, operator: str = "operator") -> None:
+        """Operator acknowledgement of the held anomaly.
+
+        For a WARNING this clears the hold so execution can resume (still an
+        approved plan). For a CRITICAL the hold clears but authorisation was
+        REVOKED, so the operator must re-approve before anything executes —
+        acknowledgement is not authorisation.
+        """
+        if not self.anomaly_ack_required:
+            raise WorkflowError("no anomaly awaiting acknowledgement")
+        self.anomaly_ack_required = False
+        self.anomaly_hold = False
+        self.stats.operator_interventions += 1
+        if self.latest_anomaly:
+            self.latest_anomaly["acknowledged"] = True
+        cls = self._latest_anomaly_class()
+        self._emit(self.stage, "anomaly_acknowledged", Actor.OPERATOR,
+                   source=Source.OPERATOR,
+                   message=f"anomaly {cls} acknowledged by {operator}",
+                   details={"anomaly_class": cls})
+
+    def anomaly_snapshot(self) -> Dict[str, Any]:
+        """Everything the anomaly panel and analytics need."""
+        history = self.anomaly_history
+        by_class: Dict[str, int] = {}
+        by_severity: Dict[str, int] = {}
+        ok = nok = 0
+        latencies = []
+        for a in history:
+            by_class[a["anomaly_class"]] = by_class.get(a["anomaly_class"], 0) + 1
+            by_severity[a["severity"]] = by_severity.get(a["severity"], 0) + 1
+            if a["status"] == "OK":
+                ok += 1
+            else:
+                nok += 1
+            if a.get("reaction_latency_ms"):
+                latencies.append(a["reaction_latency_ms"])
+        pauses = sum(1 for a in history if a.get("reaction") == "pause")
+        holds = sum(1 for a in history if a.get("reaction") == "hold")
+        return {
+            "label": "Simulated anomaly event — not a validated "
+                     "anomaly detector",
+            "hold": self.anomaly_hold,
+            "ack_required": self.anomaly_ack_required,
+            "latest": self.latest_anomaly,
+            "history": history[-30:],
+            "count": len(history),
+            "by_class": by_class,
+            "by_severity": by_severity,
+            "ok_count": ok,
+            "nok_count": nok,
+            "pauses": pauses,
+            "holds": holds,
+            "anomaly_to_hold_latency_ms": (round(max(latencies), 2)
+                                           if latencies else None),
+        }
+
     def apply_dynamic_event(self, event: DynamicEvent) -> None:
         """Apply one scripted disturbance and re-plan if it invalidates the plan."""
         if self.scenario is None:
             raise WorkflowError("dynamic event before a scenario was loaded")
         event.fired = True
+        if event.event_type in self._BATCH_CHANGING:
+            self._bump_scenario_revision()
         watch = Stopwatch()
         kind = event.event_type
         payload = event.payload
@@ -905,6 +1351,8 @@ class WorkflowEngine:
             "current_container_id": self.current_container_id,
             "progress_pct": round(self.progress_pct, 1),
             "scenario": self.scenario.to_dict() if self.scenario else None,
+            "scenario_revision": self.scenario_revision,
+            "strategy_comparison": self._strategy_comparison,
             "baseline": self.baseline.to_dict() if self.baseline else None,
             "optimized": self.optimized.to_dict() if self.optimized else None,
             "selected": self.selected.to_dict() if self.selected else None,
@@ -916,6 +1364,8 @@ class WorkflowEngine:
             "dynamic_events": [e.to_dict() for e in self.dynamic_events],
             "stats": self.stats.to_dict(),
             "action_count": self.log.count,
+            "anomaly": self.anomaly_snapshot(),
+            "whole_process": self.wp.snapshot(),
         }
 
 
@@ -950,6 +1400,6 @@ def run_headless(config: WorkflowConfig,
 
 
 __all__ = [
-    "ApprovalRequired", "WorkflowError", "RobotSimConfig", "WorkflowConfig",
-    "WorkflowEngine", "run_headless",
+    "ApprovalRequired", "AnomalyHold", "WorkflowError", "RobotSimConfig",
+    "WorkflowConfig", "WorkflowEngine", "run_headless",
 ]

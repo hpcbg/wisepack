@@ -53,6 +53,29 @@
   .badge{font-size:11px;color:var(--mut);border:1px solid var(--line);
     padding:2px 9px;border-radius:999px;white-space:nowrap}
   .badge.sim{color:var(--warn);border-color:var(--warn);background:var(--warn-bg);font-weight:700}
+  /* Physical execution reads as a distinct, stronger state than "live data".
+     Deliberately not reusing .live: a live ROS run with the simulated robot
+     must not look the same as one where an arm actually moved. */
+  .badge.phys{color:var(--ok);border-color:var(--ok);background:var(--ok-bg);
+    font-weight:700;letter-spacing:.03em}
+  /* Primary navigation — shared verbatim by index, inventory, diagnostics and
+     the simulator view. Active state is driven by aria-current, which is also
+     what a screen reader announces, so the visual and the semantic cue cannot
+     disagree. */
+  .wpnav{display:flex;flex-wrap:wrap;gap:6px;align-items:center}
+  .wpnav a{font-size:11px;color:var(--mut);border:1px solid var(--line);
+    border-radius:999px;padding:3px 10px;text-decoration:none;white-space:nowrap}
+  .wpnav a:hover{color:var(--fg,var(--ink));border-color:var(--mut)}
+  .wpnav a[aria-current="page"]{color:var(--fg,var(--ink));border-color:var(--fg,var(--ink));
+    font-weight:700}
+  /* Narrow screens: the header wraps rather than overflowing, and the long
+     descriptive subtitle is the first thing to go — it is the least useful
+     element when space is scarce. */
+  @media (max-width:820px){
+    header{flex-wrap:wrap;row-gap:6px}
+    header .sub{display:none}
+    .wpnav{width:100%;order:99}
+  }
   .badge.live{color:var(--ok);border-color:var(--ok);background:var(--ok-bg);font-weight:700}
   .badge.err{color:var(--bad);border-color:var(--bad);background:var(--bad-bg)}
   .conn::before{content:'';display:inline-block;width:7px;height:7px;border-radius:50%;
@@ -118,6 +141,13 @@
     letter-spacing:.05em}
   td.num,th.num{text-align:right;font-variant-numeric:tabular-nums}
   tr.win td{color:var(--ok);font-weight:600}
+  td.good{color:var(--acc);font-weight:700}
+  td.mut{color:var(--mut);white-space:nowrap}
+  .pill{display:inline-block;padding:1px 8px;border-radius:999px;font-weight:700;font-size:11px}
+  .pill.ok{background:var(--ok-bg);color:var(--ok)}
+  .pill.warn{background:var(--warn-bg);color:var(--warn)}
+  .pill.bad{background:var(--bad-bg);color:var(--bad)}
+  td.bad{color:var(--bad);font-weight:700}
   .scroll{overflow-x:auto}
 
   /* ------------------------------------------------------------- topology */
@@ -169,7 +199,23 @@
   <span class="spacer"></span>
   <span class="stagepill" id="b-stage">IDLE</span>
   <span class="badge" id="b-source">source —</span>
+  <!-- WHO EXECUTED, which is a different question from where the data was read.
+       Never inferred from the source badge: a run executed by Isaac can be
+       observed through FIWARE, and a simulated run can be observed over ROS. -->
+  <span class="badge" id="b-execution">execution —</span>
   <span class="badge conn" id="b-fiware">FIWARE —</span>
+  <!-- PRIMARY NAVIGATION. One markup shape and one stylesheet rule across every
+       page, so "which page am I on" is answered by aria-current rather than by
+       three near-identical inline styles that drift apart. Simulator View is
+       rendered only when the active execution backend actually offers a
+       visualization (see refreshSimulator) — a dead nav item that opens an empty
+       viewer is worse than no nav item. -->
+  <nav class="wpnav" aria-label="Primary">
+    <a href="/" aria-current="page">Dashboard</a>
+    <a href="/inventory">Container Inventory</a>
+    <a href="/diagnostics">Diagnostics</a>
+    <a href="/simulator" id="nav-simulator" hidden>Simulator View</a>
+  </nav>
   <div class="seg">
     <button id="theme-d" aria-pressed="true">Dark</button>
     <button id="theme-l" aria-pressed="false">Light</button>
@@ -232,9 +278,61 @@
     </div>
 
     <div class="panel">
+      <!-- Title: Anomaly Monitoring & Workflow Response -->
+      <h3>Anomaly Monitoring & Workflow Response
+        <span class="note">Simulated anomaly source demonstrating ROS 2 event integration, deterministic workflow response, FIWARE traceability and analytics.</span>
+      </h3>
+      <div id="anomaly-state"></div>
+      <div class="btns">
+        <label class="f" style="flex:1 1 160px">Anomaly class
+          <select id="a-class">
+            <option value="camera_view_lost">camera_view_lost (warning)</option>
+            <option value="tool_pose_deviation">tool_pose_deviation (warning)</option>
+            <option value="shear_position_too_high">shear_position_too_high (critical)</option>
+            <option value="shear_position_too_low">shear_position_too_low (critical)</option>
+            <option value="shear_closed_before_contact">shear_closed_before_contact (critical)</option>
+            <option value="operation_ok">operation_ok (info)</option>
+          </select>
+        </label>
+      </div>
+      <div class="btns">
+        <button class="warn" id="c-anomaly">Inject anomaly</button>
+        <button class="pri" id="c-ack">Acknowledge</button>
+      </div>
+      <div class="scroll"><table id="anomaly-hist"><tbody></tbody></table></div>
+    </div>
+
+    <div class="panel">
+      <h3>Cut-aware whole-process planning
+        <span class="note">SIMULATED cutting · packing arithmetic is measured</span>
+      </h3>
+      <div id="cut-state"></div>
+      <div class="btns">
+        <button id="c-compare-cut">Compare no-cut vs cut-aware</button>
+        <label class="f" style="flex:0 0 90px">Max cuts
+          <input id="cut-maxcuts" type="number" min="1" max="4" value="2"/></label>
+        <label class="f" style="flex:0 0 120px">Min segment mm
+          <input id="cut-minseg" type="number" min="50" step="50" value="400"/></label>
+        <label class="f" style="flex:0 0 130px"><input id="cut-prefer-no" type="checkbox"/> prefer no cutting</label>
+      </div>
+      <div class="btns">
+        <label class="f" style="flex:1 1 200px">Alternative
+          <select id="cut-alt"></select></label>
+      </div>
+      <div class="btns">
+        <button class="pri" id="c-approve-cut">Approve cutting</button>
+        <button class="warn" id="c-reject-cut">Reject cutting</button>
+        <button id="c-sim-cut">Simulate completed cut</button>
+        <button id="c-sim-cut-dev">Simulate deviated cut</button>
+        <button class="warn" id="c-sim-cut-fail">Simulate cut failure</button>
+      </div>
+      <div class="scroll"><table id="cut-table"><tbody></tbody></table></div>
+    </div>
+
+    <div class="panel">
       <h3>Scenario</h3>
       <div class="ctl">
-        <label class="f">Preset<select id="s-preset"></select></label>
+        <label class="f">Preset<select id="s-preset"></select><div class="note" id="s-lock-note" style="margin-top:4px"></div></label>
         <label class="f">Seed<input id="s-seed" type="number" min="0" step="1" value="42"/></label>
         <label class="f">Strategy<select id="s-strategy"></select></label>
         <label class="f">Item count<input id="s-count" type="number" min="1" max="200" placeholder="preset"/></label>
@@ -259,10 +357,33 @@
       <div class="scroll"><table id="targets"><tbody></tbody></table></div>
     </div>
 
+    <!-- Physical execution diagnostics. HIDDEN unless a physical backend is
+         actually reporting, so the ordinary simulated dashboard is byte-for-byte
+         what it was. The item-by-item progression is NOT duplicated here — Isaac
+         states map onto the existing workflow stages and render on the timeline
+         below. What this adds is what the timeline has nowhere to put: the
+         measured final pose and its distance from the planned one. -->
+    <div class="panel" id="physpanel" style="display:none">
+      <h3>Physical execution
+        <span class="note" id="phys-note"></span>
+      </h3>
+      <div class="scroll"><table id="phys"><tbody></tbody></table></div>
+    </div>
+
     <div class="panel">
       <h3>Action event timeline
         <span class="note" id="log-note"></span>
       </h3>
+      <div class="btns" id="log-filters" style="margin-bottom:6px">
+        <button data-f="all" aria-pressed="true">all</button>
+        <button data-f="packing">packing</button>
+        <button data-f="cutting">cutting</button>
+        <button data-f="inventory">inventory</button>
+        <button data-f="logistics">logistics</button>
+        <button data-f="anomaly">anomaly</button>
+        <button data-f="operator">operator</button>
+        <button data-f="fiware">FIWARE</button>
+      </div>
       <div id="log"></div>
     </div>
   </div>
@@ -327,6 +448,120 @@ async function command(cmd, args = {}) {
   }
 }
 
+// ---------------------------------------------------------------- anomaly
+const SEV_CLASS = { info: "", warning: "warn", critical: "dang" };
+function renderAnomaly(a) {
+  const box = $("#anomaly-state");
+  if (!box) return;
+  box.innerHTML = "";
+  if (!a) { box.append(el("div", { class: "notice" }, "no anomaly module data")); return; }
+  const latest = a.latest;
+  const badge = a.hold ? (latest && latest.severity === "critical" ? "HELD (critical)" : "PAUSED (warning)")
+                       : "OK";
+  const cls = a.hold ? (latest && latest.severity === "critical" ? "bad" : "warn") : "ok";
+  const rows = [];
+  rows.push(["Workflow", el("span", { class: "pill " + cls }, badge)]);
+  if (latest) {
+    rows.push(["Anomaly class", latest.anomaly_class]);
+    rows.push(["Severity", latest.severity]);
+    rows.push(["Confidence", (latest.confidence != null ? (latest.confidence*100).toFixed(0)+"% (simulated)" : "—")]);
+    rows.push(["Skill", latest.skill]);
+    rows.push(["Recommended", latest.recommended_action]);
+    rows.push(["Source module", latest.source_module + " [" + latest.source + "]"]);
+    rows.push(["Anomaly→hold latency", latest.reaction_latency_ms != null ? latest.reaction_latency_ms + " ms" : "—"]);
+    rows.push(["Acknowledged", latest.acknowledged ? "yes" : (a.ack_required ? "REQUIRED" : "n/a")]);
+    rows.push(["Latest at", latest.timestamp || "—"]);
+  }
+  const t = el("table", {}, [el("tbody", {}, rows.map(([k,v]) =>
+    el("tr", {}, [el("td", { class: "mut" }, k),
+      el("td", {}, (typeof v === "string") ? v : v)])))]);
+  box.append(t);
+  box.append(el("div", { class: "notice" },
+    a.label || "Simulated anomaly event — not a validated anomaly detector"));
+
+  const hb = $("#anomaly-hist").querySelector("tbody"); hb.innerHTML = "";
+  const hist = (a.history || []).slice().reverse().slice(0, 8);
+  if (hist.length) {
+    hb.append(el("tr", {}, ["#", "Class", "Sev", "Reaction"].map(h => el("th", {}, h))));
+    for (const h of hist) hb.append(el("tr", {},
+      [el("td", {}, "#" + h.sequence), el("td", {}, h.anomaly_class),
+       el("td", { class: SEV_CLASS[h.severity] === "dang" ? "bad" : (SEV_CLASS[h.severity] === "warn" ? "" : "") }, h.severity),
+       el("td", {}, h.reaction)]));
+  }
+  // Enable Acknowledge only when required.
+  const ack = $("#c-ack"); if (ack) ack.disabled = !a.ack_required;
+}
+
+// ---------------------------------------------------------------- cut-aware
+let CUT_ALT_REV = null;
+function renderCut(wp) {
+  const box = $("#cut-state");
+  if (!box) return;
+  const cut = (wp && wp.cut) || null;
+  box.innerHTML = "";
+  if (!cut) { box.append(el("div", { class: "notice" },
+    "press “Compare no-cut vs cut-aware” to evaluate cutting")); return; }
+  const rec = cut.recommend_cut;
+  const rows = [
+    ["Recommendation", el("span", { class: "pill " + (rec ? "warn" : "ok") },
+      rec ? "CUT RECOMMENDED" : "NO CUT")],
+    ["Reason", cut.reason || "—"],
+    ["Containers no-cut → recommended",
+      `${cut.containers_no_cut} → ${cut.containers_recommended} (saved ${cut.containers_saved})`],
+    ["Cut approval", cut.cut_approval_state],
+    ["Cutting skill", cut.cut_skill_state],
+    ["Candidates evaluated", cut.candidates_evaluated],
+  ];
+  box.append(el("table", {}, [el("tbody", {}, rows.map(([k, v]) =>
+    el("tr", {}, [el("td", { class: "mut" }, k),
+      el("td", {}, (typeof v === "string") ? v : v)])))]));
+  box.append(el("div", { class: "notice" },
+    cut.label || "SIMULATED cutting; the packing arithmetic is measured"));
+
+  // Alternatives dropdown (only refill when the proposal revision changes).
+  const sel = $("#cut-alt");
+  if (sel && cut.plan_revision !== CUT_ALT_REV) {
+    CUT_ALT_REV = cut.plan_revision;
+    sel.innerHTML = "";
+    sel.append(new Option("no_cut", "no_cut"));
+    for (const a of (cut.alternatives || [])) {
+      if (!a.valid) continue;
+      const o = new Option(
+        `${a.label.replace("cut:", "")} · ${a.containers} cont · ${a.n_cuts} cut(s)`,
+        a.label);
+      sel.append(o);
+    }
+    sel.value = cut.selected_label || "no_cut";
+  }
+
+  // Alternatives table.
+  const tb = $("#cut-table").querySelector("tbody"); tb.innerHTML = "";
+  const alts = [cut.no_cut].concat(cut.alternatives || []).filter(Boolean);
+  if (alts.length) {
+    tb.append(el("tr", {}, ["Alternative", "Cont.", "Util%", "Cuts", "Cut s", "Kerf cm³", "Score", "Valid"]
+      .map(h => el("th", {}, h))));
+    for (const a of alts.slice(0, 7)) {
+      const isRec = a.label === cut.recommended_label;
+      tb.append(el("tr", { class: isRec ? "dyn" : "" }, [
+        el("td", {}, (a.is_cut ? a.label.replace("cut:", "") : "no cut")),
+        el("td", {}, String(a.containers)), el("td", {}, (a.utilization_pct).toFixed(1)),
+        el("td", {}, String(a.n_cuts)), el("td", {}, (a.cutting_time_s || 0).toFixed(0)),
+        el("td", {}, (a.kerf_loss_cm3 || 0).toFixed(1)),
+        el("td", {}, (a.whole_process_score || 0).toFixed(0)),
+        el("td", {}, a.valid ? "✓" : "✗")]));
+    }
+  }
+  // Gate the cut buttons by approval state.
+  const approved = cut.cut_approval_state === "approved";
+  ["#c-sim-cut", "#c-sim-cut-dev", "#c-sim-cut-fail"].forEach(id => {
+    const b = $(id); if (b) b.disabled = !approved;
+  });
+}
+async function refreshCut() {
+  const wp = await api("/api/whole_process");
+  renderCut(wp);
+}
+
 // ---------------------------------------------------------------- header
 const GO = ["PICK_ITEM","VERIFY_PICK","PLACE_ITEM","VERIFY_PLACEMENT","UPDATE_CONTAINER_STATE","NEXT_ITEM","COMPLETE"];
 function renderHeader(s) {
@@ -345,6 +580,18 @@ function renderHeader(s) {
   src.className = "badge " + (b.source === "sim" ? "sim" : "live");
   src.title = b.detail || "";
 
+  // Execution backend. Distinct from the source badge above, and it never
+  // claims physics: until the orchestrator has published which backend is
+  // authoritative, `known` is false and this shows "—" rather than asserting
+  // SIMULATED about a run it has not heard from.
+  const ex = s.execution || {};
+  const xb = $("#b-execution");
+  if (xb) {
+    xb.textContent = "execution: " + (ex.known ? (ex.label || "—") : "—");
+    xb.className = "badge " + (ex.physical ? "phys" : ex.known ? "sim" : "");
+    xb.title = ex.known ? (ex.detail || "") : "waiting for the orchestrator";
+  }
+
   const f = $("#b-fiware");
   const conn = s.fiware && s.fiware.connected;
   f.textContent = "FIWARE " + (conn === true ? "connected" : conn === false ? "unreachable" : "n/a");
@@ -360,6 +607,7 @@ function renderHeader(s) {
   if (pb) pb.style.width = (s.progress_pct || 0) + "%";
 
   // Approval banner — the safety statement, stated not implied.
+  renderAnomaly(s.anomaly);
   const box = $("#approval-warn");
   box.innerHTML = "";
   if (stage === "WAIT_FOR_OPERATOR_APPROVAL") {
@@ -624,22 +872,116 @@ async function renderKPIs() {
 }
 
 // -------------------------------------------------------------- strategies
-async function renderStrategies() {
-  $("#notice").textContent = "evaluating all packing strategies…";
+// Trigger a comparison, then WAIT for a result stamped with the current
+// scenario revision. A HTTP 200 on the command is not the result — the
+// authoritative source (the orchestrator, in live modes) publishes the
+// comparison asynchronously, and the button must reflect that it is still
+// waiting, then render the row set, then restore.
+async function compareStrategies() {
+  const btn = $("#c-strategies");
+  if (!btn) return;
+  // Read the revision FRESH — STATE may be a poll cycle behind, and comparing
+  // against a stale revision would be rejected by the server as out of date.
+  let targetRev = STATE.scenario_revision || 0;
+  try { targetRev = (await api("/api/state")).scenario_revision || targetRev; }
+  catch (e) { /* fall back to the cached revision */ }
+  btn.disabled = true;
+  const original = btn.textContent;
+  btn.textContent = "Comparing…";
+  $("#notice").textContent = "comparing packing strategies…";
+  try {
+    const res = await api("/api/command", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        command: "compare_strategies",
+        args: { scenario_revision: targetRev }
+      })
+    });
+    if (res.ok === false) throw new Error(res.detail || "command refused");
+
+    // Poll for a comparison whose revision matches what we requested against.
+    let doc = null;
+    for (let i = 0; i < 40; i++) {          // ~12s at 300ms
+      doc = await api("/api/strategies");
+      if (doc.ready && doc.comparison &&
+          doc.comparison.scenario_revision === targetRev) break;
+      if (doc.status === "error") throw new Error(doc.error || "comparison error");
+      await new Promise(r => setTimeout(r, 300));
+    }
+    if (!doc || !doc.ready || !doc.comparison ||
+        doc.comparison.scenario_revision !== targetRev) {
+      throw new Error("timed out waiting for a comparison of this scenario");
+    }
+    renderComparison(doc);
+    $("#notice").textContent =
+      `strategies compared (revision ${targetRev}, source ${doc.source}) — ` +
+      "same constraints, different objective weights; the active plan is unchanged";
+  } catch (e) {
+    // Do NOT keep a stale table: say clearly why there is nothing to show.
+    const tb = $("#strategies").querySelector("tbody");
+    if (tb) { tb.innerHTML = ""; tb.append(el("tr", {},
+      [el("td", { colspan: "8" }, "comparison failed: " + e.message)])); }
+    $("#notice").textContent = "compare strategies failed — " + e.message;
+  } finally {
+    btn.disabled = false;
+    btn.textContent = original;
+  }
+}
+
+function renderComparison(doc) {
+  const tb = $("#strategies").querySelector("tbody");
+  if (!tb) return;
+  tb.innerHTML = "";
+  // Stamp the table with the revision it belongs to, so refreshStrategies can
+  // clear it the moment the scenario moves on.
+  $("#strategies").dataset.rev = String(doc.comparison.scenario_revision);
+  const rows = doc.comparison.results || [];
+  const selected = doc.comparison.selected_strategy;
+  const active = (PLANS && PLANS.optimized) ? PLANS.optimized.containers_required : null;
+  const minCont = Math.min(...rows.map(r => r.containers));
+  const maxUtil = Math.max(...rows.map(r => r.utilization_pct));
+
+  tb.append(el("tr", {}, ["Strategy", "Cont.", "Util %", "Req m³", "Empty m³",
+    "Time ms", "Score", "Valid"].map(h => el("th", { class: "num" }, h))));
+  for (const r of rows) {
+    const cls = [];
+    if (r.strategy === selected) cls.push("win");             // active strategy
+    const cells = [
+      el("td", {}, r.strategy + (r.strategy === selected ? " ◄ selected" : "")),
+      el("td", { class: "num" + (r.containers === minCont ? " good" : "") }, r.containers),
+      el("td", { class: "num" + (r.utilization_pct === maxUtil ? " good" : "") },
+        num(r.utilization_pct)),
+      el("td", { class: "num" }, num(r.required_capacity_m3, 3)),
+      el("td", { class: "num" }, num(r.empty_capacity_m3, 3)),
+      el("td", { class: "num" }, num(r.optimization_time_ms, 0)),
+      el("td", { class: "num" }, num(r.score, 3)),
+      el("td", { class: r.valid ? "" : "bad" }, r.valid ? "yes" : "NO"),
+    ];
+    const tr = el("tr", { class: cls.join(" "),
+      title: r.valid ? "" : (r.violations || []).join("; ") }, cells);
+    if (active !== null && r.containers > active)
+      tr.title = "uses more containers than the active plan";
+    tb.append(tr);
+  }
+}
+
+// Render whatever comparison the snapshot already holds (e.g. after a refresh
+// or a late WebSocket tick), so the table survives navigation.
+async function refreshStrategies() {
   let doc;
-  try { doc = await api("/api/strategies"); } catch (e) {
-    $("#notice").textContent = "strategy comparison failed: " + e.message; return;
+  try { doc = await api("/api/strategies"); } catch (e) { return; }
+  const curRev = doc.scenario_revision;
+  const table = $("#strategies");
+  const shownRev = table ? Number(table.dataset.rev || "-1") : -1;
+  if (doc.ready && doc.comparison &&
+      doc.comparison.scenario_revision === curRev) {
+    renderComparison(doc);
+  } else if (table && shownRev !== -1 && shownRev !== curRev) {
+    // The rendered table belongs to a superseded scenario revision: clear it.
+    // A comparison must never be shown against a batch it was not computed for.
+    table.querySelector("tbody").innerHTML = "";
+    table.dataset.rev = "";
   }
-  const tb = $("#strategies").querySelector("tbody"); tb.innerHTML = "";
-  if (!doc.ready) return;
-  tb.append(el("tr", {}, ["Strategy", "Cont.", "Util %", "Score", "Valid"].map(h => el("th", {}, h))));
-  for (const r of doc.rows) {
-    tb.append(el("tr", {}, [el("td", {}, r.strategy),
-      el("td", { class: "num" }, r.containers), el("td", { class: "num" }, num(r.utilization_pct)),
-      el("td", { class: "num" }, num(r.objective_score, 3)),
-      el("td", {}, r.valid ? "yes" : "NO")]));
-  }
-  $("#notice").textContent = "strategies compared — same constraints, different objective weights";
 }
 
 // ---------------------------------------------------------------- topology
@@ -684,7 +1026,30 @@ async function drawTopo() {
 }
 
 // --------------------------------------------------------------------- log
+let LOG_FILTER = "all";
+let LAST_EVENTS = [];
+function eventCategory(e) {
+  const a = (e.action || "").toUpperCase(), s = (e.stage || "").toUpperCase();
+  const src = (e.source || "").toLowerCase();
+  if (a.startsWith("CUT") || a.startsWith("DERIVED") || a.startsWith("REPLAN_AFTER_CUT")
+      || s.includes("CUT")) return "cutting";
+  if (a.startsWith("CONTAINER") || a.startsWith("INVENTORY") || s.includes("CONTAINER")
+      || s === "RESERVE_CONTAINER" || s === "WAIT_FOR_CONTAINER") return "inventory";
+  if (a.startsWith("TRANSPORT") || a.includes("COLLECT")) return "logistics";
+  if (a.startsWith("ANOMALY") || a.includes("ANOMALY")) return "anomaly";
+  if (src === "operator" || (e.actor || "") === "operator") return "operator";
+  if (src === "measured" && s.includes("FIWARE")) return "fiware";
+  return "packing";
+}
+function filterEvents(events) {
+  if (LOG_FILTER === "all") return events;
+  if (LOG_FILTER === "fiware")
+    return events.filter(e => (e.source || "") === "measured");
+  return events.filter(e => eventCategory(e) === LOG_FILTER);
+}
 function renderLog(events) {
+  LAST_EVENTS = events;
+  events = filterEvents(events);
   const box = $("#log");
   if (!box) return;
   box.innerHTML = "";
@@ -724,9 +1089,33 @@ function readSettings() {
     pick_failure_probability: parseFloat($("#s-fail").value || "0.08"),
   };
 }
+// Keep the scenario controls pointed at the ACTIVE run, and lock them while one
+// is in flight. The options are only built once, but the SELECTED value and the
+// disabled state are refreshed on every poll — otherwise the form keeps showing
+// whatever it was left on while the header shows the scenario actually running,
+// and the same screen names two different scenarios.
+function syncScenarioControls(s) {
+  const p = $("#s-preset");
+  if (!p) return;
+  const active = (s.settings && s.settings.preset);
+  if (active && p.value !== active) p.value = active;
+  const seed = $("#s-seed");
+  if (seed && s.settings && s.settings.seed !== undefined && seed !== document.activeElement)
+    seed.value = s.settings.seed;
+
+  const locked = !!s.settings_locked;
+  for (const sel of ["#s-preset", "#s-seed", "#s-strategy", "#s-container",
+                     "#s-items", "#s-len", "#s-dia"]) {
+    const node = $(sel);
+    if (node) { node.disabled = locked; node.title = locked ? (s.settings_locked_reason || "") : ""; }
+  }
+  const note = $("#s-lock-note");
+  if (note) note.textContent = locked ? (s.settings_locked_reason || "") : "";
+}
+
 function fillSelects(s) {
   const p = $("#s-preset");
-  if (!p || p.options.length) return;
+  if (!p || p.options.length) { syncScenarioControls(s); return; }
   for (const x of s.presets || []) p.append(new Option(x, x));
   p.value = (s.settings && s.settings.preset) || "mixed_pipes_dense";
   const st = $("#s-strategy");
@@ -753,6 +1142,8 @@ $("#c-alt").onclick = () => command("alternative_strategy", {});
 $("#c-inject").onclick = () => command("inject_item");
 $("#c-unavail").onclick = () => command("container_unavailable");
 $("#c-grasp").onclick = () => command("grasp_failure");
+$("#c-anomaly").onclick = () => command("inject_anomaly", { anomaly_class: $("#a-class").value });
+$("#c-ack").onclick = () => command("acknowledge_anomaly");
 $("#c-pause").onclick = () => command("pause");
 $("#c-resume").onclick = () => command("resume");
 $("#c-step").onclick = () => command("step");
@@ -760,12 +1151,35 @@ $("#c-artifacts").onclick = () => command("write_artifacts");
 // "Generate & plan" always carries the current form, in EVERY mode: the live
 // orchestrator builds the new run from exactly these values.
 $("#c-reset").onclick = () => command("reset", readSettings());
-$("#c-strategies").onclick = renderStrategies;
+$("#c-strategies").onclick = compareStrategies;
+
+// cut-aware controls
+$("#c-compare-cut").onclick = () => command("compare_cut_aware");
+$("#cut-maxcuts").onchange = () => command("limit_cuts", { max_cuts: parseInt($("#cut-maxcuts").value || "2", 10) });
+$("#cut-minseg").onchange = () => command("set_min_segment", { mm: parseInt($("#cut-minseg").value || "400", 10) });
+$("#cut-prefer-no").onchange = () => command("prefer_no_cut", { prefer: $("#cut-prefer-no").checked });
+$("#cut-alt").onchange = () => command("select_cut_alternative", { label: $("#cut-alt").value });
+$("#c-approve-cut").onclick = () => command("approve_cut");
+$("#c-reject-cut").onclick = () => command("reject_cut");
+$("#c-sim-cut").onclick = () => command("simulate_cut");
+$("#c-sim-cut-dev").onclick = () => command("simulate_cut", { deviation_mm: 40 });
+$("#c-sim-cut-fail").onclick = () => command("simulate_cut_failure");
+
+// timeline category filters
+for (const b of document.querySelectorAll("#log-filters button")) {
+  b.onclick = () => {
+    LOG_FILTER = b.dataset.f;
+    for (const x of document.querySelectorAll("#log-filters button"))
+      x.setAttribute("aria-pressed", String(x === b));
+    renderLog(LAST_EVENTS);
+  };
+}
 
 // ------------------------------------------------------------- refreshing
 async function refreshState() {
   STATE = await api("/api/state");
   fillSelects(STATE);
+  syncScenarioControls(STATE);
   renderHeader(STATE);
 }
 async function refreshPlans() {
@@ -782,6 +1196,65 @@ async function refreshEvents() {
     `${(doc && doc.total) || 0} events · newest first` +
     (doc && doc.source ? ` · source: ${doc.source}` : "");
 }
+// ------------------------------------------------- physical execution panel
+function poseText(p) {
+  if (!p || !p.position_mm) return "—";
+  const q = p.position_mm;
+  return `${Math.round(q.x)}, ${Math.round(q.y)}, ${Math.round(q.z)} mm · ${p.axis}`;
+}
+// Simulator View is shown only when the ACTIVE backend actually offers a
+// visualization. A permanently-visible nav item that opens "stream unavailable"
+// trains an operator to ignore it; conditional visibility keeps it meaningful.
+async function refreshSimulatorNav() {
+  const link = $("#nav-simulator");
+  if (!link) return;
+  const d = await api("/api/visualization");
+  link.hidden = !(d && d.transport && d.transport !== "none");
+}
+
+async function refreshPhysical() {
+  const doc = await api("/api/execution");
+  const box = $("#physpanel");
+  if (!box) return;
+  // Shown only when a physical backend is genuinely reporting. An empty table
+  // under a "Physical execution" heading in a simulated run would imply a
+  // physical run that produced nothing.
+  if (!doc || !doc.physical) { box.style.display = "none"; return; }
+  box.style.display = "";
+
+  const s = doc.summary || {};
+  const isaac = doc.isaac || {};
+  const bits = [];
+  bits.push(isaac.simulator_ready ? "simulator READY" : "waiting for the simulator");
+  if (isaac.last_state) bits.push(`state: ${isaac.last_state}`);
+  bits.push(`${s.items_completed || 0} settled · ${s.items_failed || 0} failed`);
+  // TARGET vs MEASURED, always stated as a comparison. A dropped cylinder does
+  // not land where the optimizer planned, and presenting the measured pose on
+  // its own invites reading it as agreement.
+  if (s.mean_position_error_mm !== null && s.mean_position_error_mm !== undefined)
+    bits.push(`placement error vs plan: mean ${s.mean_position_error_mm} mm, max ${s.max_position_error_mm} mm`);
+  const note = $("#phys-note");
+  if (note) note.textContent = bits.join(" · ");
+
+  const body = $("#phys tbody");
+  body.innerHTML = "";
+  body.append(el("tr", {},
+    [el("th", {}, "item"), el("th", {}, "outcome"),
+     el("th", {}, "planned pose"), el("th", {}, "measured pose"),
+     el("th", {}, "error")]));
+  for (const r of (doc.results || []).slice().reverse()) {
+    const ok = r.state === "ITEM_COMPLETED";
+    body.append(el("tr", {},
+      [el("td", {}, r.item_id || "—"),
+       el("td", { class: ok ? "s measured" : "s bad", title: r.message || "" },
+          ok ? "settled" : "failed"),
+       el("td", {}, poseText(r.target_pose)),
+       el("td", {}, poseText(r.actual_pose)),
+       el("td", {}, r.position_error_mm === null || r.position_error_mm === undefined
+          ? "—" : `${Math.round(r.position_error_mm)} mm`)]));
+  }
+}
+
 // Each panel refreshes INDEPENDENTLY. Previously one throw in any panel aborted
 // the whole sequence and printed "refresh failed", so a single missing field
 // blanked the entire dashboard. A panel that fails now says so in its own place
@@ -806,7 +1279,10 @@ async function refreshAll() {
   await panel("plans", refreshPlans);
   await panel("events", refreshEvents);
   await panel("kpis", renderKPIs);
+  await panel("cut", refreshCut);
   await panel("topology", drawTopo);
+  await panel("physical", refreshPhysical);
+  await panel("simnav", refreshSimulatorNav);
 }
 
 // WebSocket is an ENHANCEMENT. If it never connects or dies, polling carries
@@ -836,7 +1312,11 @@ function startPolling() {
   setInterval(() => panel("plans", refreshPlans), 1500);
   setInterval(() => panel("events", refreshEvents), 2000);
   setInterval(() => panel("kpis", renderKPIs), 4000);
+  setInterval(() => panel("strategies", refreshStrategies), 3000);
+  setInterval(() => panel("cut", refreshCut), 2000);
   setInterval(() => panel("topology", drawTopo), 3000);
+  setInterval(() => panel("physical", refreshPhysical), 2000);
+  setInterval(() => panel("simnav", refreshSimulatorNav), 5000);
 })();
 </script>
 </body>

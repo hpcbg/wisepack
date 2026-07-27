@@ -55,6 +55,20 @@ class Stage(str, Enum):
     COMPLETE = "COMPLETE"
     PAUSED = "PAUSED"
     DEGRADED = "DEGRADED"
+    # -- cut-aware planning branch (brief §6) ---------------------------------
+    GENERATE_CUT_ALTERNATIVES = "GENERATE_CUT_ALTERNATIVES"
+    DIGITAL_TWIN_VALIDATE_CUT_PLAN = "DIGITAL_TWIN_VALIDATE_CUT_PLAN"
+    WAIT_FOR_CUT_APPROVAL = "WAIT_FOR_CUT_APPROVAL"
+    CUT_REQUESTED = "CUT_REQUESTED"
+    CUT_IN_PROGRESS = "CUT_IN_PROGRESS"
+    CUT_COMPLETED = "CUT_COMPLETED"
+    REGISTER_DERIVED_ITEMS = "REGISTER_DERIVED_ITEMS"
+    REPLAN_AFTER_CUT = "REPLAN_AFTER_CUT"
+    # -- inventory / logistics branch (brief §9, §15) -------------------------
+    CHECK_CONTAINER_AVAILABILITY = "CHECK_CONTAINER_AVAILABILITY"
+    RESERVE_CONTAINER = "RESERVE_CONTAINER"
+    WAIT_FOR_CONTAINER = "WAIT_FOR_CONTAINER"
+    COLLECT_FULL_CONTAINER = "COLLECT_FULL_CONTAINER"
 
 
 #: Stages in which no physical action has yet been authorised. The orchestrator
@@ -64,7 +78,35 @@ PRE_APPROVAL_STAGES = frozenset({
     Stage.DETECT_ITEMS, Stage.GENERATE_BASELINE_PLAN,
     Stage.GENERATE_OPTIMIZED_PLAN, Stage.DIGITAL_TWIN_VALIDATE,
     Stage.WAIT_FOR_OPERATOR_APPROVAL,
+    # The cut and container-availability branches are decided BEFORE the packing
+    # plan is approved, so no robot pick may occur from any of them either. The
+    # simulated cutting skill (CUT_REQUESTED/IN_PROGRESS/COMPLETED) runs after a
+    # separate cut approval but still before packing approval.
+    Stage.GENERATE_CUT_ALTERNATIVES, Stage.DIGITAL_TWIN_VALIDATE_CUT_PLAN,
+    Stage.WAIT_FOR_CUT_APPROVAL, Stage.CUT_REQUESTED, Stage.CUT_IN_PROGRESS,
+    Stage.CUT_COMPLETED, Stage.REGISTER_DERIVED_ITEMS, Stage.REPLAN_AFTER_CUT,
+    Stage.CHECK_CONTAINER_AVAILABILITY, Stage.RESERVE_CONTAINER,
+    Stage.WAIT_FOR_CONTAINER,
 })
+
+#: Canonical action names for the extended Action Event timeline (brief §18).
+#: Emitted as free-form action strings — the timeline groups on them.
+CUT_ACTIONS = (
+    "CUT_PROPOSAL_GENERATED", "CUT_PLAN_VALIDATED", "WAIT_FOR_CUT_APPROVAL",
+    "CUT_APPROVED", "CUT_REJECTED", "CUT_REQUESTED", "CUT_COMPLETED",
+    "CUT_FAILED", "DERIVED_ITEMS_REGISTERED", "REPLAN_AFTER_CUT",
+)
+INVENTORY_ACTIONS = (
+    "CONTAINER_REGISTERED", "CONTAINER_RESERVED", "CONTAINER_RELEASED",
+    "CONTAINER_DELIVERY_REQUESTED", "CONTAINER_ARRIVED",
+    "CONTAINER_FILLING_STARTED", "CONTAINER_FULL",
+    "CONTAINER_COLLECTION_REQUESTED", "CONTAINER_DISPATCHED",
+    "INVENTORY_SHORTAGE_DETECTED",
+)
+LOGISTICS_ACTIONS = (
+    "TRANSPORT_TASK_REQUESTED", "TRANSPORT_TASK_STARTED",
+    "TRANSPORT_TASK_COMPLETED", "TRANSPORT_TASK_FAILED",
+)
 
 
 class Result(str, Enum):
@@ -85,6 +127,11 @@ class Actor(str, Enum):
     DIGITAL_TWIN = "digital_twin_validator"
     ORCHESTRATOR = "hitl_orchestrator"
     ROBOT_SIM = "robot_simulator"
+    #: The Isaac Sim physical execution backend. Deliberately distinct from
+    #: ROBOT_SIM: both are simulators, but one resolves a pick with a seeded
+    #: coin flip and the other with PhysX contacts, and an audit trail that
+    #: cannot tell them apart cannot support either claim.
+    ISAAC_SIM = "isaac_sim"
     OPERATOR = "operator"
     EVENT_INJECTOR = "dynamic_event_injector"
     SYSTEM = "system"

@@ -1,0 +1,226 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>WISEPACK — simulator view</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect x='2' y='4' width='12' height='9' rx='1.5' fill='%235b7185'/%3E%3C/svg%3E"/>
+<style>
+  :root{color-scheme:dark;--bg:#0f1720;--panel:#16212e;--inset:#0e1926;--line:#22303f;
+    --ink:#e6edf3;--mut:#8aa0b4;--acc:#4aa3ff;--ok:#2ecc71;--warn:#f1c40f;--bad:#e74c3c;--hold:#e67e22}
+  :root[data-theme="light"]{color-scheme:light;--bg:#f4f6f9;--panel:#fff;--inset:#f7f9fb;
+    --line:#d8e0ea;--ink:#12222f;--mut:#5b7185;--acc:#1266d1;--ok:#12784a;--warn:#a76a00;--bad:#c0392b;--hold:#c05a11}
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);font:13px/1.45 ui-sans-serif,system-ui,Segoe UI,Arial}
+  header{padding:10px 16px;border-bottom:1px solid var(--line);display:flex;gap:12px;
+    align-items:center;background:var(--panel);position:sticky;top:0;z-index:10;flex-wrap:wrap}
+  header b{font-size:15px}
+  header .sub{font-size:11px;color:var(--mut)}
+  a{color:var(--acc);text-decoration:none}
+  .spacer{margin-left:auto}
+  .wrap{padding:12px;display:grid;grid-template-columns:2fr 1fr;gap:12px}
+  @media (max-width:1000px){.wrap{grid-template-columns:1fr}}
+  .panel{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:11px 12px;min-width:0}
+  h3{margin:0 0 9px;font-size:11px;letter-spacing:.09em;text-transform:uppercase;color:var(--mut)}
+  .kv{display:grid;grid-template-columns:auto 1fr;gap:3px 10px;font-size:12px}
+  .kv .k{color:var(--mut);white-space:nowrap}
+  .pill{display:inline-block;padding:1px 8px;border-radius:999px;font-size:10.5px;font-weight:700}
+  .st-unavailable{background:rgba(91,113,133,.20);color:var(--mut)}
+  .st-starting{background:rgba(241,196,15,.16);color:var(--warn)}
+  .st-ready{background:rgba(74,163,255,.16);color:var(--acc)}
+  .st-connected{background:rgba(46,204,113,.16);color:var(--ok)}
+  .st-disconnected{background:rgba(230,126,34,.18);color:var(--hold)}
+  .st-error{background:rgba(231,76,60,.16);color:var(--bad)}
+  button{border:1px solid var(--line);background:var(--inset);color:var(--ink);border-radius:6px;
+    padding:6px 11px;cursor:pointer;font:600 11px ui-sans-serif}
+  button:hover:not(:disabled){border-color:var(--acc);color:var(--acc)}
+  button:disabled{opacity:.45;cursor:not-allowed}
+  .actions{display:flex;gap:7px;flex-wrap:wrap;margin-top:10px}
+  /* The live-view area. Responsive by aspect ratio rather than a fixed height,
+     so it stays framed on a phone and on a wide monitor alike. */
+  .stage{position:relative;width:100%;aspect-ratio:16/9;background:var(--inset);
+    border:1px solid var(--line);border-radius:9px;display:flex;align-items:center;
+    justify-content:center;overflow:hidden}
+  .stage .msg{max-width:min(560px,90%);text-align:center;padding:18px}
+  .stage .msg .big{font-size:15px;font-weight:700;margin-bottom:6px}
+  .stage .msg .small{font-size:11.5px;color:var(--mut);line-height:1.55;white-space:pre-line}
+  .stage iframe{width:100%;height:100%;border:0}
+  code{background:var(--inset);border:1px solid var(--line);border-radius:4px;
+    padding:1px 5px;font:11px ui-monospace,Menlo,Consolas,monospace;word-break:break-all}
+  .note{color:var(--mut);font-size:11px;margin-top:9px;line-height:1.5}
+  .warnbox{background:rgba(241,196,15,.12);border:1px solid var(--warn);color:var(--warn);
+    border-radius:7px;padding:7px 9px;font-size:11.5px;margin-top:9px}
+  .wpnav{display:flex;flex-wrap:wrap;gap:6px;align-items:center}
+  .wpnav a{font-size:11px;color:var(--mut);border:1px solid var(--line);
+    border-radius:999px;padding:3px 10px;text-decoration:none;white-space:nowrap}
+  .wpnav a:hover{color:var(--fg,var(--ink));border-color:var(--mut)}
+  .wpnav a[aria-current="page"]{color:var(--fg,var(--ink));border-color:var(--fg,var(--ink));font-weight:700}
+  @media (max-width:820px){
+    header{flex-wrap:wrap;row-gap:6px}
+    header .sub{display:none}
+    .wpnav{width:100%;order:99}
+  }
+</style>
+</head>
+<body>
+<header>
+  <b>WISEPACK simulator view</b>
+  <span class="sub">live physical execution — visual stream only, state comes from ROS 2 / FIWARE</span>
+  <span class="spacer"></span>
+  <span id="badge" class="pill st-unavailable">Stream unavailable</span>
+  <nav class="wpnav" aria-label="Primary">
+    <a href="/">Dashboard</a>
+    <a href="/inventory">Container Inventory</a>
+    <a href="/diagnostics">Diagnostics</a>
+    <a href="/simulator" aria-current="page">Simulator View</a>
+  </nav>
+  <button id="theme-d" aria-pressed="true">Dark</button>
+  <button id="theme-l" aria-pressed="false">Light</button>
+</header>
+
+<div class="wrap">
+  <div class="panel">
+    <h3>Live view</h3>
+    <div class="stage" id="stage">
+      <div class="msg">
+        <div class="big" id="stage-title">Stream unavailable</div>
+        <div class="small" id="stage-detail">Checking the active execution backend…</div>
+      </div>
+    </div>
+    <div class="actions">
+      <button id="connect" disabled>Connect</button>
+      <button id="fullscreen" disabled>Open full screen</button>
+      <button id="copy" disabled>Copy endpoint</button>
+    </div>
+    <div class="note" id="hint"></div>
+  </div>
+
+  <div class="panel">
+    <h3>Connection</h3>
+    <div class="kv" id="conn"></div>
+    <div class="warnbox">
+      The stream is <b>unauthenticated and unencrypted</b>. Keep it on loopback or a
+      trusted network; reach it remotely with SSH port forwarding, a firewall rule
+      scoped to your client, or an authenticated HTTPS reverse proxy.
+    </div>
+    <div class="note">
+      Visual frames never travel over ROS 2 or FIWARE. Those carry execution state
+      and metadata; the picture comes over its own transport. A future XR client
+      consumes the same state contracts and timestamped poses — not this video.
+    </div>
+  </div>
+</div>
+
+<script>
+"use strict";
+const $ = s => document.querySelector(s);
+const el = (t,a={},k=[]) => { const n=document.createElement(t);
+  for(const[x,v]of Object.entries(a))n.setAttribute(x,v);
+  for(const c of[].concat(k))n.append(c); return n; };
+
+function setTheme(t){ document.documentElement.dataset.theme=t;
+  $("#theme-d").setAttribute("aria-pressed",String(t==="dark"));
+  $("#theme-l").setAttribute("aria-pressed",String(t==="light"));
+  try{localStorage.setItem("wisepack-theme",t)}catch(e){} }
+$("#theme-d").onclick=()=>setTheme("dark");
+$("#theme-l").onclick=()=>setTheme("light");
+try{ setTheme(localStorage.getItem("wisepack-theme")||"dark"); }catch(e){ setTheme("dark"); }
+
+let DESC = null;
+let CONNECTED = false;
+
+async function api(p){ const r = await fetch(p); if(!r.ok) throw new Error(r.status); return r.json(); }
+
+// EVERY path through this function ends in a named state with wording. There is
+// deliberately no branch that leaves the stage blank or spinning: an operator
+// must always be able to tell "not offered" from "starting" from "broken".
+function render(d){
+  DESC = d;
+  const status = d.status || "unavailable";
+  const badge = $("#badge");
+  badge.textContent = d.status_label || status;
+  badge.className = "pill st-" + status;
+
+  const title = $("#stage-title"), detail = $("#stage-detail"), stage = $("#stage");
+  const connect = $("#connect"), full = $("#fullscreen"), copy = $("#copy");
+  const canConnect = !!(d.available && d.viewer_url);
+
+  connect.disabled = !canConnect;
+  full.disabled = !canConnect;
+  copy.disabled = !d.viewer_url;
+  connect.textContent = CONNECTED ? "Reconnect" : "Connect";
+
+  // Only replace the stage content when we are NOT showing an embedded viewer,
+  // so a live embed is not torn down by the metadata poll every two seconds.
+  if (!(CONNECTED && d.embeddable && canConnect)) {
+    stage.innerHTML = "";
+    const msg = el("div",{class:"msg"});
+    msg.append(el("div",{class:"big",id:"stage-title"}, d.status_label || status));
+    const small = el("div",{class:"small",id:"stage-detail"});
+    small.textContent = d.message
+      || (canConnect ? "The stream is up. Use Connect or Open full screen."
+                     : "No visual stream is offered by the active execution backend.");
+    msg.append(small);
+    stage.append(msg);
+  }
+
+  const conn = $("#conn"); conn.innerHTML = "";
+  const rows = [
+    ["connection", d.status_label || status],
+    ["execution backend", d.execution_backend_label || d.execution_backend || "—"],
+    ["transport", d.transport || "none"],
+    ["simulator version", d.simulator_version || "—"],
+    ["current item", d.current_item_id || "—"],
+    ["physical state", d.isaac_state || d.stage || "—"],
+    ["camera", d.camera_name || "—"],
+    ["stream id", d.stream_id || "—"],
+    ["endpoint", d.viewer_url || "—"],
+    ["interactive", d.interactive ? "yes" : "no"],
+    ["embeddable", d.embeddable ? "yes" : "no — opens in a separate client"],
+  ];
+  for (const [k,v] of rows){
+    conn.append(el("div",{class:"k"},k));
+    conn.append(k === "endpoint" && d.viewer_url ? el("code",{},v) : el("div",{},String(v)));
+  }
+  $("#hint").textContent = d.client_hint || "";
+}
+
+$("#connect").onclick = () => {
+  if (!DESC || !DESC.viewer_url) return;
+  CONNECTED = true;
+  if (DESC.embeddable){
+    const stage = $("#stage");
+    stage.innerHTML = "";
+    stage.append(el("iframe",{src:DESC.viewer_url,allow:"autoplay; fullscreen",
+                             title:"Isaac Sim live view"}));
+  } else {
+    // The installed Isaac Sim 6.0.1 livestream package ships no in-browser
+    // client, so an iframe could only ever render blank. Hand the operator off
+    // to the real client rather than faking a player.
+    window.open(DESC.viewer_url, "_blank", "noopener");
+  }
+  render({...DESC});
+};
+$("#fullscreen").onclick = () => {
+  if (DESC && DESC.viewer_url) window.open(DESC.viewer_url, "_blank", "noopener");
+};
+$("#copy").onclick = async () => {
+  if (!DESC || !DESC.viewer_url) return;
+  try { await navigator.clipboard.writeText(DESC.viewer_url); $("#copy").textContent = "Copied"; }
+  catch (e) { $("#copy").textContent = "Copy failed"; }
+  setTimeout(()=>{ $("#copy").textContent = "Copy endpoint"; }, 1500);
+};
+
+async function refresh(){
+  try { render(await api("/api/visualization")); }
+  catch (e) {
+    render({status:"error", status_label:"Stream error", available:false,
+            transport:"none",
+            message:"The dashboard could not read the visualization state: " + e.message});
+  }
+}
+refresh();
+setInterval(refresh, 2000);
+</script>
+</body>
+</html>

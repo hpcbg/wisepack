@@ -425,3 +425,59 @@ def test_step_execution_refuses_once_approval_is_revoked():
     engine.selected.approval_state = ApprovalState.PENDING
     with pytest.raises(ApprovalRequired):
         engine.step_execution()
+
+
+# --------------------------------------------------------------------------- #
+# Strategy comparison — decision support that mutates nothing
+# --------------------------------------------------------------------------- #
+
+def test_strategy_comparison_validates_every_plan():
+    engine = planned()
+    comp = engine.build_strategy_comparison()
+    assert comp["status"] == "completed"
+    assert {r["strategy"] for r in comp["results"]} == {s.value for s in Strategy}
+    for r in comp["results"]:
+        assert r["valid"], f"{r['strategy']} did not validate: {r['violations']}"
+        assert r["containers"] >= 1
+
+
+def test_strategy_comparison_does_not_alter_the_plan_or_approval():
+    engine = planned()
+    engine.approve()
+    before_plan = engine.selected.plan_id
+    before_state = engine.selected.approval_state
+    before_rev = engine.scenario_revision
+    engine.build_strategy_comparison()
+    assert engine.selected.plan_id == before_plan
+    assert engine.selected.approval_state is before_state
+    assert engine.scenario_revision == before_rev
+
+
+def test_strategy_comparison_is_deterministic():
+    a = planned().build_strategy_comparison()
+    b = planned().build_strategy_comparison()
+    ra = {r["strategy"]: (r["containers"], r["utilization_pct"]) for r in a["results"]}
+    rb = {r["strategy"]: (r["containers"], r["utilization_pct"]) for r in b["results"]}
+    assert ra == rb
+
+
+def test_strategy_comparison_clears_on_batch_change():
+    engine = planned()
+    engine.build_strategy_comparison()
+    assert engine.strategy_comparison is not None
+    rev = engine.scenario_revision
+    engine.apply_dynamic_event(DynamicEvent(
+        event_type=DynamicEventType.ITEM_INJECT,
+        trigger=f"placement:{engine.cursor.index}",
+        payload={"item": {"length_mm": 900, "outer_diameter_mm": 180,
+                          "inner_diameter_mm": 150}}))
+    assert engine.scenario_revision > rev
+    assert engine.strategy_comparison is None, "stale comparison was not cleared"
+
+
+def test_strategy_comparison_is_stamped_with_the_current_revision():
+    engine = planned()
+    comp = engine.build_strategy_comparison()
+    assert comp["scenario_revision"] == engine.scenario_revision
+    assert comp["comparison_id"].startswith("cmp-")
+    assert comp["schema_version"] == "1.0"

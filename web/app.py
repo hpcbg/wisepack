@@ -67,8 +67,11 @@ from wisepack_bringup.topics import OPERATOR_COMMANDS              # noqa: E402
 from wisepack_core.kpi import compare_strategies                   # noqa: E402
 from wisepack_core.packing import OptimizerConfig                  # noqa: E402
 from wisepack_core.workflow import (                               # noqa: E402
-    ApprovalRequired, RobotSimConfig, WorkflowConfig, WorkflowEngine, WorkflowError,
+    AnomalyHold, ApprovalRequired, RobotSimConfig, WorkflowConfig, WorkflowEngine,
+    WorkflowError,
 )
+from wisepack_core.whole_process import WholeProcessError          # noqa: E402
+from wisepack_core.inventory import InvalidTransition             # noqa: E402
 from snapshot import (                                             # noqa: E402
     FiwareSnapshotProvider, RosSnapshotProvider, SimSnapshotProvider, parse_attr,
 )
@@ -226,8 +229,8 @@ async def sim_driver() -> None:
                 continue
             try:
                 engine.step_execution()
-            except ApprovalRequired:
-                # Expected while awaiting a decision — not an error.
+            except (ApprovalRequired, AnomalyHold):
+                # Expected while awaiting a decision or held by an anomaly.
                 STATE.auto_step = False
             except Exception as exc:                    # noqa: BLE001
                 STATE.notice = f"execution error: {exc}"
@@ -422,8 +425,13 @@ async def lifespan(app: FastAPI):
     if SOURCE in ("ros", "fiware"):
         tasks.append(asyncio.create_task(_fiware_poller()))
     yield
+    # Clean shutdown: cancel the background tasks and await them so their
+    # CancelledError is consumed here rather than surfacing as an uvicorn
+    # lifespan traceback on Ctrl+C. Container lifecycle is unaffected.
     for task in tasks:
         task.cancel()
+    if tasks:
+        await asyncio.gather(*tasks, return_exceptions=True)
 
 
 async def _fiware_poller() -> None:
@@ -473,8 +481,38 @@ def api_state():
         settings = dict(STATE.settings)
     payload = snap.to_state()
     payload["fiware"]["broker"] = ORION
+
+    # THE SCENARIO CONTROLS MUST DESCRIBE THE ACTIVE RUN.
+    #
+    # `STATE.settings` is this process's own last-submitted form state. In live
+    # mode the run belongs to the orchestrator in another process, so the form
+    # sat at its default (`mixed_pipes_dense`) while the header correctly showed
+    # the running scenario (`isaac_cylinders_smoke-s42`) — the same screen
+    # naming two different scenarios. The ACTIVE run wins wherever it is known.
+    scenario = snap.scenario or {}
+    active_preset = scenario.get("preset")
+    active_seed = scenario.get("seed")
+    if active_preset:
+        settings = {**settings, "preset": active_preset}
+    if active_seed is not None:
+        settings["seed"] = active_seed
+
+    # And while a run is live or waiting for a decision, the controls are
+    # READ-ONLY. Letting an operator scroll the preset away from the scenario
+    # they are being asked to approve is precisely how a screen comes to
+    # misrepresent what is about to be executed.
+    locked_stages = ("WAIT_FOR_OPERATOR_APPROVAL", "PICK_ITEM", "VERIFY_PICK",
+                     "PLACE_ITEM", "VERIFY_PLACEMENT", "UPDATE_CONTAINER_STATE",
+                     "NEXT_ITEM", "REPLAN")
+    settings_locked = snap.stage in locked_stages
     payload.update({
         "settings": settings,
+        "settings_locked": settings_locked,
+        "settings_locked_reason": (
+            "a run is active or awaiting your decision — the scenario controls "
+            "show the running scenario and cannot be changed until it finishes "
+            "or is reset" if settings_locked else ""),
+        "active_preset": active_preset,
         "presets": sorted(PRESETS),
         "container_specs": {k: v["description"] for k, v in CONTAINER_SPECS.items()},
         "strategies": [s.value for s in Strategy],
@@ -498,14 +536,15 @@ def api_kpis():
 
 @app.get("/api/strategies")
 def api_strategies():
-    """Run all three operator-selectable strategies and compare them."""
-    with STATE.lock:
-        engine = STATE.engine
-        if engine is None or engine.scenario is None:
-            return {"ready": False}
-        plans = engine.compare_strategies()
-    return {"ready": True, "rows": compare_strategies(plans),
-            "plans": {k: v.to_dict() for k, v in plans.items()}}
+    """Return the latest strategy comparison from the unified snapshot.
+
+    This is a READ. In every mode it reflects whatever comparison the
+    authoritative source last produced — the local engine in sim mode, the
+    orchestrator's `/wisepack/plan/strategy_comparison` topic in ROS/FIWARE. It
+    never runs a comparison itself, so it cannot be a second source of truth.
+    Triggering is POST /api/command {"command": "compare_strategies"}.
+    """
+    return _provider().snapshot().to_strategies()
 
 
 @app.get("/api/events")
@@ -524,6 +563,150 @@ def api_analytics():
 @app.get("/api/topology")
 def api_topology():
     return {**TOPOLOGY, "status": topology_status(_provider().snapshot())}
+
+
+@app.get("/api/execution")
+def api_execution():
+    """Which backend executed, and — when it is Isaac — what physically happened.
+
+    A COMPACT DIAGNOSTIC, not a redesign. The item-by-item progression already
+    renders on the existing execution timeline, because Isaac's physical states
+    are mapped onto the existing WISEPACK stages rather than shown as a parallel
+    state machine. What this adds is the part the timeline has nowhere to put:
+    the measured final pose of each item and its distance from the planned one.
+
+    `target_pose` and `actual_pose` are always reported as a PAIR. Showing the
+    measured pose without the target it was aiming at invites reading it as
+    agreement, and a released cylinder does not land exactly where the optimizer
+    planned — that is the physics working, not a defect.
+    """
+    snap = _provider().snapshot()
+    payload = snap.backend_badge()
+    payload["source"] = snap.mode
+    payload["results"] = list(snap.isaac_results)
+    errors = [r["position_error_mm"] for r in snap.isaac_results
+              if r.get("position_error_mm") is not None]
+    payload["summary"] = {
+        "items_reported": len(snap.isaac_results),
+        "items_completed": sum(1 for r in snap.isaac_results
+                               if r.get("state") == "ITEM_COMPLETED"),
+        "items_failed": sum(1 for r in snap.isaac_results
+                            if r.get("state") == "ITEM_FAILED"),
+        # Mean and max placement error, in millimetres, MEASURED. Absent rather
+        # than zero when nothing has been placed yet: a measured zero and "no
+        # measurement" must never render the same.
+        "mean_position_error_mm": (round(sum(errors) / len(errors), 1)
+                                   if errors else None),
+        "max_position_error_mm": round(max(errors), 1) if errors else None,
+    }
+    return payload
+
+
+@app.get("/api/visualization")
+def api_visualization():
+    """How to WATCH the active execution backend — metadata only.
+
+    Never carries a frame. Rendered video travels over its own transport
+    (WebRTC for Isaac); this endpoint answers "is there a stream, where, and
+    what state is it in" so the Simulator View can show an honest status
+    instead of an empty player.
+    """
+    snap = _provider().snapshot()
+    payload = snap.to_visualization()
+    payload["execution_backend"] = snap.execution_backend
+    payload["execution_backend_label"] = snap.execution_backend_label
+    payload["current_item_id"] = snap.current_item_id
+    payload["stage"] = snap.stage
+    payload["isaac_state"] = (snap.isaac or {}).get("last_state")
+    payload["simulator_version"] = (snap.isaac or {}).get("simulator_version")
+    return payload
+
+
+@app.get("/simulator", response_class=HTMLResponse)
+def simulator_page():
+    with open(os.path.join(HERE, "simulator.html"), encoding="utf-8") as fh:
+        return fh.read()
+
+
+@app.get("/api/whole_process")
+def api_whole_process():
+    """Cut-aware comparison + inventory + logistics, in every mode."""
+    return _provider().snapshot().to_whole_process()
+
+
+@app.get("/api/inventory")
+def api_inventory():
+    """FIWARE-backed container inventory view (brief §12)."""
+    return _provider().snapshot().to_inventory()
+
+
+@app.get("/api/logistics")
+def api_logistics():
+    """Simulated container-logistics facility map + tasks (brief §16)."""
+    return _provider().snapshot().to_logistics()
+
+
+@app.get("/api/diagnostics")
+def api_diagnostics():
+    """Read-only engineering diagnostics. Allowlisted, secret-free (see diagnostics.py)."""
+    import diagnostics                                          # noqa: PLC0415
+    snap = _provider().snapshot()
+    with STATE.lock:
+        mirror = STATE.ros_mirror
+    return diagnostics.build(
+        snap, SOURCE, mirror, latest_artifact("dds-fiware-latency", RESULTS_DIR))
+
+
+@app.get("/api/inspector")
+def api_inspector():
+    """Latest of each message kind, for the diagnostics message inspector.
+
+    Payloads are length-capped; no secrets pass through the workflow, and the
+    fields shown are the same the audit trail already publishes.
+    """
+    snap = _provider().snapshot()
+    events = snap.events
+    def latest(pred):
+        for e in events:
+            if pred(e):
+                return e
+        return None
+    cap = lambda o: (json.dumps(o)[:1200] if o is not None else None)
+    return {
+        "action_event": events[0] if events else None,
+        "operator_command": latest(lambda e: e.get("actor") == "operator"),
+        "approval": latest(lambda e: e.get("action") in ("approve_plan", "reject_plan")),
+        "dynamic_event": latest(lambda e: str(e.get("action", "")).startswith("dynamic_event")),
+        "anomaly_event": (snap.anomaly or {}).get("latest") if snap.anomaly else None,
+        "strategy_comparison": snap.strategy_comparison,
+        "baseline_plan": {"plan_id": (snap.baseline or {}).get("plan_id"),
+                          "containers_required": (snap.baseline or {}).get("containers_required"),
+                          "summary": cap((snap.baseline or {}).get("details"))}
+                          if snap.baseline else None,
+        "optimized_plan": {"plan_id": (snap.optimized or {}).get("plan_id"),
+                           "containers_required": (snap.optimized or {}).get("containers_required")}
+                           if snap.optimized else None,
+    }
+
+
+@app.get("/diagnostics", response_class=HTMLResponse)
+def diagnostics_page():
+    with open(os.path.join(HERE, "diagnostics.html"), encoding="utf-8") as fh:
+        return fh.read()
+
+
+@app.get("/inventory", response_class=HTMLResponse)
+def inventory_page():
+    with open(os.path.join(HERE, "inventory.html"), encoding="utf-8") as fh:
+        return fh.read()
+
+
+@app.get("/logistics", response_class=HTMLResponse)
+def logistics_page():
+    # The inventory page carries both the container inventory and the logistics
+    # facility map; /logistics deep-links to the logistics section.
+    with open(os.path.join(HERE, "inventory.html"), encoding="utf-8") as fh:
+        return fh.read()
 
 
 @app.get("/api/fiware")
@@ -577,11 +760,13 @@ async def api_command(payload: Dict[str, Any]):
             raise HTTPException(status_code=409, detail="no run in progress")
         try:
             return _apply_command_locked(engine, command, args)
-        except (ApprovalRequired, WorkflowError, ValueError) as exc:
+        except (ApprovalRequired, WorkflowError, WholeProcessError,
+                InvalidTransition, ValueError) as exc:
             # 409, not 500. These are all "that command is not legal right now"
-            # — an operator double-clicking Approve, or pressing Resume on an
-            # unapproved plan. A server error would tell them nothing and would
-            # look like a crash in front of an audience.
+            # — an operator double-clicking Approve, pressing Resume on an
+            # unapproved plan, approving a cut with none selected, or an illegal
+            # container transition. A server error would tell them nothing and
+            # would look like a crash in front of an audience.
             raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 
@@ -608,6 +793,17 @@ def _apply_command_locked(engine: WorkflowEngine, command: str,
         STATE.auto_step = False
         return {"ok": True, "strategy": strategy.value,
                 "containers": engine.optimized.containers_required}
+
+    if command == "compare_strategies":
+        # Sim mode may use the local engine directly (the brief permits this).
+        # It mutates no plan and leaves approval untouched.
+        req_rev = args.get("scenario_revision")
+        if req_rev is not None and int(req_rev) != engine.scenario_revision:
+            raise ValueError(f"scenario revision {req_rev} is stale "
+                             f"(current {engine.scenario_revision})")
+        comparison = engine.build_strategy_comparison(args.get("strategies"))
+        return {"ok": True, "comparison_id": comparison["comparison_id"],
+                "scenario_revision": comparison["scenario_revision"]}
 
     if command == "inject_item":
         engine.apply_dynamic_event(DynamicEvent(
@@ -641,6 +837,23 @@ def _apply_command_locked(engine: WorkflowEngine, command: str,
             label="Operator-injected grasp failure"))
         return {"ok": True}
 
+    if command == "inject_anomaly":
+        # SIMULATED Topic #2 anomaly, sim mode. Same deterministic reaction the
+        # orchestrator applies in live modes.
+        from wisepack_core.anomaly import AnomalyEvent                # noqa: PLC0415
+        event = AnomalyEvent.simulate(
+            args.get("anomaly_class", "camera_view_lost"),
+            severity=args.get("severity"), confidence=args.get("confidence"))
+        record = engine.apply_anomaly(event)
+        if record.get("reaction") in ("pause", "hold"):
+            STATE.auto_step = False
+        return {"ok": True, "reaction": record.get("reaction"),
+                "anomaly_class": record.get("anomaly_class")}
+
+    if command == "acknowledge_anomaly":
+        engine.acknowledge_anomaly(str(args.get("operator", "dashboard operator")))
+        return {"ok": True}
+
     if command == "pause":
         STATE.auto_step = False
         return {"ok": True, "auto_step": False}
@@ -669,6 +882,87 @@ def _apply_command_locked(engine: WorkflowEngine, command: str,
     if command == "write_artifacts":
         _write_artifacts_locked()
         return {"ok": True, "notice": STATE.notice}
+
+    # -- cut-aware HITL controls (brief §6) --
+    if command == "compare_cut_aware":
+        cmp = engine.wp.generate_cut_alternatives()
+        STATE.auto_step = False
+        return {"ok": True, "recommend_cut": cmp.recommend_cut,
+                "recommended": cmp.recommended_label,
+                "containers_saved": cmp.no_cut.containers - cmp.recommended.containers}
+
+    if command == "select_cut_alternative":
+        engine.wp.select_alternative(str(args.get("label", "no_cut")))
+        return {"ok": True, "selected": engine.wp.selected_cut_label}
+
+    if command == "limit_cuts":
+        engine.wp.limit_cuts(int(args.get("max_cuts", 1)))
+        return {"ok": True}
+
+    if command == "set_min_segment":
+        engine.wp.set_minimum_segment_mm(int(args.get("mm", 400)))
+        return {"ok": True}
+
+    if command == "prefer_no_cut":
+        engine.wp.set_prefer_no_cut(bool(args.get("prefer", True)))
+        return {"ok": True, "selected": engine.wp.selected_cut_label}
+
+    if command == "approve_cut":
+        engine.wp.approve_cut(str(args.get("operator", "dashboard operator")))
+        return {"ok": True, "cut_approval_state": engine.wp.cut_approval_state.value,
+                "stage": engine.stage.value}
+
+    if command == "reject_cut":
+        engine.wp.reject_cut(str(args.get("reason", "operator preferred no cutting")))
+        return {"ok": True, "selected": engine.wp.selected_cut_label}
+
+    if command == "simulate_cut":
+        engine.wp.simulate_cut(deviation_mm=int(args.get("deviation_mm", 0)))
+        STATE.auto_step = False
+        return {"ok": True, "stage": engine.stage.value,
+                "containers": engine.selected.containers_required
+                if engine.selected else None}
+
+    if command == "simulate_cut_failure":
+        engine.wp.simulate_cut_failure(str(args.get("reason", "blade jam (simulated)")))
+        return {"ok": True, "stage": engine.stage.value}
+
+    # -- inventory + logistics controls (brief §13) --
+    if command == "init_inventory":
+        engine.wp.initialise_simulated_inventory(int(args.get("count", 4)))
+        return {"ok": True, "containers": len(engine.wp.inventory)}
+
+    if command == "check_containers":
+        pr = engine.wp.check_container_availability()
+        engine.wp.run_logistics_to_quiescence()
+        return {"ok": True, **{k: pr[k] for k in
+                ("reservations_created", "additional_containers_required",
+                 "inventory_shortage", "plan_status")}}
+
+    if command in ("reserve_container", "release_container", "request_delivery",
+                   "mark_container_unavailable", "restore_container",
+                   "mark_container_full"):
+        op = {"reserve_container": "reserve",
+              "release_container": "release_reservation",
+              "request_delivery": "request_delivery",
+              "mark_container_unavailable": "mark_unavailable",
+              "restore_container": "restore",
+              "mark_container_full": "mark_full"}[command]
+        cid = args.get("container_id")
+        if not cid:
+            raise ValueError(f"{command} requires container_id")
+        engine.wp.inventory_operation(
+            op, str(cid), actor=str(args.get("operator", "dashboard")),
+            reason=str(args.get("reason", "")),
+            holder=args.get("holder", engine.selected.plan_id
+                            if engine.selected else "operator"))
+        engine.wp.run_logistics_to_quiescence()
+        return {"ok": True, "state":
+                engine.wp.inventory.get(str(cid)).state.value}
+
+    if command == "collect_full_containers":
+        collected = engine.wp.collect_full_containers()
+        return {"ok": True, "collected": collected}
 
     raise ValueError(f"unknown command {command!r}")
 

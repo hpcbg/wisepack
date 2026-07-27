@@ -1,0 +1,65 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1290 370" width="1290" height="370" font-family="ui-sans-serif,system-ui,Arial">
+<rect width="1290" height="370" fill="#ffffff"/>
+<text x="24" y="34" font-size="17" font-weight="700" fill="#12222f">WISEPACK Behaviour Tree — interview view</text>
+<path d="M135.0,116.0 C135.0,93.0 385.0,93.0 385.0,70.0" fill="none" stroke="#5b7185" stroke-width="1.2" opacity="0.75"/>
+<path d="M385.0,116.0 C385.0,93.0 635.0,93.0 635.0,70.0" fill="none" stroke="#5b7185" stroke-width="1.2" opacity="0.75"/>
+<path d="M635.0,116.0 C635.0,93.0 885.0,93.0 885.0,70.0" fill="none" stroke="#5b7185" stroke-width="1.2" opacity="0.75"/>
+<path d="M885.0,116.0 C885.0,93.0 1135.0,93.0 1135.0,70.0" fill="none" stroke="#5b7185" stroke-width="1.2" opacity="0.75"/>
+<path d="M1135.0,116.0 C1135.0,133.0 135.0,133.0 135.0,150.0" fill="none" stroke="#5b7185" stroke-width="1.2" opacity="0.75"/>
+<text x="635" y="133" font-size="8.5" fill="#5b7185" text-anchor="middle">cut</text>
+<path d="M1135.0,116.0 C1135.0,133.0 635.0,133.0 635.0,150.0" fill="none" stroke="#5b7185" stroke-width="1.2" opacity="0.75"/>
+<text x="885" y="133" font-size="8.5" fill="#5b7185" text-anchor="middle">no cut</text>
+<path d="M135.0,196.0 C135.0,173.0 385.0,173.0 385.0,150.0" fill="none" stroke="#5b7185" stroke-width="1.2" opacity="0.75"/>
+<path d="M385.0,196.0 C385.0,173.0 635.0,173.0 635.0,150.0" fill="none" stroke="#5b7185" stroke-width="1.2" opacity="0.75"/>
+<path d="M635.0,196.0 C635.0,173.0 885.0,173.0 885.0,150.0" fill="none" stroke="#5b7185" stroke-width="1.2" opacity="0.75"/>
+<text x="760" y="173" font-size="8.5" fill="#5b7185" text-anchor="middle">approve</text>
+<path d="M885.0,196.0 C885.0,173.0 1135.0,173.0 1135.0,150.0" fill="none" stroke="#5b7185" stroke-width="1.2" opacity="0.75"/>
+<path d="M1135.0,196.0 C1135.0,213.0 135.0,213.0 135.0,230.0" fill="none" stroke="#5b7185" stroke-width="1.2" opacity="0.75"/>
+<text x="635" y="213" font-size="8.5" fill="#5b7185" text-anchor="middle">full</text>
+<path d="M135.0,276.0 C135.0,253.0 385.0,253.0 385.0,230.0" fill="none" stroke="#5b7185" stroke-width="1.2" opacity="0.75"/>
+<path d="M1135.0,196.0 C1135.0,213.0 635.0,213.0 635.0,230.0" fill="none" stroke="#5b7185" stroke-width="1.2" opacity="0.75"/>
+<text x="885" y="213" font-size="8.5" fill="#5b7185" text-anchor="middle">on event</text>
+<path d="M635.0,230.0 C635.0,213.0 635.0,213.0 635.0,196.0" fill="none" stroke="#5b7185" stroke-width="1.2" opacity="0.75"/>
+<text x="635" y="213" font-size="8.5" fill="#5b7185" text-anchor="middle">re-approve</text>
+<rect data-node="GEN" x="30" y="70" width="210" height="46" rx="7" fill="#ffffff" stroke="#5b7185" stroke-width="1.6"/>
+<text x="135" y="89" font-size="11.5" font-weight="700" text-anchor="middle" fill="#12222f">Generate waste task</text>
+<text x="135" y="104" font-size="8.5" text-anchor="middle" fill="#5b7185">seeded scenario</text>
+<rect data-node="INV" x="280" y="70" width="210" height="46" rx="7" fill="#ffffff" stroke="#5b7185" stroke-width="1.6"/>
+<text x="385" y="89" font-size="11.5" font-weight="700" text-anchor="middle" fill="#12222f">Read container inventory</text>
+<text x="385" y="104" font-size="8.5" text-anchor="middle" fill="#5b7185">FIWARE-backed</text>
+<rect data-node="OPT" x="530" y="70" width="210" height="46" rx="7" fill="#ffffff" stroke="#5b7185" stroke-width="1.6"/>
+<text x="635" y="89" font-size="11.5" font-weight="700" text-anchor="middle" fill="#12222f">No-cut &amp; cut-aware optimize</text>
+<text x="635" y="104" font-size="8.5" text-anchor="middle" fill="#5b7185">whole-process</text>
+<rect data-node="DTV" x="780" y="70" width="210" height="46" rx="7" fill="#eaf6ef" stroke="#0e8a6d" stroke-width="1.6"/>
+<text x="885" y="89" font-size="11.5" font-weight="700" text-anchor="middle" fill="#12222f">Digital Twin validation</text>
+<text x="885" y="104" font-size="8.5" text-anchor="middle" fill="#5b7185">INDEPENDENT</text>
+<rect data-node="CUT" x="1030" y="70" width="210" height="46" rx="7" fill="#fff6e6" stroke="#c05a11" stroke-width="1.6"/>
+<text x="1135" y="89" font-size="11.5" font-weight="700" text-anchor="middle" fill="#12222f">Human cut decision</text>
+<text x="1135" y="104" font-size="8.5" text-anchor="middle" fill="#5b7185">SEPARATE approval</text>
+<rect data-node="SKILL" x="30" y="150" width="210" height="46" rx="7" fill="#fdecea" stroke="#c0392b" stroke-width="1.6"/>
+<text x="135" y="169" font-size="11.5" font-weight="700" text-anchor="middle" fill="#12222f">Optional cutting skill</text>
+<text x="135" y="184" font-size="8.5" text-anchor="middle" fill="#5b7185">SIMULATED</text>
+<rect data-node="RE" x="280" y="150" width="210" height="46" rx="7" fill="#ffffff" stroke="#5b7185" stroke-width="1.6"/>
+<text x="385" y="169" font-size="11.5" font-weight="700" text-anchor="middle" fill="#12222f">Re-plan on actual segments</text>
+<text x="385" y="184" font-size="8.5" text-anchor="middle" fill="#5b7185">renewed</text>
+<rect data-node="APP" x="530" y="150" width="210" height="46" rx="7" fill="#fff6e6" stroke="#c05a11" stroke-width="1.6"/>
+<text x="635" y="169" font-size="11.5" font-weight="700" text-anchor="middle" fill="#12222f">Human packing approval</text>
+<text x="635" y="184" font-size="8.5" text-anchor="middle" fill="#5b7185">the gate</text>
+<rect data-node="RES" x="780" y="150" width="210" height="46" rx="7" fill="#ffffff" stroke="#5b7185" stroke-width="1.6"/>
+<text x="885" y="169" font-size="11.5" font-weight="700" text-anchor="middle" fill="#12222f">Reserve / deliver container</text>
+<text x="885" y="184" font-size="8.5" text-anchor="middle" fill="#5b7185">SIMULATED logistics</text>
+<rect data-node="PACK" x="1030" y="150" width="210" height="46" rx="7" fill="#f2f0fb" stroke="#8e44ad" stroke-width="1.6"/>
+<text x="1135" y="169" font-size="11.5" font-weight="700" text-anchor="middle" fill="#12222f">Pack</text>
+<text x="1135" y="184" font-size="8.5" text-anchor="middle" fill="#5b7185">SIMULATED robot</text>
+<rect data-node="COLL" x="30" y="230" width="210" height="46" rx="7" fill="#f2f0fb" stroke="#8e44ad" stroke-width="1.6"/>
+<text x="135" y="249" font-size="11.5" font-weight="700" text-anchor="middle" fill="#12222f">Collect full container</text>
+<text x="135" y="264" font-size="8.5" text-anchor="middle" fill="#5b7185">SIMULATED</text>
+<rect data-node="FA" x="280" y="230" width="210" height="46" rx="7" fill="#eef4fb" stroke="#1266d1" stroke-width="1.6"/>
+<text x="385" y="249" font-size="11.5" font-weight="700" text-anchor="middle" fill="#12222f">FIWARE analytics</text>
+<text x="385" y="264" font-size="8.5" text-anchor="middle" fill="#5b7185">auditable state</text>
+<rect data-node="ANOM" x="530" y="230" width="210" height="46" rx="7" fill="#fdecea" stroke="#c0392b" stroke-width="1.6"/>
+<text x="635" y="249" font-size="11.5" font-weight="700" text-anchor="middle" fill="#12222f">Anomaly Monitoring</text>
+<text x="635" y="264" font-size="8.5" text-anchor="middle" fill="#5b7185">SIMULATED, hold</text>
+<text x="24" y="340" font-size="10" font-weight="700" fill="#c0392b">CORE INVARIANT</text>
+<text x="24" y="354" font-size="10" fill="#12222f">No pick or placement may execute unless the exact current plan revision is independently validated and explicitly approved.</text>
+</svg>

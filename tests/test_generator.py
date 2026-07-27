@@ -15,6 +15,12 @@ from wisepack_core.generator import (
 
 ALL_PRESETS = sorted(PRESETS)
 
+#: Curated presets are hand-built and deterministic — they contain no random
+#: draw, so a seed cannot and must not change them. Detected structurally via the
+#: scenario's ``curated`` flag rather than a hard-coded name list.
+CURATED_PRESETS = {p for p in ALL_PRESETS if build_scenario(p, seed=1).curated}
+SEEDED_PRESETS = [p for p in ALL_PRESETS if p not in CURATED_PRESETS]
+
 
 @pytest.mark.parametrize("preset", ALL_PRESETS)
 def test_same_seed_gives_identical_items(preset):
@@ -25,8 +31,7 @@ def test_same_seed_gives_identical_items(preset):
            json.dumps(b.to_dict(), sort_keys=True)
 
 
-@pytest.mark.parametrize("preset", [p for p in ALL_PRESETS
-                                    if p != "curated_volume_reduction"])
+@pytest.mark.parametrize("preset", SEEDED_PRESETS)
 def test_different_seed_changes_the_scenario(preset):
     """A different seed must actually change something.
 

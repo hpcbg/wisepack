@@ -81,6 +81,10 @@ PLAN_STATUS = "/wisepack/plan/status_json"             # String: JSON validation
 # pushing 27 kB into an attribute on every re-plan is not an audit trail worth
 # having. The full plans stay on DDS for the dashboard.
 PLAN_SUMMARY = "/wisepack/plan/summary"                # String: compact JSON digest
+# Structured strategy comparison (~1-2 kB — summaries only, no geometry). Latched
+# so a dashboard attaching after the operator pressed Compare still sees the
+# result. Stamped with the scenario revision it was computed against.
+PLAN_STRATEGY_COMPARISON = "/wisepack/plan/strategy_comparison"  # String: JSON
 
 # --- operator (FIWARE/dashboard -> orchestrator) ------------------------------
 OPERATOR_APPROVAL = "/wisepack/operator/approval"      # String: APPROVE | REJECT
@@ -91,13 +95,76 @@ EXECUTION_STATE = "/wisepack/execution/state"          # String: workflow stage 
 EXECUTION_CURRENT_ITEM = "/wisepack/execution/current_item"        # String
 EXECUTION_CURRENT_CONTAINER = "/wisepack/execution/current_container"  # String
 EXECUTION_PROGRESS_PCT = "/wisepack/execution/progress_pct"        # Float32
+EXECUTION_BACKEND = "/wisepack/execution/backend"      # String: simulated | isaac
 SYSTEM_READINESS = "/wisepack/system/readiness"        # Bool: ready to execute
 SYSTEM_HEARTBEAT = "/wisepack/system/heartbeat"        # Int32: monotonic tick
+
+# --- Isaac Sim execution backend (OPTIONAL transport) -------------------------
+# These two are NOT part of `all_topics()`, and that omission is deliberate.
+#
+# `all_topics()` is the contract that is ALWAYS present: every entry has a
+# publisher in every run, which is what lets the live QoS test assert that a
+# topic with no publisher is a bug. The Isaac channel is different in kind — it
+# exists only when `execution_backend:=isaac`, and its feedback topic is written
+# by a process (Isaac Sim, on the host, in its own bundled Python) that is absent
+# from a normal run. Listing it in the always-present contract would make the
+# ordinary simulated run look broken.
+#
+# The FIWARE bridge does not map either topic. What belongs in the audit trail is
+# the physical OUTCOME, and that already travels on /wisepack/action/event as an
+# ActionEvent with actor `isaac_sim` — the same record every other actor uses.
+# Mapping the raw transport as well would put the same fact in the trail twice,
+# in two different shapes.
+#
+# Payload: a versioned JSON document defined once in
+# `wisepack_core.isaac_contract` and imported by BOTH ends, so the orchestrator
+# (Vulcanexus interpreter, in Docker) and the simulator (Isaac's bundled
+# interpreter, on the host) cannot drift apart.
+ISAAC_COMMAND = "/wisepack/isaac/command"        # String: JSON IsaacCommand
+ISAAC_FEEDBACK = "/wisepack/isaac/feedback"      # String: JSON IsaacFeedback
 
 # --- events -------------------------------------------------------------------
 ACTION_EVENT = "/wisepack/action/event"                # String: JSON ActionEvent
 ACTION_SEQUENCE = "/wisepack/action/sequence"          # Int32: monotonic counter
 DYNAMIC_EVENT = "/wisepack/dynamic_event"              # String: JSON DynamicEvent
+
+# --- anomaly monitoring & workflow response ----------------------------------
+# A SIMULATED Topic #2-compatible anomaly stream. Latched so a dashboard
+# attaching mid-run sees the current anomaly state; the orchestrator reacts
+# deterministically (see hitl_orchestrator). NOT a validated detector.
+# The SYSTEM'S recorded anomaly stream. Single writer: the orchestrator. Mapped
+# to FIWARE. The orchestrator publishes here after ingesting an event (from the
+# external seam below or an operator injection) and reacting to it.
+ANOMALY_EVENT = "/wisepack/anomaly/event"              # String: JSON AnomalyEvent
+# The anomaly snapshot for the dashboard panel. Single writer: the orchestrator.
+ANOMALY_STATE = "/wisepack/anomaly/state"              # String: JSON anomaly snapshot
+# The INGEST SEAM. A future external EDF Topic #2 detector (or the bundled
+# simulator/adapter) publishes structured events here; the orchestrator
+# subscribes, reacts, and republishes on ANOMALY_EVENT. Not mapped to FIWARE —
+# it is a raw input, not the recorded stream.
+ANOMALY_EXTERNAL = "/wisepack/anomaly/external"        # String: JSON AnomalyEvent
+
+# --- cutting (SIMULATED cut-aware planning + external cutting skill) -----------
+# Versioned JSON on scalar std_msgs, same bridge discipline as everything else.
+# The physical cutting controller is an EXTERNAL FUTURE SKILL; here CUTTING_STATE
+# is driven by the simulated cutting node. No leaf is the reserved `status`.
+CUTTING_PROPOSAL = "/wisepack/cutting/proposal"        # String: JSON CutProposal(s)
+CUTTING_APPROVAL = "/wisepack/cutting/approval"        # String: APPROVE_CUT|REJECT_CUT
+CUTTING_REQUEST = "/wisepack/cutting/request"          # String: JSON cut request
+CUTTING_STATE = "/wisepack/cutting/state"              # String: JSON cut skill state
+CUTTING_RESULT = "/wisepack/cutting/result"            # String: JSON CutResult
+
+# --- inventory (FIWARE-backed operational container inventory) -----------------
+INVENTORY_CONTAINER_STATE = "/wisepack/inventory/container_state"    # String: JSON
+INVENTORY_CONTAINER_EVENT = "/wisepack/inventory/container_event"    # String: JSON
+INVENTORY_RESERVATION = "/wisepack/inventory/reservation"           # String: JSON
+INVENTORY_REQUEST = "/wisepack/inventory/request"                   # String: JSON
+INVENTORY_SUMMARY = "/wisepack/inventory/summary"                   # String: JSON
+
+# --- logistics (SIMULATED container transport — no physical mobile robot) ------
+LOGISTICS_CONTAINER_TASK = "/wisepack/logistics/container_task"          # String: JSON
+LOGISTICS_CONTAINER_TASK_STATE = "/wisepack/logistics/container_task_state"  # String
+LOGISTICS_MOBILE_ROBOT_STATE = "/wisepack/logistics/mobile_robot_state"  # String: JSON
 
 # --- KPIs ---------------------------------------------------------------------
 KPI_CONTAINERS_BASELINE = "/wisepack/kpi/containers_baseline"        # Int32
@@ -129,6 +196,29 @@ OPERATOR_COMMANDS = (
     "step",                     # execute exactly one workflow step
     "reset",                    # new run from the supplied scenario settings
     "write_artifacts",          # write run/plan/KPI/event artefacts now
+    "compare_strategies",       # decision support: run + validate every strategy
+    "inject_anomaly",           # SIMULATED Topic #2 anomaly (deterministic)
+    "acknowledge_anomaly",      # operator acknowledges the held anomaly
+    # -- cut-aware HITL controls (brief §6) --
+    "compare_cut_aware",        # generate the no-cut vs cut-aware comparison
+    "select_cut_alternative",   # choose a specific cut alternative
+    "limit_cuts",               # cap the cuts per plan, then re-plan
+    "set_min_segment",          # raise the minimum segment length, then re-plan
+    "prefer_no_cut",            # bias the planner against cutting
+    "approve_cut",              # SEPARATE cut approval (not packing approval)
+    "reject_cut",               # decline cutting; keep the pipe whole
+    "simulate_cut",             # drive the simulated cutting skill to COMPLETED
+    "simulate_cut_failure",     # drive the simulated cutting skill to FAILED
+    # -- inventory + logistics controls (brief §13) --
+    "init_inventory",           # initialise the simulated container inventory
+    "check_containers",         # make the current plan inventory-aware
+    "reserve_container",        # reserve a container for the plan
+    "release_container",        # release a reservation
+    "request_delivery",         # request delivery of a container to the cell
+    "mark_container_unavailable",  # temporarily withdraw a container
+    "restore_container",        # restore a temporarily unavailable container
+    "mark_container_full",      # mark a container full
+    "collect_full_containers",  # request collection + dispatch of full containers
 )
 
 
@@ -149,17 +239,35 @@ def all_topics() -> dict:
         PLAN_SELECTED: "std_msgs/String",
         PLAN_STATUS: "std_msgs/String",
         PLAN_SUMMARY: "std_msgs/String",
+        PLAN_STRATEGY_COMPARISON: "std_msgs/String",
         OPERATOR_APPROVAL: "std_msgs/String",
         OPERATOR_COMMAND: "std_msgs/String",
         EXECUTION_STATE: "std_msgs/String",
         EXECUTION_CURRENT_ITEM: "std_msgs/String",
         EXECUTION_CURRENT_CONTAINER: "std_msgs/String",
         EXECUTION_PROGRESS_PCT: "std_msgs/Float32",
+        EXECUTION_BACKEND: "std_msgs/String",
         SYSTEM_READINESS: "std_msgs/Bool",
         SYSTEM_HEARTBEAT: "std_msgs/Int32",
         ACTION_EVENT: "std_msgs/String",
         ACTION_SEQUENCE: "std_msgs/Int32",
         DYNAMIC_EVENT: "std_msgs/String",
+        ANOMALY_EVENT: "std_msgs/String",
+        ANOMALY_STATE: "std_msgs/String",
+        ANOMALY_EXTERNAL: "std_msgs/String",
+        CUTTING_PROPOSAL: "std_msgs/String",
+        CUTTING_APPROVAL: "std_msgs/String",
+        CUTTING_REQUEST: "std_msgs/String",
+        CUTTING_STATE: "std_msgs/String",
+        CUTTING_RESULT: "std_msgs/String",
+        INVENTORY_CONTAINER_STATE: "std_msgs/String",
+        INVENTORY_CONTAINER_EVENT: "std_msgs/String",
+        INVENTORY_RESERVATION: "std_msgs/String",
+        INVENTORY_REQUEST: "std_msgs/String",
+        INVENTORY_SUMMARY: "std_msgs/String",
+        LOGISTICS_CONTAINER_TASK: "std_msgs/String",
+        LOGISTICS_CONTAINER_TASK_STATE: "std_msgs/String",
+        LOGISTICS_MOBILE_ROBOT_STATE: "std_msgs/String",
         KPI_CONTAINERS_BASELINE: "std_msgs/Int32",
         KPI_CONTAINERS_OPTIMIZED: "std_msgs/Int32",
         KPI_UTILIZATION_BASELINE_PCT: "std_msgs/Float32",
@@ -173,7 +281,31 @@ def all_topics() -> dict:
 
 #: Topics Orion-LD writes INTO ROS (dashboard/HMI -> orchestrator). Everything
 #: else flows ROS -> Orion-LD.
-INBOUND_TOPICS = (OPERATOR_APPROVAL, OPERATOR_COMMAND)
+INBOUND_TOPICS = (OPERATOR_APPROVAL, OPERATOR_COMMAND, CUTTING_APPROVAL,
+                  INVENTORY_REQUEST)
+
+
+def isaac_topics() -> dict:
+    """The optional Isaac execution-backend channel: topic -> message type.
+
+    Kept out of ``all_topics()`` on purpose (see the declarations above). Exposed
+    as its own function so the tests can assert the same two properties that
+    matter for every WISEPACK topic — standard scalar ``std_msgs`` only, and no
+    reserved ``status`` leaf — without claiming the channel is always present.
+    """
+    return {
+        ISAAC_COMMAND: "std_msgs/String",
+        ISAAC_FEEDBACK: "std_msgs/String",
+    }
+
+
+#: Single-writer discipline across the Isaac channel: WISEPACK writes commands,
+#: Isaac writes feedback, and neither ever writes the other's topic. Stated as
+#: data so a test can check it rather than trusting the comment.
+ISAAC_WRITERS = {
+    ISAAC_COMMAND: "wisepack_orchestration",
+    ISAAC_FEEDBACK: "isaac_sim",
+}
 
 
 def reserved_leaf_violations() -> list:
@@ -182,5 +314,10 @@ def reserved_leaf_violations() -> list:
     Must always be empty. A topic ending in `/status` is silently dropped by
     Orion-LD's DDS module, so it would vanish from the audit trail without any
     error anywhere — exactly the kind of failure a contract test should catch.
+
+    The Isaac channel is included even though it is not bridged: the rule is
+    cheap to keep and an unbridgeable topic name is a trap for whoever decides
+    to bridge it later.
     """
-    return [t for t in all_topics() if t.rsplit("/", 1)[-1] == "status"]
+    return [t for t in {**all_topics(), **isaac_topics()}
+            if t.rsplit("/", 1)[-1] == "status"]

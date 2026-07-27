@@ -1,0 +1,327 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>WISEPACK — container inventory &amp; logistics</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect x='2' y='4' width='12' height='9' rx='1.5' fill='%235b7185'/%3E%3C/svg%3E"/>
+<style>
+  :root{color-scheme:dark;--bg:#0f1720;--panel:#16212e;--inset:#0e1926;--line:#22303f;
+    --ink:#e6edf3;--mut:#8aa0b4;--acc:#4aa3ff;--ok:#2ecc71;--warn:#f1c40f;--bad:#e74c3c;--hold:#e67e22}
+  :root[data-theme="light"]{color-scheme:light;--bg:#f4f6f9;--panel:#fff;--inset:#f7f9fb;
+    --line:#d8e0ea;--ink:#12222f;--mut:#5b7185;--acc:#1266d1;--ok:#12784a;--warn:#a76a00;--bad:#c0392b;--hold:#c05a11}
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);font:13px/1.45 ui-sans-serif,system-ui,Segoe UI,Arial}
+  header{padding:10px 16px;border-bottom:1px solid var(--line);display:flex;gap:12px;
+    align-items:center;background:var(--panel);position:sticky;top:0;z-index:10;flex-wrap:wrap}
+  header b{font-size:15px}
+  header .sub{font-size:11px;color:var(--mut)}
+  a{color:var(--acc);text-decoration:none}
+  .spacer{margin-left:auto}
+  .wrap{padding:12px;display:grid;grid-template-columns:1fr 1fr;gap:12px}
+  @media (max-width:1000px){.wrap{grid-template-columns:1fr}}
+  .panel{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:11px 12px;min-width:0}
+  .panel.full{grid-column:1 / -1}
+  h3{margin:0 0 9px;font-size:11px;letter-spacing:.09em;text-transform:uppercase;color:var(--mut)}
+  table{width:100%;border-collapse:collapse;font-size:12px}
+  th,td{text-align:left;padding:4px 7px;border-bottom:1px solid var(--line);vertical-align:top}
+  th{color:var(--mut);font-size:10px;text-transform:uppercase;letter-spacing:.04em;cursor:default}
+  td.r,th.r{text-align:right}
+  tbody tr{cursor:pointer}
+  tbody tr:hover{background:var(--inset)}
+  .scroll{overflow-x:auto}
+  .tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:8px}
+  .tile{background:var(--inset);border:1px solid var(--line);border-radius:8px;padding:8px 10px}
+  .tile .n{font-size:20px;font-weight:800}
+  .tile .l{font-size:10px;color:var(--mut);text-transform:uppercase;letter-spacing:.05em}
+  .pill{display:inline-block;padding:1px 7px;border-radius:999px;font-size:10.5px;font-weight:700}
+  .measured,.live{background:rgba(46,204,113,.16);color:var(--ok)}
+  .simulated{background:rgba(241,196,15,.16);color:var(--warn)}
+  .ros{background:rgba(74,163,255,.16);color:var(--acc)}
+  .s-AVAILABLE{color:var(--ok);font-weight:700}
+  .s-RESERVED,.s-REQUESTED_FOR_DELIVERY{color:var(--acc)}
+  .s-FILLING,.s-AT_PACKING_CELL,.s-IN_TRANSIT_TO_CELL{color:var(--warn)}
+  .s-FULL,.s-SEALED,.s-READY_FOR_COLLECTION{color:var(--hold)}
+  .s-TEMPORARILY_UNAVAILABLE,.s-MAINTENANCE,.s-RETIRED,.s-DISPATCHED{color:var(--mut)}
+  .note{color:var(--mut);font-size:11px;margin-top:8px}
+  .warnbox{background:rgba(241,196,15,.12);border:1px solid var(--warn);color:var(--warn);
+    border-radius:7px;padding:7px 9px;font-size:11.5px;margin-bottom:9px}
+  button{border:1px solid var(--line);background:var(--inset);color:var(--ink);border-radius:6px;
+    padding:5px 9px;cursor:pointer;font:600 11px ui-sans-serif}
+  button:hover{border-color:var(--acc);color:var(--acc)}
+  button[aria-pressed="true"]{border-color:var(--acc);color:var(--acc)}
+  select,input{background:var(--inset);color:var(--ink);border:1px solid var(--line);
+    border-radius:6px;padding:4px 7px;font:12px ui-sans-serif}
+  .filters{display:flex;gap:7px;flex-wrap:wrap;margin-bottom:8px;align-items:center}
+  .kv{display:grid;grid-template-columns:auto 1fr;gap:2px 10px;font-size:12px}
+  .kv .k{color:var(--mut)}
+  svg{width:100%;height:auto;background:var(--inset);border:1px solid var(--line);border-radius:8px}
+  .loc{fill:var(--panel);stroke:var(--line);stroke-width:2}
+  .loclabel{fill:var(--mut);font:600 9px ui-sans-serif;text-transform:uppercase;letter-spacing:.05em}
+  .cont{fill:var(--acc)}
+  .robot{fill:var(--warn);stroke:var(--ink);stroke-width:1}
+  .route{stroke:var(--warn);stroke-width:2;stroke-dasharray:6 4;fill:none}
+  .wpnav{display:flex;flex-wrap:wrap;gap:6px;align-items:center}
+  .wpnav a{font-size:11px;color:var(--mut);border:1px solid var(--line);
+    border-radius:999px;padding:3px 10px;text-decoration:none;white-space:nowrap}
+  .wpnav a:hover{color:var(--fg,var(--ink));border-color:var(--mut)}
+  .wpnav a[aria-current="page"]{color:var(--fg,var(--ink));border-color:var(--fg,var(--ink));font-weight:700}
+  @media (max-width:820px){
+    header{flex-wrap:wrap;row-gap:6px}
+    header .sub{display:none}
+    .wpnav{width:100%;order:99}
+  }
+</style>
+</head>
+<body>
+<header>
+  <b>WISEPACK container inventory &amp; logistics</b>
+  <span class="sub">FIWARE-backed inventory · SIMULATED logistics</span>
+  <span class="spacer"></span>
+  <span id="badge" class="pill simulated">SIMULATED</span>
+  <nav class="wpnav" aria-label="Primary">
+    <a href="/">Dashboard</a>
+    <a href="/inventory" aria-current="page">Container Inventory</a>
+    <a href="/diagnostics">Diagnostics</a>
+    <a href="/simulator" id="nav-simulator" hidden>Simulator View</a>
+  </nav>
+  <button id="theme-d" aria-pressed="true">Dark</button>
+  <button id="theme-l" aria-pressed="false">Light</button>
+  <button id="refresh">Refresh</button>
+</header>
+
+<div class="wrap">
+  <!-- KPI summary ---------------------------------------------------------- -->
+  <div class="panel full">
+    <h3>Inventory summary <span id="inv-src" class="pill simulated"></span></h3>
+    <div class="tiles" id="tiles"></div>
+    <div class="note" id="shortage"></div>
+  </div>
+
+  <!-- Inventory table ------------------------------------------------------ -->
+  <div class="panel full">
+    <h3>Containers</h3>
+    <div class="filters">
+      <label>state <select id="f-state"><option value="">any</option></select></label>
+      <label>location <select id="f-loc"><option value="">any</option></select></label>
+      <label>segregation <select id="f-seg"><option value="">any</option></select></label>
+      <label><input type="checkbox" id="f-avail"/> available only</label>
+      <span class="spacer"></span>
+      <button id="op-init">Initialise inventory</button>
+      <button id="op-check">Make plan inventory-aware</button>
+      <button id="op-collect">Collect full containers</button>
+    </div>
+    <div class="scroll">
+      <table>
+        <thead><tr>
+          <th>Container</th><th>Type</th><th>State</th><th>Location</th>
+          <th class="r">Utilization</th><th class="r">Payload</th>
+          <th>Segregation</th><th>Reservation</th><th>Last update</th>
+        </tr></thead>
+        <tbody id="rows"></tbody>
+      </table>
+    </div>
+    <div class="note" id="inv-empty"></div>
+  </div>
+
+  <!-- Container detail ----------------------------------------------------- -->
+  <div class="panel">
+    <h3>Container detail</h3>
+    <div id="detail" class="kv"><div class="k">select</div><div>click a container row</div></div>
+    <div id="detail-ops" style="margin-top:9px;display:flex;gap:6px;flex-wrap:wrap"></div>
+  </div>
+
+  <!-- Analytics ------------------------------------------------------------ -->
+  <div class="panel">
+    <h3>Whole-process analytics</h3>
+    <div class="kv" id="analytics"></div>
+    <div class="note">Provenance: inventory = software/FIWARE state · logistics = simulated.</div>
+  </div>
+
+  <!-- Logistics ------------------------------------------------------------ -->
+  <div class="panel full" id="logistics">
+    <h3>Container logistics <span class="pill simulated">SIMULATED</span></h3>
+    <div class="warnbox">Simulated container-logistics integration — no physical mobile robot. No SLAM, no Nav2, no physical transport.</div>
+    <div style="display:grid;grid-template-columns:2fr 1fr;gap:12px">
+      <svg id="map" viewBox="0 0 640 260" role="img" aria-label="facility map"></svg>
+      <div>
+        <div class="kv" id="robot"></div>
+        <h3 style="margin-top:10px">Tasks</h3>
+        <div class="scroll"><table><thead><tr><th>Task</th><th>Type</th>
+          <th>Container</th><th>Status</th></tr></thead>
+          <tbody id="tasks"></tbody></table></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+const $=s=>document.querySelector(s), $$=s=>[...document.querySelectorAll(s)];
+function setTheme(t){document.documentElement.dataset.theme=t;
+  $("#theme-d").setAttribute("aria-pressed",String(t==="dark"));
+  $("#theme-l").setAttribute("aria-pressed",String(t==="light"));
+  try{localStorage.setItem("wisepack-theme",t)}catch(e){}}
+$("#theme-d").onclick=()=>setTheme("dark"); $("#theme-l").onclick=()=>setTheme("light");
+try{setTheme(localStorage.getItem("wisepack-theme")||"dark")}catch(e){setTheme("dark")}
+
+let SELECTED=null;
+async function api(p){const r=await fetch(p);return r.ok?r.json():null;}
+async function cmd(command,args){
+  const r=await fetch("/api/command",{method:"POST",headers:{"Content-Type":"application/json"},
+    body:JSON.stringify({command,args:args||{}})});
+  return r.ok?r.json():null;}
+
+const num=(n,d=0)=>n==null?"—":Number(n).toFixed(d);
+const m3=v=>v==null?"—":(v/1e9).toFixed(3)+" m³";
+
+function tiles(s){
+  const T=[["total","Total"],["available","Available"],["reserved","Reserved"],
+    ["at_packing_cell","At cell"],["filling","Filling"],["full","Full"],
+    ["unavailable","Unavailable"],["ready_for_collection","Ready"],["dispatched","Dispatched"]];
+  $("#tiles").innerHTML=T.map(([k,l])=>
+    `<div class="tile"><div class="n">${s[k]??0}</div><div class="l">${l}</div></div>`).join("")
+    +`<div class="tile"><div class="n">${m3(s.compatible_capacity_available_mm3)}</div>
+       <div class="l">Compatible capacity</div></div>`
+    +`<div class="tile"><div class="n">${s.forecast_shortage?"⚠ yes":"no"}</div>
+       <div class="l">Forecast shortage</div></div>`;
+  $("#shortage").textContent = s.forecast_shortage
+    ? `Shortage forecast: ${s.shortage_events} event(s) recorded — a delivery/replenishment is required.` : "";
+}
+
+function fillFilter(sel,vals){
+  const cur=sel.value;
+  sel.innerHTML='<option value="">any</option>'+[...vals].sort().map(v=>`<option>${v}</option>`).join("");
+  sel.value=cur;
+}
+
+function rowMatches(c){
+  if($("#f-state").value && c.lifecycle_state!==$("#f-state").value) return false;
+  if($("#f-loc").value && c.location!==$("#f-loc").value) return false;
+  if($("#f-seg").value && !(c.compatible_segregation_groups||[]).includes($("#f-seg").value)
+     && c.active_segregation_group!==$("#f-seg").value) return false;
+  if($("#f-avail").checked && !c.availability) return false;
+  return true;
+}
+
+function renderTable(containers){
+  fillFilter($("#f-state"),new Set(containers.map(c=>c.lifecycle_state)));
+  fillFilter($("#f-loc"),new Set(containers.map(c=>c.location)));
+  const segs=new Set(); containers.forEach(c=>(c.compatible_segregation_groups||[]).forEach(g=>segs.add(g)));
+  fillFilter($("#f-seg"),segs);
+  const shown=containers.filter(rowMatches);
+  $("#rows").innerHTML=shown.map(c=>`<tr data-id="${c.container_id}">
+    <td><b>${c.container_id}</b></td><td>${c.container_type}</td>
+    <td class="s-${c.lifecycle_state}">${c.lifecycle_state}</td>
+    <td>${c.location}</td>
+    <td class="r">${num(c.utilization_pct,1)}%</td>
+    <td class="r">${num(c.current_payload_kg,1)}/${num(c.max_payload_kg,0)} kg</td>
+    <td>${(c.compatible_segregation_groups||[]).join(",")||"any"}</td>
+    <td>${c.reservation||"—"}</td>
+    <td>${(c.last_update||"").replace("T"," ").slice(0,19)}</td></tr>`).join("");
+  $("#inv-empty").textContent = containers.length? (shown.length? "" : "no containers match the filters")
+    : "No inventory yet — press “Initialise inventory”.";
+  $$("#rows tr").forEach(tr=>tr.onclick=()=>{SELECTED=tr.dataset.id;
+    renderDetail(containers.find(c=>c.container_id===SELECTED));});
+}
+
+function renderDetail(c){
+  if(!c){$("#detail").innerHTML='<div class="k">select</div><div>click a container row</div>';
+    $("#detail-ops").innerHTML="";return;}
+  const F=[["Entity id",c.entity_id],["State",c.lifecycle_state],["Location",c.location],
+    ["Workstation",c.workstation||"—"],["Inner (mm)",`${c.inner_width_mm}×${c.inner_depth_mm}×${c.inner_height_mm}`],
+    ["Payload",`${num(c.current_payload_kg,1)} / ${num(c.max_payload_kg,0)} kg`],
+    ["Capacity",m3(c.capacity_mm3)],["Occupied",m3(c.occupied_volume_mm3)],
+    ["Remaining",m3(c.remaining_capacity_mm3)],["Utilization",num(c.utilization_pct,1)+"%"],
+    ["Item count",c.item_count],["Segregation",(c.compatible_segregation_groups||[]).join(",")||"any"],
+    ["Reservation",c.reservation||"—"],["Scenario",c.scenario||"—"],["Plan",c.plan||"—"],
+    ["Transport task",c.transport_task||"—"],["Sealed",String(c.sealed)],
+    ["Inspection",c.inspection_state],["Revision",c.revision],
+    ["Last sync",(c.last_update||"").replace("T"," ").slice(0,19)],["Source",c.source]];
+  $("#detail").innerHTML=F.map(([k,v])=>`<div class="k">${k}</div><div>${v}</div>`).join("");
+  const OPS=[["reserve_container","Reserve"],["release_container","Release"],
+    ["request_delivery","Deliver"],["mark_container_unavailable","Unavailable"],
+    ["restore_container","Restore"],["mark_container_full","Mark full"]];
+  $("#detail-ops").innerHTML=OPS.map(([op,l])=>`<button data-op="${op}">${l}</button>`).join("");
+  $$("#detail-ops button").forEach(b=>b.onclick=async()=>{
+    await cmd(b.dataset.op,{container_id:c.container_id});await load();});
+}
+
+function renderLogistics(l){
+  const map=l.facility_map||{}, layout=map.layout||{}, robot=l.robot||map.robot||{};
+  // scale facility coords (0..11000 x, 0..3500 y) into the 640x260 viewbox
+  const sx=v=>40+v*(560/11000), sy=v=>60+v*(160/3500);
+  let svg="";
+  const names={container_storage:"Storage",packing_cell:"Packing cell",
+    inspection_station:"Inspection",dispatch_area:"Dispatch"};
+  for(const [k,p] of Object.entries(layout)){
+    const x=sx(p.x)-46,y=sy(p.y)-20;
+    svg+=`<rect class="loc" x="${x}" y="${y}" width="92" height="40" rx="6"/>`;
+    svg+=`<text class="loclabel" x="${x+46}" y="${y+24}" text-anchor="middle">${names[k]||k}</text>`;
+    const at=(map.containers_at_location||{})[k]||[];
+    at.forEach((cid,i)=>{svg+=`<circle class="cont" cx="${x+14+i*13}" cy="${y-8}" r="5"><title>${cid}</title></circle>`;});
+  }
+  if(map.active_task){const t=map.active_task;const a=layout[t.source_location],b=layout[t.destination_location];
+    if(a&&b) svg+=`<line class="route" x1="${sx(a.x)}" y1="${sy(a.y)}" x2="${sx(b.x)}" y2="${sy(b.y)}"/>`;}
+  if(robot.x!=null) svg+=`<circle class="robot" cx="${sx(robot.x)}" cy="${sy(robot.y)}" r="7"><title>${robot.robot_id}</title></circle>`;
+  $("#map").innerHTML=svg;
+  const R=robot;
+  $("#robot").innerHTML=[["Robot",R.robot_id||"amr-sim-1"],["Status",R.status||"idle"],
+    ["Location",R.location||"—"],["Current task",R.current_task_id||"—"],
+    ["Utilization",num(R.utilization_pct,1)+"%"]].map(([k,v])=>`<div class="k">${k}</div><div>${v}</div>`).join("");
+  const tasks=l.tasks||[];
+  $("#tasks").innerHTML=tasks.length?tasks.map(t=>`<tr><td>${t.task_id}</td>
+    <td>${(t.task_type||"").replace(/_/g," ").toLowerCase()}</td><td>${t.container_id}</td>
+    <td>${t.status}</td></tr>`).join(""):'<tr><td colspan="4" class="note">no transport tasks yet</td></tr>';
+}
+
+function renderAnalytics(inv,log){
+  const A=[];
+  const li=(log&&log.analytics)||{};
+  A.push(["Delivery requests",li.delivery_requests??0]);
+  A.push(["Collection requests",li.collection_requests??0]);
+  A.push(["Tasks completed",li.tasks_completed??0]);
+  A.push(["Failed tasks",li.failed_tasks??0]);
+  A.push(["Robot utilization",num(li.robot_utilization_pct,1)+"%"]);
+  if(inv&&inv.analytics){const ia=inv.analytics;
+    A.push(["Reservations",ia.reserved??0]);
+    A.push(["Available capacity",m3(ia.compatible_capacity_available_mm3)]);}
+  $("#analytics").innerHTML=A.map(([k,v])=>`<div class="k">${k}</div><div>${v}</div>`).join("");
+}
+
+async function load(){
+  const [inv,log,st]=await Promise.all([api("/api/inventory"),api("/api/logistics"),api("/api/state")]);
+  if(st&&st.badge){const b=$("#badge");b.textContent=st.badge.label;
+    b.className="pill "+(st.badge.source==="sim"?"simulated":st.badge.source.startsWith("fiware")?"live":"ros");}
+  if(inv){$("#inv-src").textContent=inv.source||"sim";
+    $("#inv-src").className="pill "+(inv.source==="sim"?"simulated":inv.source==="fiware"?"live":"ros");
+    tiles(inv.summary||{});renderTable(inv.containers||[]);
+    if(SELECTED)renderDetail((inv.containers||[]).find(c=>c.container_id===SELECTED));}
+  if(log)renderLogistics(log);
+  renderAnalytics(inv,log);
+}
+
+["#f-state","#f-loc","#f-seg"].forEach(s=>$(s).onchange=load);
+$("#f-avail").onchange=load;
+$("#refresh").onclick=load;
+$("#op-init").onclick=async()=>{await cmd("init_inventory",{count:4});await load();};
+$("#op-check").onclick=async()=>{await cmd("check_containers",{});await load();};
+$("#op-collect").onclick=async()=>{await cmd("collect_full_containers",{});await load();};
+load(); setInterval(load,2500);
+if(location.pathname==="/logistics") setTimeout(()=>$("#logistics").scrollIntoView({behavior:"smooth"}),300);
+
+// Simulator View is shown only when the ACTIVE backend actually offers a
+// visualization. A permanently-visible nav item that opens "stream unavailable"
+// trains an operator to ignore it; conditional visibility keeps it meaningful.
+async function refreshSimulatorNav(){
+  const link = document.querySelector("#nav-simulator");
+  if (!link) return;
+  try {
+    const d = await (await fetch("/api/visualization")).json();
+    link.hidden = !(d && d.transport && d.transport !== "none");
+  } catch (e) { link.hidden = true; }
+}
+refreshSimulatorNav();
+setInterval(refreshSimulatorNav, 5000);
+</script>
+</body>
+</html>

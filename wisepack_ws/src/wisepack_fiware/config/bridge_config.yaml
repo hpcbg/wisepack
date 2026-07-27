@@ -76,6 +76,23 @@ ros_to_fiware:
     fiware_entity_type: "WISEPACKSystem"
     fiware_attribute: "readiness"
 
+  # WHO EXECUTED. An audit trail that records a pick without recording whether a
+  # seeded model or a physics engine produced it cannot support either claim.
+  # JSON payload: {backend, label, detail, physical, isaac:{...}}.
+  #
+  # NOTE what is NOT bridged: /wisepack/isaac/{command,feedback}. Those are the
+  # transport between the orchestrator and the simulator, and the audit-relevant
+  # facts they carry — grasped, released, settled, failed, run completed — are
+  # already published as ordinary ActionEvents with actor `isaac_sim` on
+  # /wisepack/action/event. Mapping the raw channel as well would put the same
+  # fact into the trail twice in two different shapes.
+  - ros_topic: "/wisepack/execution/backend"
+    ros_msg_type: "std_msgs/String"
+    fiware_entity: "WISEPACKSystem:main"
+    fiware_entity_type: "WISEPACKSystem"
+    fiware_attribute: "executionBackend"
+    ros_field: "data"
+
   - ros_topic: "/wisepack/scenario/state"
     ros_msg_type: "std_msgs/String"
     fiware_entity: "WISEPACKScenario:current"
@@ -113,6 +130,18 @@ ros_to_fiware:
     fiware_attribute: "summary"
     ros_field: "data"
 
+  # Strategy comparison — a COMPACT summary (~1-2 kB: per-strategy container
+  # count, utilization, capacity, validity; NO placement geometry). FIWARE holds
+  # the semantic result so analytics can read it back; the full comparison stays
+  # on the ROS topic. This is state-oriented: the attribute holds the LATEST
+  # comparison, not an append-only history.
+  - ros_topic: "/wisepack/plan/strategy_comparison"
+    ros_msg_type: "std_msgs/String"
+    fiware_entity: "WISEPACKPackingPlan:current"
+    fiware_entity_type: "WISEPACKPackingPlan"
+    fiware_attribute: "strategyComparison"
+    ros_field: "data"
+
   # NOTE the `status_json` leaf — see constraint 2 in the header. The FIWARE
   # attribute is still `status`.
   - ros_topic: "/wisepack/plan/status_json"
@@ -120,6 +149,24 @@ ros_to_fiware:
     fiware_entity: "WISEPACKPackingPlan:current"
     fiware_entity_type: "WISEPACKPackingPlan"
     fiware_attribute: "status"
+    ros_field: "data"
+
+  # ---- anomaly monitoring & workflow response ---------------------------- #
+  # Compact SIMULATED anomaly state. State-oriented: the attribute holds the
+  # LATEST anomaly record, not an append-only history. Never a validated
+  # detector; the source is always `simulated`.
+  - ros_topic: "/wisepack/anomaly/event"
+    ros_msg_type: "std_msgs/String"
+    fiware_entity: "WISEPACKAnomaly:main"
+    fiware_entity_type: "WISEPACKAnomaly"
+    fiware_attribute: "latest"
+    ros_field: "data"
+
+  - ros_topic: "/wisepack/anomaly/state"
+    ros_msg_type: "std_msgs/String"
+    fiware_entity: "WISEPACKAnomaly:main"
+    fiware_entity_type: "WISEPACKAnomaly"
+    fiware_attribute: "state"
     ros_field: "data"
 
   # ---- robot -------------------------------------------------------------- #
@@ -142,6 +189,87 @@ ros_to_fiware:
     fiware_entity: "WISEPACKRobot:arm-01"
     fiware_entity_type: "WISEPACKRobot"
     fiware_attribute: "progressPct"
+
+  # ---- cutting (SIMULATED cut-aware planning) ----------------------------- #
+  # Compact cut state for FIWARE — the recommended proposal, the skill state and
+  # the actual result. SIMULATED cutting; the source in every payload is
+  # `simulated`. Full segment geometry stays on ROS / in the result artefacts.
+  - ros_topic: "/wisepack/cutting/proposal"
+    ros_msg_type: "std_msgs/String"
+    fiware_entity: "WISEPACKCutting:main"
+    fiware_entity_type: "WISEPACKCutting"
+    fiware_attribute: "proposal"
+    ros_field: "data"
+
+  - ros_topic: "/wisepack/cutting/state"
+    ros_msg_type: "std_msgs/String"
+    fiware_entity: "WISEPACKCutting:main"
+    fiware_entity_type: "WISEPACKCutting"
+    fiware_attribute: "state"
+    ros_field: "data"
+
+  - ros_topic: "/wisepack/cutting/result"
+    ros_msg_type: "std_msgs/String"
+    fiware_entity: "WISEPACKCutting:main"
+    fiware_entity_type: "WISEPACKCutting"
+    fiware_attribute: "result"
+    ros_field: "data"
+
+  # ---- inventory (FIWARE as the shared semantic container inventory) ------- #
+  # The DDS bridge maps one topic to one entity, so the aggregate inventory
+  # travels as JSON: each element of `containers` self-identifies with its own
+  # urn:ngsi-ld:WISEPACKContainer:<id> semantic id (see
+  # inventory.InventoryContainer.semantic_state). Compact semantic state only —
+  # NO placement geometry, which stays on ROS / the Digital Twin.
+  - ros_topic: "/wisepack/inventory/container_state"
+    ros_msg_type: "std_msgs/String"
+    fiware_entity: "WISEPACKInventory:main"
+    fiware_entity_type: "WISEPACKInventory"
+    fiware_attribute: "containers"
+    ros_field: "data"
+
+  - ros_topic: "/wisepack/inventory/summary"
+    ros_msg_type: "std_msgs/String"
+    fiware_entity: "WISEPACKInventory:main"
+    fiware_entity_type: "WISEPACKInventory"
+    fiware_attribute: "summary"
+    ros_field: "data"
+
+  - ros_topic: "/wisepack/inventory/container_event"
+    ros_msg_type: "std_msgs/String"
+    fiware_entity: "WISEPACKInventory:main"
+    fiware_entity_type: "WISEPACKInventory"
+    fiware_attribute: "lastEvent"
+    ros_field: "data"
+
+  - ros_topic: "/wisepack/inventory/reservation"
+    ros_msg_type: "std_msgs/String"
+    fiware_entity: "WISEPACKInventory:main"
+    fiware_entity_type: "WISEPACKInventory"
+    fiware_attribute: "reservation"
+    ros_field: "data"
+
+  # ---- logistics (SIMULATED container transport) -------------------------- #
+  - ros_topic: "/wisepack/logistics/container_task"
+    ros_msg_type: "std_msgs/String"
+    fiware_entity: "WISEPACKLogistics:main"
+    fiware_entity_type: "WISEPACKLogistics"
+    fiware_attribute: "task"
+    ros_field: "data"
+
+  - ros_topic: "/wisepack/logistics/container_task_state"
+    ros_msg_type: "std_msgs/String"
+    fiware_entity: "WISEPACKLogistics:main"
+    fiware_entity_type: "WISEPACKLogistics"
+    fiware_attribute: "taskState"
+    ros_field: "data"
+
+  - ros_topic: "/wisepack/logistics/mobile_robot_state"
+    ros_msg_type: "std_msgs/String"
+    fiware_entity: "WISEPACKLogistics:main"
+    fiware_entity_type: "WISEPACKLogistics"
+    fiware_attribute: "mobileRobot"
+    ros_field: "data"
 
   # ---- KPIs --------------------------------------------------------------- #
   - ros_topic: "/wisepack/kpi/containers_baseline"
@@ -215,4 +343,19 @@ fiware_to_ros:
     fiware_entity_type: "WISEPACKSystem"
     fiware_attribute: "command"
     ros_topic: "/wisepack/operator/command"
+    ros_msg_type: "std_msgs/String"
+
+  # A SEPARATE cut approval channel — a PATCH here approves/rejects cutting only,
+  # never the packing plan (brief §6).
+  - fiware_entity: "WISEPACKSystem:main"
+    fiware_entity_type: "WISEPACKSystem"
+    fiware_attribute: "cutApproval"
+    ros_topic: "/wisepack/cutting/approval"
+    ros_msg_type: "std_msgs/String"
+
+  # Inventory operator requests (reserve / deliver / collect ...), JSON command.
+  - fiware_entity: "WISEPACKSystem:main"
+    fiware_entity_type: "WISEPACKSystem"
+    fiware_attribute: "inventoryRequest"
+    ros_topic: "/wisepack/inventory/request"
     ros_msg_type: "std_msgs/String"

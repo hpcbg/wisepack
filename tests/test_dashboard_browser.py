@@ -290,6 +290,68 @@ def test_sim_inject_item_forces_replan_and_new_approval(page, sim_server):
     assert_no_refresh_failure(page, "after re-plan")
 
 
+def test_sim_compare_strategies_renders_all_rows(page, sim_server):
+    """The confirmed defect: Compare strategies must produce a visible table.
+
+    Clicks the real button, waits for the asynchronous comparison, and asserts
+    the table shows one row per strategy with the required columns — without a
+    page reload. A HTTP 200 is not enough; the rows must be on screen.
+    """
+    errors = PageErrors(page)
+    page.goto(sim_server.url, wait_until="networkidle")
+    reset_run(page)
+
+    before_rev = page.evaluate(
+        "async () => (await (await fetch('/api/state')).json()).scenario_revision")
+    before_plan = page.evaluate(
+        "async () => (await (await fetch('/api/state')).json()).selected_plan_id")
+
+    page.click("#c-strategies")
+    # Rows appear asynchronously once the comparison is published and polled.
+    page.wait_for_function(
+        "() => document.querySelectorAll('#strategies tbody tr').length >= 4",
+        timeout=30_000)                                 # header + >=3 strategies
+
+    body = page.inner_text("#strategies")
+    lower = body.lower()                    # headers are CSS-uppercased
+    for strat in ("max_density", "retrievability", "segregation"):
+        assert strat in body, f"strategy {strat} missing from the comparison table"
+    for col in ("cont.", "util %", "score", "valid"):
+        assert col in lower, f"column {col} missing"
+
+    # Comparing must not have changed the active plan or the scenario revision.
+    after = page.evaluate(
+        "async () => await (await fetch('/api/state')).json()")
+    assert after["selected_plan_id"] == before_plan, "compare changed the plan"
+    assert after["scenario_revision"] == before_rev, "compare bumped the revision"
+    assert after["approval_state"] != "approved", "compare approved a plan"
+
+    assert_no_refresh_failure(page, "after compare strategies")
+    errors.assert_clean("after compare strategies")
+
+
+def test_sim_stale_comparison_clears_on_new_scenario(page, sim_server):
+    """A comparison from a superseded batch must never be rendered."""
+    page.goto(sim_server.url, wait_until="networkidle")
+    reset_run(page)
+    page.click("#c-strategies")
+    page.wait_for_function(
+        "() => document.querySelectorAll('#strategies tbody tr').length >= 4",
+        timeout=30_000)
+
+    # Inject an item -> new revision -> the old comparison is stale.
+    command(page, "approve")
+    page.wait_for_timeout(800)
+    command(page, "inject_item")
+    page.wait_for_function(
+        "() => document.querySelector('#b-stage')?.textContent?.trim() === "
+        "'WAIT_FOR_OPERATOR_APPROVAL'", timeout=30_000)
+    # The stale table must clear (the periodic refresh drops a stale comparison).
+    page.wait_for_function(
+        "() => document.querySelectorAll('#strategies tbody tr').length === 0",
+        timeout=20_000)
+
+
 def test_sim_every_advertised_command_is_accepted(page, sim_server):
     """No dead buttons: every advertised command must be handled, not 404/500."""
     page.goto(sim_server.url, wait_until="networkidle")
@@ -398,3 +460,145 @@ def test_fiware_dashboard_shows_ngsi_ld_values(page):
         "() => document.querySelectorAll('#kpis .tile').length >= 10", timeout=60_000)
     assert_no_refresh_failure(page, "FIWARE mode")
     errors.assert_clean("FIWARE mode")
+
+
+def test_sim_diagnostics_page_loads_without_errors(page, sim_server):
+    """The /diagnostics page must render every section with no page error."""
+    errors = PageErrors(page)
+    page.goto(sim_server.url + "/diagnostics", wait_until="networkidle")
+    page.wait_for_function(
+        "() => document.querySelectorAll('#components tbody tr').length > 3",
+        timeout=30_000)
+    page.wait_for_function(
+        "() => document.querySelectorAll('#topics tbody tr').length > 10",
+        timeout=30_000)
+    page.wait_for_function(
+        "() => document.querySelectorAll('#fiware tbody tr').length > 10",
+        timeout=30_000)
+    body = page.inner_text("body").lower()
+    assert "simulated, unavailable and future interfaces" in body
+    assert "not a system failure" in body
+    # No secret-looking content on the page.
+    for bad in ("BEGIN PRIVATE KEY", "aws_secret", "password="):
+        assert bad not in body
+    errors.assert_clean("diagnostics page")
+
+
+def test_sim_diagnostics_link_is_in_the_header(page, sim_server):
+    page.goto(sim_server.url, wait_until="networkidle")
+    link = page.query_selector('a[href="/diagnostics"]')
+    assert link is not None, "the dashboard header must link to /diagnostics"
+
+
+def test_sim_anomaly_panel_present_and_labelled(page, sim_server):
+    errors = PageErrors(page)
+    page.goto(sim_server.url, wait_until="networkidle")
+    reset_run(page)
+    page.wait_for_timeout(1500)
+    # textContent, not inner_text: the title has a literal '&' that inner_text
+    # does not preserve verbatim.
+    body = page.evaluate("() => document.body.textContent || ''").lower()
+    # Panel title: Anomaly Monitoring & Workflow Response
+    assert "anomaly monitoring & workflow response" in body
+    assert "edf topic #2 integration demo" not in body      # old label removed
+    assert "not a validated anomaly detector" in body
+    # Inject a critical anomaly and confirm it holds execution visibly.
+    command(page, "approve")
+    page.wait_for_timeout(1000)
+    page.select_option("#a-class", "shear_position_too_high")
+    command(page, "inject_anomaly", {"anomaly_class": "shear_position_too_high"})
+    page.wait_for_function(
+        "() => (document.querySelector('#anomaly-state')?.textContent||'').includes('HELD')",
+        timeout=20_000)
+    errors.assert_clean("anomaly panel")
+
+
+# --------------------------------------------------------------------------- #
+# Cut-aware whole-process UI (brief §6, §23)
+# --------------------------------------------------------------------------- #
+
+def test_sim_cut_aware_comparison_renders_and_approves(page, sim_server):
+    """Compare no-cut vs cut-aware, approve cutting, simulate: containers drop."""
+    errors = PageErrors(page)
+    page.goto(sim_server.url, wait_until="networkidle")
+    reset_run(page, preset="cut_avoids_extra_container", seed=7)
+    page.wait_for_timeout(800)
+    # Generate the whole-process comparison through the real button path.
+    command(page, "compare_cut_aware")
+    page.wait_for_function(
+        "() => (document.querySelector('#cut-state')?.textContent||'')"
+        ".includes('CUT RECOMMENDED')", timeout=20_000)
+    body = page.inner_text("#cut-state")
+    assert "saved 1" in body.lower() or "→ 1" in body
+    # Cut approval is SEPARATE from packing approval.
+    command(page, "approve_cut")
+    page.wait_for_timeout(500)
+    res = command(page, "simulate_cut")
+    assert res["status"] == 200, res
+    # After the cut the plan re-plans to fewer containers and awaits packing approval.
+    wait_for_stage(page, "WAIT_FOR_OPERATOR_APPROVAL")
+    errors.assert_clean("cut-aware comparison")
+
+
+def test_sim_cut_not_worthwhile_shows_no_cut(page, sim_server):
+    errors = PageErrors(page)
+    page.goto(sim_server.url, wait_until="networkidle")
+    reset_run(page, preset="cut_not_worthwhile", seed=7)
+    command(page, "compare_cut_aware")
+    page.wait_for_function(
+        "() => (document.querySelector('#cut-state')?.textContent||'').includes('NO CUT')",
+        timeout=20_000)
+    errors.assert_clean("no-cut recommendation")
+
+
+def test_sim_timeline_filters_switch(page, sim_server):
+    errors = PageErrors(page)
+    page.goto(sim_server.url, wait_until="networkidle")
+    reset_run(page, preset="cut_avoids_extra_container", seed=7)
+    command(page, "compare_cut_aware")
+    command(page, "approve_cut")
+    command(page, "simulate_cut")
+    page.wait_for_timeout(1200)
+    # Switch the timeline to the cutting category.
+    page.click("#log-filters button[data-f='cutting']")
+    page.wait_for_timeout(400)
+    assert page.get_attribute("#log-filters button[data-f='cutting']", "aria-pressed") == "true"
+    errors.assert_clean("timeline filters")
+
+
+# --------------------------------------------------------------------------- #
+# Inventory + logistics page (brief §12, §16)
+# --------------------------------------------------------------------------- #
+
+def test_inventory_page_opens_and_initialises(page, sim_server):
+    errors = PageErrors(page)
+    page.goto(sim_server.url + "/inventory", wait_until="networkidle")
+    page.wait_for_timeout(600)
+    body = page.inner_text("body").lower()
+    assert "container inventory" in body
+    assert "no physical mobile robot" in body           # honesty label
+    # Initialise the simulated inventory and confirm the table fills.
+    page.click("#op-init")
+    page.wait_for_function(
+        "() => document.querySelectorAll('#rows tr').length >= 1", timeout=20_000)
+    errors.assert_clean("inventory page")
+
+
+def test_logistics_route_shows_facility_map(page, sim_server):
+    errors = PageErrors(page)
+    page.goto(sim_server.url + "/logistics", wait_until="networkidle")
+    page.wait_for_timeout(600)
+    assert page.query_selector("#map") is not None
+    assert "simulated container-logistics" in page.inner_text("body").lower()
+    errors.assert_clean("logistics route")
+
+
+def test_diagnostics_has_cut_inventory_logistics_status(page, sim_server):
+    errors = PageErrors(page)
+    page.goto(sim_server.url + "/diagnostics", wait_until="networkidle")
+    page.wait_for_timeout(1500)
+    body = page.inner_text("body").lower()
+    assert "cutting status" in body
+    assert "inventory status" in body
+    assert "logistics status" in body
+    errors.assert_clean("diagnostics whole-process")

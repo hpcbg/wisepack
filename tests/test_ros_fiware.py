@@ -84,8 +84,26 @@ def test_topic_names_are_unique():
 
 
 def test_inbound_topics_are_exactly_the_operator_path():
+    # Orion-LD writes exactly these four attributes into ROS: the packing
+    # approval + command path, and the SEPARATE cut-approval and inventory-request
+    # channels added for the whole-process layer (brief §6/§13). Every one is a
+    # mapped FIWARE attribute in bridge_config.yaml.
     assert set(TOPICS.INBOUND_TOPICS) == {TOPICS.OPERATOR_APPROVAL,
-                                          TOPICS.OPERATOR_COMMAND}
+                                          TOPICS.OPERATOR_COMMAND,
+                                          TOPICS.CUTTING_APPROVAL,
+                                          TOPICS.INVENTORY_REQUEST}
+
+
+def test_inbound_topics_never_request_incompatible_qos():
+    """Inbound topics must use the command profile (no deadline/liveliness),
+    or they will silently fail to match Orion-LD's DDS bridge publisher."""
+    pytest.importorskip("rclpy")
+    from wisepack_bringup.qos import qos_for, command_qos
+    expected = command_qos()
+    for topic in TOPICS.INBOUND_TOPICS:
+        prof = qos_for(topic)
+        assert prof.deadline == expected.deadline
+        assert prof.liveliness == expected.liveliness
 
 
 def test_the_canonical_topics_named_in_the_brief_all_exist():

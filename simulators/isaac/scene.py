@@ -1,0 +1,310 @@
+"""Procedural WISEPACK scene for Isaac Sim 6.0.1.
+
+EVERYTHING IS GENERATED. There is no USD asset in this repository and there does
+not need to be: a table, an open-top bin and a handful of pipe segments are boxes
+and cylinders, and a committed binary would be one more thing to keep in step
+with the scenario definition. The one asset that IS loaded — the Franka Emika
+Panda — comes from the Isaac Sim asset root at runtime, resolved through
+``isaacsim.storage.native.get_assets_root_path`` rather than copied here.
+
+THE ITEMS COME FROM WISEPACK, NOT FROM THIS FILE
+------------------------------------------------
+``build_items`` takes the ``Scenario`` produced by
+``wisepack_core.build_scenario(preset, seed)`` — the identical call the
+orchestrator makes — so the object ids, lengths, diameters and masses in the
+physical scene are the same ones the optimizer planned against, by construction.
+There is no second hard-coded object list to fall out of step. If the two ever
+disagree it is because they were given different (preset, seed), which the
+launcher passes through explicitly and the run reports.
+
+API NOTE — Isaac Sim 6.0.1
+--------------------------
+This uses the ``isaacsim.core.experimental.*`` API. In 6.0.1 the older
+``isaacsim.core.api`` has moved to ``extsDeprecated/``; it still loads, but
+writing new code against a deprecated tree is how an integration ages badly
+before it ships. Verified against the shipped standalone examples under
+``standalone_examples/api/isaacsim.core.experimental.api/``.
+"""
+
+from __future__ import annotations
+
+from typing import Any, Dict, List, Optional, Tuple
+
+import numpy as np
+
+import isaacsim.core.experimental.utils.stage as stage_utils
+from isaacsim.core.experimental.materials import RigidBodyMaterial
+from isaacsim.core.experimental.objects import Cube, Cylinder, DomeLight, GroundPlane
+from isaacsim.core.experimental.prims import GeomPrim, RigidPrim
+from pxr import Gf, UsdGeom, UsdLux
+
+from wisepack_core.domain import Scenario, Vec3, WasteItem
+from wisepack_core.isaac_transform import (
+    SceneLayout, mm_to_m, pose_to_world, table_pose_for_index,
+)
+
+from .config import LOG_SCENE, PhysicsConfig
+
+#: Prim path roots. Collected here so nothing else in the codebase has to know
+#: the stage layout, and so `item_path` is the single naming rule.
+WORLD = "/World"
+ROBOT_PATH = f"{WORLD}/Panda"
+TABLE_PATH = f"{WORLD}/Table"
+ITEMS_ROOT = f"{WORLD}/Items"
+CONTAINERS_ROOT = f"{WORLD}/Containers"
+MATERIALS_ROOT = f"{WORLD}/PhysicsMaterials"
+
+
+def item_path(item_id: str) -> str:
+    """USD path for one waste item. ``item-001`` -> ``/World/Items/item_001``.
+
+    Hyphens are legal in WISEPACK ids (they travel into NGSI-LD urns) but not in
+    USD prim names, so exactly one substitution happens and it happens here.
+    """
+    return f"{ITEMS_ROOT}/{item_id.replace('-', '_')}"
+
+
+def container_path(container_id: str) -> str:
+    return f"{CONTAINERS_ROOT}/{container_id.replace('-', '_')}"
+
+
+class WisepackScene:
+    """Builds and owns the procedural scene, and reads rigid-body state back."""
+
+    def __init__(self, layout: SceneLayout, physics: PhysicsConfig) -> None:
+        self.layout = layout
+        self.physics = physics
+        self.items: Dict[str, RigidPrim] = {}
+        self.item_specs: Dict[str, WasteItem] = {}
+        self.item_index: Dict[str, int] = {}
+        self.containers: Dict[str, Vec3] = {}
+        self._item_material: Optional[RigidBodyMaterial] = None
+        self._static_material: Optional[RigidBodyMaterial] = None
+
+    # ------------------------------------------------------------------ #
+    # Construction
+    # ------------------------------------------------------------------ #
+
+    def build(self, scenario: Scenario, container_ids: List[str]) -> None:
+        """Create the whole scene: ground, light, table, containers, items."""
+        print(f"{LOG_SCENE} creating stage (metres, Z up)")
+        stage_utils.create_new_stage()
+        # Stated explicitly rather than relied upon. Every number that reaches
+        # this module has already been converted to metres by
+        # wisepack_core.isaac_transform, and a stage in centimetres would scale
+        # all of them silently.
+        stage_utils.set_stage_units(meters_per_unit=1.0)
+
+        GroundPlane(f"{WORLD}/GroundPlane")
+        DomeLight(f"{WORLD}/DomeLight").set_intensities(900)
+        self._add_key_light()
+        self._build_materials()
+        self._build_table()
+
+        for container_id in container_ids:
+            inner = (scenario.container_template.inner_size
+                     if scenario.container_template else Vec3(300, 220, 150))
+            self.build_container(container_id, inner)
+
+        self.build_items(scenario)
+        self._add_camera()
+        print(f"{LOG_SCENE} scene ready: {len(self.items)} items, "
+              f"{len(self.containers)} container(s)")
+
+    def _add_key_light(self) -> None:
+        """A directional key light so the GUI view is readable.
+
+        The dome light alone renders the scene flat and shadowless, which makes
+        it genuinely hard to see whether a cylinder is inside the bin or resting
+        on its rim — the one thing a person watching this demonstration is
+        trying to judge.
+        """
+        stage = stage_utils.get_current_stage(backend="usd")
+        light = UsdLux.DistantLight.Define(stage, f"{WORLD}/KeyLight")
+        light.CreateIntensityAttr(1800.0)
+        light.CreateAngleAttr(1.5)
+        UsdGeom.Xformable(light.GetPrim()).AddRotateXYZOp().Set(
+            Gf.Vec3f(-40.0, 0.0, 35.0))
+
+    def _build_materials(self) -> None:
+        p = self.physics
+        self._item_material = RigidBodyMaterial(
+            f"{MATERIALS_ROOT}/Item",
+            static_frictions=p.item_static_friction,
+            dynamic_frictions=p.item_dynamic_friction,
+            restitutions=p.item_restitution)
+        self._static_material = RigidBodyMaterial(
+            f"{MATERIALS_ROOT}/Static",
+            static_frictions=p.table_static_friction,
+            dynamic_frictions=p.table_dynamic_friction,
+            restitutions=p.container_restitution)
+
+    def _build_table(self) -> None:
+        """A static box whose TOP surface is at ``layout.table_top_z_m``.
+
+        The robot is mounted on that surface and every item rests on it, so the
+        top is the datum. The box is positioned by its centre, hence the half
+        height offset — the one place that arithmetic appears.
+        """
+        size = self.layout.table_size_m
+        cx, cy = self.layout.table_centre_xy_m
+        centre_z = self.layout.table_top_z_m - size[2] / 2.0
+        Cube(paths=TABLE_PATH, sizes=1.0, scales=np.array([size]),
+             positions=np.array([[cx, cy, centre_z]]), colors="grey")
+        table = GeomPrim(paths=TABLE_PATH, apply_collision_apis=True)
+        table.apply_physics_materials(self._static_material)
+        # No RigidPrim wrapper: without a rigid-body API the box is static
+        # geometry, which is what a table is. Making it dynamic and then
+        # constraining it would be a heavier way to reach the same place.
+        print(f"{LOG_SCENE} table {size[0]}x{size[1]}x{size[2]} m, "
+              f"top at z={self.layout.table_top_z_m} m")
+
+    def build_container(self, container_id: str, inner_mm: Vec3) -> None:
+        """An OPEN-TOP bin: one floor and four walls, all static colliders.
+
+        Built from five boxes rather than a hollow mesh so every face is a
+        primitive collider. PhysX resolves box contacts exactly; a concave mesh
+        would need convex decomposition, and a badly decomposed bin lets items
+        fall through a wall — which looks like a placement bug and is not one.
+
+        The INNER volume matches the WISEPACK container spec exactly, because
+        that inner volume is the frame every placement is expressed in.
+        """
+        inner = (mm_to_m(inner_mm.x), mm_to_m(inner_mm.y), mm_to_m(inner_mm.z))
+        t = self.physics.container_wall_thickness
+        ox, oy, oz = self.layout.container_outer_origin_for(container_id)
+        root = container_path(container_id)
+        # Define the grouping Xform through USD directly. The experimental
+        # XformPrim wrapper ASSERTS the prim already exists — it wraps, it does
+        # not create — so calling it here failed with "Specified paths must
+        # correspond to existing prims".
+        UsdGeom.Xform.Define(stage_utils.get_current_stage(backend="usd"), root)
+
+        # Each entry: (name, size, centre) in world metres. The inner cavity
+        # spans [ox+t, ox+t+inner_x] etc., which is exactly what
+        # SceneLayout.container_origin_for returns as the frame origin.
+        panels: List[Tuple[str, Tuple[float, float, float],
+                           Tuple[float, float, float]]] = [
+            ("Floor", (inner[0] + 2 * t, inner[1] + 2 * t, t),
+             (ox + inner[0] / 2 + t, oy + inner[1] / 2 + t, oz + t / 2)),
+            ("WallXMin", (t, inner[1] + 2 * t, inner[2]),
+             (ox + t / 2, oy + inner[1] / 2 + t, oz + t + inner[2] / 2)),
+            ("WallXMax", (t, inner[1] + 2 * t, inner[2]),
+             (ox + inner[0] + 1.5 * t, oy + inner[1] / 2 + t,
+              oz + t + inner[2] / 2)),
+            ("WallYMin", (inner[0], t, inner[2]),
+             (ox + inner[0] / 2 + t, oy + t / 2, oz + t + inner[2] / 2)),
+            ("WallYMax", (inner[0], t, inner[2]),
+             (ox + inner[0] / 2 + t, oy + inner[1] + 1.5 * t,
+              oz + t + inner[2] / 2)),
+        ]
+        for name, size, centre in panels:
+            path = f"{root}/{name}"
+            Cube(paths=path, sizes=1.0, scales=np.array([size]),
+                 positions=np.array([centre]), colors="cyan")
+            panel = GeomPrim(paths=path, apply_collision_apis=True)
+            panel.apply_physics_materials(self._static_material)
+
+        self.containers[container_id] = inner_mm
+        print(f"{LOG_SCENE} container {container_id}: inner "
+              f"{inner_mm.x}x{inner_mm.y}x{inner_mm.z} mm, inner origin at "
+              f"{tuple(round(v, 3) for v in self.layout.container_origin_for(container_id))} m")
+
+    def build_items(self, scenario: Scenario) -> None:
+        """Spawn one dynamic cylinder per WISEPACK waste item, on the table.
+
+        Mass is taken from the item, not from a density: the generator already
+        computed it from the real alloy density and the hollow tube's material
+        volume, and a solid cylinder of the same outer diameter would be several
+        times heavier than the pipe it represents.
+        """
+        for index, item in enumerate(scenario.items):
+            pose = table_pose_for_index(index, item, self.layout)
+            position, orientation = pose_to_world(pose, self.layout)
+            path = item_path(item.item_id)
+
+            Cylinder(
+                paths=path,
+                radii=mm_to_m(item.outer_diameter_mm) / 2.0,
+                heights=mm_to_m(item.length_mm),
+                axes="Z",                       # matches quaternion_for_axis()
+                positions=np.array([position]),
+                orientations=np.array([orientation]),
+                colors="orange")
+            geom = GeomPrim(paths=path, apply_collision_apis=True)
+            geom.apply_physics_materials(self._item_material)
+
+            body = RigidPrim(paths=path)
+            body.set_masses(np.array([max(item.weight_kg, 0.05)]))
+            # SLEEPING IS LEFT ENABLED, deliberately, and an earlier version of
+            # this file disabling it was a real bug.
+            #
+            # The worry was that a body might fall asleep mid-settle and report
+            # exactly zero velocity while still resolving contacts. It cannot:
+            # PhysX only sleeps a body that has stayed below threshold for a
+            # sustained period, which is the same criterion SettleMonitor
+            # applies — a sleeping body genuinely is at rest.
+            #
+            # What forcing the threshold to zero DID do was stop resting items
+            # ever sleeping, so a cylinder spawned exactly touching the table
+            # crept for as long as the scene idled. Measured: the identical
+            # pre-grasp goal converged when commanded one second after play and
+            # timed out when commanded after an operator approval, because by
+            # then the target had rolled out of reach.
+
+            self.items[item.item_id] = body
+            self.item_specs[item.item_id] = item
+            self.item_index[item.item_id] = index
+            print(f"{LOG_SCENE} item {item.item_id}: "
+                  f"{item.length_mm}x{item.outer_diameter_mm} mm, "
+                  f"{item.weight_kg} kg at "
+                  f"{tuple(round(v, 3) for v in position)} m")
+
+    def _add_camera(self) -> None:
+        """A fixed viewpoint that frames the table, the pick row and the bin."""
+        stage = stage_utils.get_current_stage(backend="usd")
+        camera = UsdGeom.Camera.Define(stage, f"{WORLD}/DemoCamera")
+        xform = UsdGeom.Xformable(camera.GetPrim())
+        xform.AddTranslateOp().Set(Gf.Vec3d(1.55, -1.15, 1.45))
+        xform.AddRotateXYZOp().Set(Gf.Vec3f(63.0, 0.0, 52.0))
+        camera.CreateFocalLengthAttr(20.0)
+
+    # ------------------------------------------------------------------ #
+    # Read-back
+    # ------------------------------------------------------------------ #
+
+    def has_item(self, item_id: str) -> bool:
+        return item_id in self.items
+
+    def item_world_pose(self, item_id: str
+                        ) -> Optional[Tuple[np.ndarray, np.ndarray]]:
+        """(position_m, quaternion_wxyz) of one item, or None if it is gone."""
+        body = self.items.get(item_id)
+        if body is None:
+            return None
+        positions, orientations = body.get_world_poses()
+        return (np.asarray(positions.numpy()[0], dtype=float),
+                np.asarray(orientations.numpy()[0], dtype=float))
+
+    def item_velocities(self, item_id: str
+                        ) -> Optional[Tuple[np.ndarray, np.ndarray]]:
+        """(linear_mps, angular_radps) of one item, or None if it is gone."""
+        body = self.items.get(item_id)
+        if body is None:
+            return None
+        linear, angular = body.get_velocities()
+        return (np.asarray(linear.numpy()[0], dtype=float),
+                np.asarray(angular.numpy()[0], dtype=float))
+
+    def summary(self) -> Dict[str, Any]:
+        return {
+            "items": sorted(self.items),
+            "containers": {k: v.to_dict() for k, v in self.containers.items()},
+            "table_top_z_m": self.layout.table_top_z_m,
+        }
+
+
+__all__ = [
+    "WisepackScene", "item_path", "container_path", "ROBOT_PATH", "TABLE_PATH",
+    "ITEMS_ROOT", "CONTAINERS_ROOT", "WORLD",
+]

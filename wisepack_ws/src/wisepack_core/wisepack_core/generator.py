@@ -91,6 +91,17 @@ CONTAINER_SPECS: Dict[str, Dict[str, Any]] = {
         "max_payload_kg": 3000.0,
         "description": "ISO-style half-height box (inner 1600x1200x1100 mm, 2.11 m3)",
     },
+    # PHYSICAL SMOKE TEST ONLY. Sized to a Franka Emika Panda on a table, not to
+    # a decommissioning cell: the whole container has to sit inside the arm's
+    # reach envelope at drop height, which the industrial specs above do not.
+    # It is deliberately kept out of every benchmark scenario so the measured
+    # baseline-versus-optimized comparison is unaffected by its existence.
+    "isaac_smoke_bin": {
+        "inner_width_mm": 300, "inner_depth_mm": 220, "inner_height_mm": 150,
+        "max_payload_kg": 30.0,
+        "description": ("Bench-scale open-top bin for the Isaac Sim physical "
+                        "smoke test (inner 300x220x150 mm, 0.010 m3)"),
+    },
 }
 
 
@@ -148,6 +159,13 @@ class GeneratorConfig:
     #: can exploit, which would understate the optimizer for the wrong reason.
     length_step_mm: int = 50
     diameter_step_mm: int = 10
+    #: Orientations the packer and the validator may use for these items. The
+    #: default is the full axis-aligned set. A preset restricts it when the
+    #: EXECUTING hardware cannot achieve an orientation — the Isaac smoke preset
+    #: drops "z" because a top-down parallel gripper cannot stand a pipe on its
+    #: end without a regrasp, and planning a placement no backend can perform
+    #: would make the physical run fail for a planning reason.
+    permitted_axes: Tuple[str, ...] = ("x", "y", "z")
     description: str = ""
 
     def validate(self) -> None:
@@ -166,6 +184,11 @@ class GeneratorConfig:
                 f"got {self.wall_fraction_range}")
         if not 0.0 <= self.approximated_fraction <= 1.0:
             raise ValueError("approximated_fraction must be in [0, 1]")
+        if not self.permitted_axes:
+            raise ValueError("permitted_axes must name at least one axis")
+        unknown = [a for a in self.permitted_axes if a not in ("x", "y", "z")]
+        if unknown:
+            raise ValueError(f"permitted_axes contains unknown axes {unknown}")
 
 
 # --------------------------------------------------------------------------- #
@@ -266,7 +289,7 @@ def generate_scenario(config: GeneratorConfig,
                 z=int(rng.uniform(0, 250))),
             priority=priority,
             dose_class=dose,
-            permitted_axes=(Axis.X, Axis.Y, Axis.Z),
+            permitted_axes=tuple(Axis(a) for a in config.permitted_axes),
             profile_fill_ratio=fill_ratio,
         ))
 
@@ -311,7 +334,30 @@ _PRESET_DESCRIPTIONS = {
         "Includes the five approximated EDF/CEA geometry classes alongside "
         "straight tubes. Approximated items are packed by conservative bounding "
         "box and are labelled as such."),
+    "isaac_cylinders_smoke": (
+        "PHYSICAL SMOKE TEST for the Isaac Sim execution backend. Four short "
+        "bench-scale pipe segments into one open-top bin, sized for a Franka "
+        "Emika Panda rather than for a decommissioning cell. It is NOT a "
+        "packing benchmark and contributes nothing to the measured "
+        "baseline-versus-optimized result."),
+    "cut_avoids_extra_container": (
+        "CURATED CUT-AWARE DATASET — hand-built so one cuttable pipe forces a "
+        "second container whole but its segments fit residual cavities in the "
+        "first. The container saving is COMPUTED by the packer, not asserted."),
+    "cut_not_worthwhile": (
+        "CURATED CUT-AWARE DATASET — a cuttable pipe that already packs into one "
+        "container. Cutting can only add process cost, so the whole-process "
+        "planner recommends NO cut. Same untouched scoring as the saving case."),
+    "cut_result_deviation": (
+        "CURATED CUT-AWARE DATASET — the saving geometry, used to demonstrate an "
+        "ACTUAL cut result that deviates from the proposal: lineage is updated "
+        "from the real segment sizes, packing is re-planned and re-approved."),
 }
+
+
+#: The default preset for a physical Isaac Sim run. Named once here so the
+#: launcher, the orchestrator and the smoke validator cannot disagree about it.
+ISAAC_SMOKE_PRESET = "isaac_cylinders_smoke"
 
 
 def preset_config(preset: str, seed: int = 42, **overrides: Any) -> GeneratorConfig:
@@ -371,6 +417,34 @@ PRESETS: Dict[str, Dict[str, Any]] = {
         container_spec="standard_box",
         max_containers=10,
     ),
+    # THE ISAAC PHYSICAL SMOKE SCENARIO. Every number here is a hardware
+    # constraint, not a packing choice:
+    #
+    #   item_count 4        one robotic pick-and-place cycle takes ~25 s of
+    #                       simulated time, so a 40-item benchmark run is
+    #                       twenty minutes of watching an arm. Four items
+    #                       exercise the whole sequence, including a second
+    #                       item landing on the first.
+    #   diameter <= 70 mm   the Panda's parallel gripper opens to 80 mm. A
+    #                       larger pipe cannot be grasped at all, and the run
+    #                       would fail for a reason that has nothing to do with
+    #                       WISEPACK.
+    #   length <= 250 mm    must fit the 300 mm bin in at least one horizontal
+    #                       orientation with clearance, and must not overhang
+    #                       far enough to strike a wall on the way down.
+    #   permitted_axes x,y  a top-down gripper cannot stand a pipe on its end
+    #                       without a regrasp; see GeneratorConfig.permitted_axes.
+    #
+    # Kept entirely separate from the benchmark presets above so it can never
+    # affect the measured optimization result.
+    "isaac_cylinders_smoke": dict(
+        item_count=4,
+        length_range_mm=(150, 250),
+        diameter_range_mm=(40, 70),
+        container_spec="isaac_smoke_bin",
+        permitted_axes=("x", "y"),
+        max_containers=2,
+    ),
     # curated_volume_reduction is not generated from ranges — see
     # build_curated_scenario(), which is used instead.
     "curated_volume_reduction": dict(
@@ -378,6 +452,14 @@ PRESETS: Dict[str, Dict[str, Any]] = {
         container_spec="long_box",
         max_containers=6,
     ),
+    # The cut-aware curated scenarios are hand-built too — see
+    # build_cut_scenario(). These placeholders only satisfy the preset registry.
+    "cut_avoids_extra_container": dict(
+        item_count=1, container_spec="standard_box", max_containers=8),
+    "cut_not_worthwhile": dict(
+        item_count=1, container_spec="standard_box", max_containers=8),
+    "cut_result_deviation": dict(
+        item_count=1, container_spec="standard_box", max_containers=8),
 }
 
 
@@ -462,6 +544,57 @@ def build_curated_scenario(seed: int = 7,
 # --------------------------------------------------------------------------- #
 
 
+_CUT_SCENARIOS = frozenset({
+    "cut_avoids_extra_container", "cut_not_worthwhile", "cut_result_deviation"})
+
+
+def build_cut_scenario(preset: str, seed: int = 7,
+                       scenario_id: Optional[str] = None) -> Scenario:
+    """Hand-built cut-aware datasets. Curated and disclosed, never seed-fished.
+
+    ``cut_avoids_extra_container`` / ``cut_result_deviation`` (same geometry):
+      * container is the ``standard_box`` (inner 1500 x 800 x 600 mm);
+      * two 800 mm pipes (OD 360) sit end-on, leaving two 700 mm floor cavities;
+      * one cuttable pipe C (1300 mm, OD 340) fits WHOLE only by opening a second
+        container, but split into ~two 650 mm segments it drops into the cavities.
+      No container count is asserted: the no-cut plan needs 2 and the cut plan
+      needs 1 because that is what the geometry-aware packer computes on this
+      input (verified in tests/test_cut_optimizer.py).
+
+    ``cut_not_worthwhile``:
+      * one cuttable pipe (1400 mm, OD 300) that already packs into ONE container.
+      * cutting cannot reduce the container count, so the whole-process planner —
+        using the SAME scoring — charges the cut its cost and recommends no cut.
+    """
+    def pipe(item_id, length, od, *, group="A", cut=False, mc=0, minseg=None):
+        density = 7850.0
+        volume = (math.pi / 4.0) * (od ** 2 - (od - 40) ** 2) * length
+        return WasteItem(
+            item_id=item_id, length_mm=length, outer_diameter_mm=od,
+            inner_diameter_mm=od - 40, geometry_type=GeometryType.TUBE,
+            material="carbon_steel", segregation_group=group,
+            weight_kg=round(volume * 1e-9 * density, 3),
+            source_position=Vec3(x=80, y=60, z=40), priority=1, dose_class="LLW",
+            cut_allowed=cut, maximum_number_of_cuts=mc,
+            minimum_segment_length_mm=minseg, protected_end_length_mm=20)
+
+    template = make_container("standard_box", "CNT")
+    if preset == "cut_not_worthwhile":
+        # A cuttable pipe that already fits one box alongside a small filler.
+        # Cutting cannot drop the container count below one, so it never pays.
+        items = [pipe("pipe-A", 1400, 300, cut=True, mc=2, minseg=400),
+                 pipe("pipe-B", 400, 200)]
+        max_containers = 4
+    else:
+        items = [pipe("pipe-A", 800, 360), pipe("pipe-B", 800, 360),
+                 pipe("pipe-C", 1300, 340, cut=True, mc=2, minseg=400)]
+        max_containers = 8
+    return Scenario(
+        scenario_id=scenario_id or preset, preset=preset, seed=seed, items=items,
+        container_template=template, max_containers=max_containers,
+        description=_PRESET_DESCRIPTIONS[preset], curated=True)
+
+
 def build_scenario(preset: str, seed: int = 42,
                    scenario_id: Optional[str] = None,
                    **overrides: Any) -> Scenario:
@@ -469,6 +602,8 @@ def build_scenario(preset: str, seed: int = 42,
     if preset == "curated_volume_reduction":
         return build_curated_scenario(
             seed=seed, scenario_id=scenario_id or "curated_volume_reduction")
+    if preset in _CUT_SCENARIOS:
+        return build_cut_scenario(preset, seed=seed, scenario_id=scenario_id)
     return generate_scenario(preset_config(preset, seed, **overrides), scenario_id)
 
 
@@ -506,5 +641,5 @@ def inject_item(scenario: Scenario, spec: Dict[str, Any],
 __all__ = [
     "MATERIALS", "DOSE_CLASSES", "CONTAINER_SPECS", "make_container",
     "GeneratorConfig", "generate_scenario", "PRESETS", "preset_config",
-    "build_curated_scenario", "build_scenario", "inject_item",
+    "build_curated_scenario", "build_cut_scenario", "build_scenario", "inject_item",
 ]

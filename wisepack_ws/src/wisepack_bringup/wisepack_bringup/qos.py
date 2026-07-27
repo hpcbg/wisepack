@@ -232,8 +232,27 @@ def qos_for(topic: str) -> QoSProfile:
         # or Orion-LD read the current count immediately instead of waiting for
         # the next action — which, once a run has finished, never comes.
         return state_qos()
-    if topic in (T.OPERATOR_APPROVAL, T.OPERATOR_COMMAND):
+    if topic in (T.OPERATOR_APPROVAL, T.OPERATOR_COMMAND,
+                 T.CUTTING_APPROVAL, T.INVENTORY_REQUEST):
         return command_qos()
+    if topic == T.ISAAC_COMMAND:
+        # A physical instruction must not be lost, and Isaac Sim takes ~30 s to
+        # boot — far longer than the orchestrator takes to publish RUN_BEGIN. So
+        # this is latched: the simulator receives the current command whenever it
+        # finishes subscribing, rather than missing it and waiting forever.
+        #
+        # Latching is exactly why the receiving side must de-duplicate. A
+        # TRANSIENT_LOCAL command is redelivered on every re-subscribe, and
+        # acting on a redelivery means picking an item that is already in the
+        # container. wisepack_core.isaac_contract.RunGate is that guard, and it
+        # is used on BOTH ends.
+        return command_qos()
+    if topic == T.ISAAC_FEEDBACK:
+        # Physical execution feedback is an event STREAM, not a current value:
+        # a run emits several states per item and the orchestrator advances on
+        # the terminal one. Losing an ITEM_COMPLETED would strand the run, so
+        # RELIABLE with a deep history, same reasoning as the audit trail.
+        return event_qos()
     if topic == T.SYSTEM_HEARTBEAT:
         # NOTE: this is the SUBSCRIBER-safe profile. The orchestrator publishes
         # the heartbeat with heartbeat_qos() explicitly, so it still OFFERS the

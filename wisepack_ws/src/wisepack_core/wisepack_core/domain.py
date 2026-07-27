@@ -305,6 +305,22 @@ class WasteItem:
     injected: bool = False                  # arrived via a dynamic event
     profile_fill_ratio: float = 1.0         # reporting only, never packs smaller
 
+    # -- cut-aware planning metadata -------------------------------------- #
+    # These describe whether and how a straight pipe MAY be segmented so it fits
+    # residual container cavities. They are pure metadata on the un-cut item: no
+    # field here shrinks the packing box. An actual cut produces NEW WasteItems
+    # (the derived segments) via cutting.py; this item then leaves the packable
+    # set. All default to "no cutting", so every pre-existing scenario JSON keeps
+    # its exact behaviour (backward compatible — see from_dict).
+    cut_allowed: bool = False
+    minimum_segment_length_mm: Optional[int] = None   # None == no explicit floor
+    maximum_number_of_cuts: int = 0                   # 0 == uncut only
+    protected_end_length_mm: int = 0                  # keep-out zone at each end
+    parent_item_id: Optional[str] = None              # None == an original item
+    generation: int = 0                               # 0 == original, 1.. derived
+    cut_history: List[Dict[str, Any]] = field(default_factory=list)
+    derived_item_ids: List[str] = field(default_factory=list)
+
     def __post_init__(self) -> None:
         _require_id("item_id", self.item_id)
         self.length_mm = _require_positive_int("length_mm", self.length_mm)
@@ -330,6 +346,56 @@ class WasteItem:
             raise DomainError(
                 f"{self.item_id}: profile_fill_ratio must be in (0, 1], "
                 f"got {self.profile_fill_ratio}")
+        # -- cut metadata coercion / validation ---------------------------- #
+        if self.parent_item_id is not None:
+            _require_id("parent_item_id", self.parent_item_id)
+        if self.generation < 0 or not isinstance(self.generation, int) \
+                or isinstance(self.generation, bool):
+            raise DomainError(
+                f"{self.item_id}: generation must be a non-negative int, "
+                f"got {self.generation!r}")
+        if self.maximum_number_of_cuts < 0:
+            raise DomainError(
+                f"{self.item_id}: maximum_number_of_cuts must be >= 0")
+        if self.protected_end_length_mm < 0:
+            raise DomainError(
+                f"{self.item_id}: protected_end_length_mm must be >= 0")
+        if self.minimum_segment_length_mm is not None:
+            self.minimum_segment_length_mm = _require_positive_int(
+                "minimum_segment_length_mm", self.minimum_segment_length_mm)
+        # Cutting is only modelled for straight tubes (the sole exact geometry).
+        if self.cut_allowed and self.geometry_type is not GeometryType.TUBE:
+            raise DomainError(
+                f"{self.item_id}: cut_allowed is only supported for tubes, "
+                f"not {self.geometry_type.value}")
+        self.derived_item_ids = [
+            _require_id("derived_item_id", d) for d in self.derived_item_ids]
+        self.cut_history = list(self.cut_history)
+
+    # -- cut metadata helpers --------------------------------------------- #
+
+    @property
+    def is_cuttable(self) -> bool:
+        """True when this specific item may be segmented by the cut planner."""
+        return (self.cut_allowed
+                and self.geometry_type is GeometryType.TUBE
+                and self.maximum_number_of_cuts > 0)
+
+    @property
+    def is_derived(self) -> bool:
+        """True when this item is a segment produced by an earlier cut."""
+        return self.parent_item_id is not None or self.generation > 0
+
+    @property
+    def effective_minimum_segment_mm(self) -> int:
+        """Smallest segment length the planner may create for this pipe.
+
+        Falls back to the diameter when no explicit floor is given: a segment
+        shorter than its own diameter is not a pipe any packer should reason
+        about as a tube, and it protects the arithmetic from degenerate cuts.
+        """
+        floor = self.minimum_segment_length_mm or self.outer_diameter_mm
+        return max(1, int(floor))
 
     # -- geometry ---------------------------------------------------------- #
 
@@ -394,6 +460,16 @@ class WasteItem:
             "occupied_volume_mm3": self.occupied_volume_mm3,
             "is_approximated": self.is_approximated,
             "profile_fill_ratio": self.profile_fill_ratio,
+            "cut_allowed": self.cut_allowed,
+            "minimum_segment_length_mm": self.minimum_segment_length_mm,
+            "maximum_number_of_cuts": self.maximum_number_of_cuts,
+            "protected_end_length_mm": self.protected_end_length_mm,
+            "parent_item_id": self.parent_item_id,
+            "generation": self.generation,
+            "cut_history": list(self.cut_history),
+            "derived_item_ids": list(self.derived_item_ids),
+            "is_cuttable": self.is_cuttable,
+            "is_derived": self.is_derived,
         }
 
     @staticmethod
@@ -414,6 +490,14 @@ class WasteItem:
             permitted_axes=tuple(Axis(a) for a in d.get("permitted_axes", ["x", "y", "z"])),
             injected=bool(d.get("injected", False)),
             profile_fill_ratio=float(d.get("profile_fill_ratio", 1.0)),
+            cut_allowed=bool(d.get("cut_allowed", False)),
+            minimum_segment_length_mm=d.get("minimum_segment_length_mm"),
+            maximum_number_of_cuts=int(d.get("maximum_number_of_cuts", 0)),
+            protected_end_length_mm=int(d.get("protected_end_length_mm", 0)),
+            parent_item_id=d.get("parent_item_id"),
+            generation=int(d.get("generation", 0)),
+            cut_history=list(d.get("cut_history", [])),
+            derived_item_ids=list(d.get("derived_item_ids", [])),
         )
 
 

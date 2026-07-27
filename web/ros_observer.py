@@ -65,9 +65,23 @@ async def start_ros_observer(state) -> None:
                 "detected_count": 0, "scenario": None, "scenario_config": None,
                 "items": [], "baseline": None, "optimized": None,
                 "selected": None, "plan_status": None, "plan_summary": None,
+                "strategy_comparison": None, "anomaly": None,
+                # whole-process (cutting / inventory / logistics)
+                "cut": None, "inventory_summary": None,
+                "inventory_containers": [], "logistics_map": None,
+                "logistics_robot": None,
                 "kpi": {}, "action_sequence": 0, "heartbeat": 0,
                 "heartbeat_at": 0.0,
                 "run_id": None, "dynamic_events": [],
+                # WHO EXECUTED. Absent until the orchestrator publishes it, and
+                # deliberately not defaulted to "simulated": an unknown backend
+                # and a known-simulated one are different states, and rendering
+                # them identically is how a physical run gets mislabelled.
+                "execution_backend": None,
+                # Per-item physical outcomes, newest last. Bounded — this is a
+                # diagnostic surface, not a second audit trail.
+                "isaac_results": [],
+                "isaac_state": None,
             }
 
             S = self.create_subscription
@@ -93,10 +107,34 @@ async def start_ros_observer(state) -> None:
             S(String, T.PLAN_BASELINE, self._baseline, qos_for(T.PLAN_BASELINE))
             S(String, T.PLAN_OPTIMIZED, self._optimized, qos_for(T.PLAN_OPTIMIZED))
             S(String, T.PLAN_SELECTED, self._selected, qos_for(T.PLAN_SELECTED))
+            S(String, T.PLAN_STRATEGY_COMPARISON, self._comparison,
+              qos_for(T.PLAN_STRATEGY_COMPARISON))
+            S(String, T.ANOMALY_STATE, self._anomaly, qos_for(T.ANOMALY_STATE))
+            # whole-process: cutting comparison + inventory + logistics
+            S(String, T.CUTTING_PROPOSAL, self._json_into("cut"),
+              qos_for(T.CUTTING_PROPOSAL))
+            S(String, T.INVENTORY_SUMMARY, self._json_into("inventory_summary"),
+              qos_for(T.INVENTORY_SUMMARY))
+            S(String, T.INVENTORY_CONTAINER_STATE,
+              self._json_into("inventory_containers"),
+              qos_for(T.INVENTORY_CONTAINER_STATE))
+            S(String, T.LOGISTICS_CONTAINER_TASK,
+              self._json_into("logistics_map"), qos_for(T.LOGISTICS_CONTAINER_TASK))
+            S(String, T.LOGISTICS_MOBILE_ROBOT_STATE,
+              self._json_into("logistics_robot"),
+              qos_for(T.LOGISTICS_MOBILE_ROBOT_STATE))
             S(String, T.PLAN_STATUS, self._plan_status, qos_for(T.PLAN_STATUS))
             S(String, T.ACTION_EVENT, self._event, qos_for(T.ACTION_EVENT))
             S(String, T.OPERATOR_APPROVAL, self._noop,
               qos_for(T.OPERATOR_APPROVAL))
+            S(String, T.EXECUTION_BACKEND, self._backend,
+              qos_for(T.EXECUTION_BACKEND))
+            # The raw physical feedback, for the diagnostics panel only. The
+            # workflow itself is driven entirely by the orchestrator: the
+            # dashboard reading this topic is an OBSERVATION, and nothing here
+            # publishes on it or acts on it.
+            S(String, T.ISAAC_FEEDBACK, self._isaac_feedback,
+              qos_for(T.ISAAC_FEEDBACK))
 
             for topic, key in (
                     (T.KPI_CONTAINERS_BASELINE, "containers_baseline"),
@@ -155,6 +193,23 @@ async def start_ros_observer(state) -> None:
 
         def _plan_summary(self, m):
             self._json_into("plan_summary")(m)
+
+        def _anomaly(self, m):
+            self._json_into("anomaly")(m)
+
+        def _comparison(self, m):
+            """Latest strategy comparison. Stamped with its scenario revision so
+            the snapshot can refuse to render one from a superseded batch."""
+            try:
+                doc = json.loads(m.data)
+            except ValueError:
+                self.mirror["strategy_comparison"] = {
+                    "status": "error", "error": "malformed comparison payload",
+                    "results": []}
+                return
+            doc["_received_at"] = time.time()
+            doc["source"] = "ros"
+            self.mirror["strategy_comparison"] = doc
 
         def _dynamic(self, m):
             try:
@@ -241,6 +296,41 @@ async def start_ros_observer(state) -> None:
                 self.mirror["kpi"][key] = round(float(m.data), 4)
             return handler
 
+        def _backend(self, m):
+            """Which execution backend is authoritative for this run."""
+            self._json_into("execution_backend")(m)
+
+        def _isaac_feedback(self, m):
+            """Physical outcomes, for the diagnostics panel.
+
+            Only the item-terminal reports are retained. The intermediate states
+            already reach the dashboard as ordinary action events on the audit
+            trail — keeping both would render every physical step twice, once in
+            the timeline and once here.
+            """
+            try:
+                doc = json.loads(m.data)
+            except ValueError:
+                self.get_logger().warn("malformed isaac feedback")
+                return
+            state = doc.get("state")
+            self.mirror["isaac_state"] = state
+            if state not in ("ITEM_COMPLETED", "ITEM_FAILED"):
+                return
+            results = self.mirror.setdefault("isaac_results", [])
+            results.append({
+                "item_id": doc.get("item_id"),
+                "state": state,
+                "container_id": doc.get("container_id"),
+                "target_pose": doc.get("target_pose"),
+                "actual_pose": doc.get("actual_pose"),
+                "position_error_mm": doc.get("position_error_mm"),
+                "message": doc.get("message", ""),
+                "detail": doc.get("detail", {}),
+            })
+            if len(results) > 64:
+                del results[:len(results) - 64]
+
         def _noop(self, _m):
             """Subscribed only so `ros2 topic info` shows the dashboard endpoint.
 
@@ -266,19 +356,51 @@ async def start_ros_observer(state) -> None:
 
     def spin() -> None:
         global _NODE
+        # On Ctrl+C, rclpy raises ExternalShutdownException out of spin(). It is
+        # the EXPECTED shutdown signal, not an error, and printing its traceback
+        # made a clean exit look like a crash. Catch exactly that, destroy the
+        # node once, and shut rclpy down only if it is still up — while still
+        # letting any UNEXPECTED exception surface.
+        from rclpy.executors import ExternalShutdownException     # noqa: PLC0415
         rclpy.init()
         _NODE = Observer()
         with state.lock:
             state.ros_mirror = _NODE.mirror
+        destroyed = False
         try:
             rclpy.spin(_NODE)
+        except (ExternalShutdownException, KeyboardInterrupt):
+            pass                                        # expected on Ctrl+C
+        except Exception as exc:                        # noqa: BLE001
+            print(f"[ros-observer] unexpected error: {exc!r}")
         finally:
-            _NODE.destroy_node()
+            try:
+                _NODE.destroy_node()
+                destroyed = True
+            except Exception:                           # noqa: BLE001
+                pass
+            # Only this thread owns rclpy here, so shutting it down once is safe.
+            if rclpy.ok():
+                try:
+                    rclpy.shutdown()
+                except Exception:                       # noqa: BLE001
+                    pass
+        if not destroyed:
+            print("[ros-observer] node teardown skipped")
+
+    _thread = threading.Thread(target=spin, daemon=True)
+    _thread.start()
+    try:
+        await asyncio.Event().wait()      # hold the lifespan task open
+    finally:
+        # Lifespan is being torn down (server stopping). Ask rclpy to unwind the
+        # spin thread cleanly rather than leaving it to a hard process exit.
+        try:
             if rclpy.ok():
                 rclpy.shutdown()
-
-    threading.Thread(target=spin, daemon=True).start()
-    await asyncio.Event().wait()          # hold the lifespan task open
+        except Exception:                               # noqa: BLE001
+            pass
+        _thread.join(timeout=3.0)
 
 
 def publish_operator_command(command: str, args: Optional[Dict[str, Any]] = None

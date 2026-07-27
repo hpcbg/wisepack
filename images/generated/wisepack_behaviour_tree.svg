@@ -1,0 +1,188 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1040 930" width="1040" height="930" font-family="ui-sans-serif,system-ui,Arial">
+<rect width="1040" height="930" fill="#ffffff"/>
+<text x="24" y="34" font-size="17" font-weight="700" fill="#12222f">WISEPACK Behaviour Tree — engineering view</text>
+<path d="M135.0,116.0 C135.0,93.0 385.0,93.0 385.0,70.0" fill="none" stroke="#5b7185" stroke-width="1.2" opacity="0.75"/>
+<path d="M385.0,116.0 C385.0,93.0 635.0,93.0 635.0,70.0" fill="none" stroke="#5b7185" stroke-width="1.2" opacity="0.75"/>
+<path d="M635.0,116.0 C635.0,93.0 885.0,93.0 885.0,70.0" fill="none" stroke="#5b7185" stroke-width="1.2" opacity="0.75"/>
+<path d="M885.0,116.0 C885.0,133.0 135.0,133.0 135.0,150.0" fill="none" stroke="#5b7185" stroke-width="1.2" opacity="0.75"/>
+<path d="M135.0,196.0 C135.0,173.0 385.0,173.0 385.0,150.0" fill="none" stroke="#5b7185" stroke-width="1.2" opacity="0.75"/>
+<path d="M385.0,196.0 C385.0,173.0 635.0,173.0 635.0,150.0" fill="none" stroke="#5b7185" stroke-width="1.2" opacity="0.75"/>
+<text x="510" y="173" font-size="8.5" fill="#5b7185" text-anchor="middle">optional</text>
+<path d="M385.0,196.0 C385.0,173.0 885.0,173.0 885.0,150.0" fill="none" stroke="#5b7185" stroke-width="1.2" opacity="0.75"/>
+<text x="635" y="173" font-size="8.5" fill="#5b7185" text-anchor="middle">cut?</text>
+<path d="M885.0,196.0 C885.0,213.0 135.0,213.0 135.0,230.0" fill="none" stroke="#5b7185" stroke-width="1.2" opacity="0.75"/>
+<path d="M135.0,276.0 C135.0,253.0 385.0,253.0 385.0,230.0" fill="none" stroke="#5b7185" stroke-width="1.2" opacity="0.75"/>
+<path d="M385.0,276.0 C385.0,253.0 635.0,253.0 635.0,230.0" fill="none" stroke="#5b7185" stroke-width="1.2" opacity="0.75"/>
+<text x="510" y="253" font-size="8.5" fill="#5b7185" text-anchor="middle">approve cut</text>
+<path d="M385.0,276.0 C385.0,333.0 385.0,333.0 385.0,390.0" fill="none" stroke="#5b7185" stroke-width="1.2" opacity="0.75"/>
+<text x="385" y="333" font-size="8.5" fill="#5b7185" text-anchor="middle">no cut</text>
+<path d="M635.0,276.0 C635.0,253.0 885.0,253.0 885.0,230.0" fill="none" stroke="#5b7185" stroke-width="1.2" opacity="0.75"/>
+<path d="M885.0,276.0 C885.0,293.0 135.0,293.0 135.0,310.0" fill="none" stroke="#5b7185" stroke-width="1.2" opacity="0.75"/>
+<text x="510" y="293" font-size="8.5" fill="#5b7185" text-anchor="middle">completed</text>
+<path d="M885.0,276.0 C885.0,333.0 385.0,333.0 385.0,390.0" fill="none" stroke="#5b7185" stroke-width="1.2" opacity="0.75"/>
+<text x="635" y="333" font-size="8.5" fill="#5b7185" text-anchor="middle">failed -&gt; no cut</text>
+<path d="M135.0,356.0 C135.0,333.0 385.0,333.0 385.0,310.0" fill="none" stroke="#5b7185" stroke-width="1.2" opacity="0.75"/>
+<path d="M385.0,356.0 C385.0,373.0 385.0,373.0 385.0,390.0" fill="none" stroke="#5b7185" stroke-width="1.2" opacity="0.75"/>
+<path d="M385.0,196.0 C385.0,293.0 385.0,293.0 385.0,390.0" fill="none" stroke="#5b7185" stroke-width="1.2" opacity="0.75"/>
+<path d="M385.0,390.0 C385.0,373.0 635.0,373.0 635.0,356.0" fill="none" stroke="#5b7185" stroke-width="1.2" opacity="0.75"/>
+<path d="M635.0,356.0 C635.0,333.0 885.0,333.0 885.0,310.0" fill="none" stroke="#5b7185" stroke-width="1.2" opacity="0.75"/>
+<text x="760" y="333" font-size="8.5" fill="#5b7185" text-anchor="middle">available</text>
+<path d="M635.0,356.0 C635.0,373.0 135.0,373.0 135.0,390.0" fill="none" stroke="#5b7185" stroke-width="1.2" opacity="0.75"/>
+<text x="385" y="373" font-size="8.5" fill="#5b7185" text-anchor="middle">shortage</text>
+<path d="M135.0,390.0 C135.0,373.0 885.0,373.0 885.0,356.0" fill="none" stroke="#5b7185" stroke-width="1.2" opacity="0.75"/>
+<text x="510" y="373" font-size="8.5" fill="#5b7185" text-anchor="middle">delivered</text>
+<path d="M885.0,356.0 C885.0,373.0 635.0,373.0 635.0,390.0" fill="none" stroke="#5b7185" stroke-width="1.2" opacity="0.75"/>
+<path d="M135.0,790.0 C135.0,613.0 885.0,613.0 885.0,436.0" fill="none" stroke="#5b7185" stroke-width="1.2" opacity="0.75"/>
+<text x="510" y="613" font-size="8.5" fill="#5b7185" text-anchor="middle">full</text>
+<path d="M635.0,436.0 C635.0,453.0 135.0,453.0 135.0,470.0" fill="none" stroke="#5b7185" stroke-width="1.2" opacity="0.75"/>
+<text x="385" y="453" font-size="8.5" fill="#5b7185" text-anchor="middle">approve</text>
+<path d="M635.0,436.0 C635.0,453.0 385.0,453.0 385.0,470.0" fill="none" stroke="#5b7185" stroke-width="1.2" opacity="0.75"/>
+<text x="510" y="453" font-size="8.5" fill="#5b7185" text-anchor="middle">reject</text>
+<path d="M385.0,516.0 C385.0,613.0 635.0,613.0 635.0,710.0" fill="none" stroke="#5b7185" stroke-width="1.2" opacity="0.75"/>
+<path d="M135.0,516.0 C135.0,493.0 635.0,493.0 635.0,470.0" fill="none" stroke="#5b7185" stroke-width="1.2" opacity="0.75"/>
+<path d="M635.0,516.0 C635.0,493.0 885.0,493.0 885.0,470.0" fill="none" stroke="#5b7185" stroke-width="1.2" opacity="0.75"/>
+<path d="M885.0,516.0 C885.0,533.0 135.0,533.0 135.0,550.0" fill="none" stroke="#5b7185" stroke-width="1.2" opacity="0.75"/>
+<path d="M135.0,596.0 C135.0,573.0 385.0,573.0 385.0,550.0" fill="none" stroke="#5b7185" stroke-width="1.2" opacity="0.75"/>
+<path d="M385.0,596.0 C385.0,573.0 635.0,573.0 635.0,550.0" fill="none" stroke="#5b7185" stroke-width="1.2" opacity="0.75"/>
+<path d="M635.0,596.0 C635.0,573.0 885.0,573.0 885.0,550.0" fill="none" stroke="#5b7185" stroke-width="1.2" opacity="0.75"/>
+<path d="M885.0,550.0 C885.0,533.0 635.0,533.0 635.0,516.0" fill="none" stroke="#5b7185" stroke-width="1.2" opacity="0.75"/>
+<text x="760" y="533" font-size="8.5" fill="#5b7185" text-anchor="middle">loop</text>
+<path d="M885.0,596.0 C885.0,693.0 135.0,693.0 135.0,790.0" fill="none" stroke="#5b7185" stroke-width="1.2" opacity="0.75"/>
+<text x="510" y="693" font-size="8.5" fill="#5b7185" text-anchor="middle">done</text>
+<path d="M635.0,516.0 C635.0,573.0 135.0,573.0 135.0,630.0" fill="none" stroke="#5b7185" stroke-width="1.2" opacity="0.75"/>
+<text x="385" y="573" font-size="8.5" fill="#5b7185" text-anchor="middle">event</text>
+<path d="M635.0,516.0 C635.0,573.0 385.0,573.0 385.0,630.0" fill="none" stroke="#5b7185" stroke-width="1.2" opacity="0.75"/>
+<text x="510" y="573" font-size="8.5" fill="#5b7185" text-anchor="middle">anomaly</text>
+<path d="M385.0,676.0 C385.0,653.0 635.0,653.0 635.0,630.0" fill="none" stroke="#5b7185" stroke-width="1.2" opacity="0.75"/>
+<text x="510" y="653" font-size="8.5" fill="#5b7185" text-anchor="middle">warning</text>
+<path d="M385.0,676.0 C385.0,653.0 885.0,653.0 885.0,630.0" fill="none" stroke="#5b7185" stroke-width="1.2" opacity="0.75"/>
+<text x="635" y="653" font-size="8.5" fill="#5b7185" text-anchor="middle">critical</text>
+<path d="M635.0,676.0 C635.0,693.0 135.0,693.0 135.0,710.0" fill="none" stroke="#5b7185" stroke-width="1.2" opacity="0.75"/>
+<path d="M885.0,676.0 C885.0,693.0 135.0,693.0 135.0,710.0" fill="none" stroke="#5b7185" stroke-width="1.2" opacity="0.75"/>
+<path d="M135.0,710.0 C135.0,573.0 635.0,573.0 635.0,436.0" fill="none" stroke="#5b7185" stroke-width="1.2" opacity="0.75"/>
+<text x="385" y="573" font-size="8.5" fill="#5b7185" text-anchor="middle">critical -&gt; re-approve</text>
+<path d="M885.0,676.0 C885.0,693.0 635.0,693.0 635.0,710.0" fill="none" stroke="#5b7185" stroke-width="1.2" opacity="0.75"/>
+<text x="760" y="693" font-size="8.5" fill="#5b7185" text-anchor="middle">if feasibility affected</text>
+<path d="M135.0,676.0 C135.0,693.0 635.0,693.0 635.0,710.0" fill="none" stroke="#5b7185" stroke-width="1.2" opacity="0.75"/>
+<path d="M635.0,756.0 C635.0,733.0 885.0,733.0 885.0,710.0" fill="none" stroke="#5b7185" stroke-width="1.2" opacity="0.75"/>
+<path d="M885.0,710.0 C885.0,573.0 635.0,573.0 635.0,436.0" fill="none" stroke="#5b7185" stroke-width="1.2" opacity="0.75"/>
+<path d="M135.0,516.0 C135.0,613.0 385.0,613.0 385.0,710.0" fill="none" stroke="#5b7185" stroke-width="1.2" opacity="0.75"/>
+<text x="260" y="613" font-size="8.5" fill="#5b7185" text-anchor="middle">supervise</text>
+<path d="M885.0,676.0 C885.0,733.0 385.0,733.0 385.0,790.0" fill="none" stroke="#5b7185" stroke-width="1.2" opacity="0.75"/>
+<text x="635" y="733" font-size="8.5" fill="#5b7185" text-anchor="middle">unrecoverable</text>
+<rect data-node="ROOT" x="30" y="70" width="210" height="46" rx="7" fill="#eef4fb" stroke="#1266d1" stroke-width="1.6"/>
+<text x="135" y="89" font-size="11.5" font-weight="700" text-anchor="middle" fill="#12222f">WISEPACK</text>
+<text x="135" y="104" font-size="8.5" text-anchor="middle" fill="#5b7185">py_trees Sequence (memory)</text>
+<rect data-node="GENERATE_OR_LOAD_SCENARIO" x="280" y="70" width="210" height="46" rx="7" fill="#ffffff" stroke="#5b7185" stroke-width="1.6"/>
+<text x="385" y="89" font-size="11.5" font-weight="700" text-anchor="middle" fill="#12222f">Generate / load scenario</text>
+<text x="385" y="104" font-size="8.5" text-anchor="middle" fill="#5b7185">task generator, seeded</text>
+<rect data-node="SCAN_SOURCE_BIN" x="530" y="70" width="210" height="46" rx="7" fill="#ffffff" stroke="#5b7185" stroke-width="1.6"/>
+<text x="635" y="89" font-size="11.5" font-weight="700" text-anchor="middle" fill="#12222f">Scan source bin</text>
+<text x="635" y="104" font-size="8.5" text-anchor="middle" fill="#5b7185">SIMULATED</text>
+<rect data-node="DETECT_ITEMS" x="780" y="70" width="210" height="46" rx="7" fill="#ffffff" stroke="#5b7185" stroke-width="1.6"/>
+<text x="885" y="89" font-size="11.5" font-weight="700" text-anchor="middle" fill="#12222f">Perception / detect items</text>
+<text x="885" y="104" font-size="8.5" text-anchor="middle" fill="#5b7185">SIMULATED</text>
+<rect data-node="GENERATE_BASELINE_PLAN" x="30" y="150" width="210" height="46" rx="7" fill="#ffffff" stroke="#5b7185" stroke-width="1.6"/>
+<text x="135" y="169" font-size="11.5" font-weight="700" text-anchor="middle" fill="#12222f">Baseline planning</text>
+<text x="135" y="184" font-size="8.5" text-anchor="middle" fill="#5b7185">arrival_order_shelf</text>
+<rect data-node="GENERATE_OPTIMIZED_PLAN" x="280" y="150" width="210" height="46" rx="7" fill="#ffffff" stroke="#5b7185" stroke-width="1.6"/>
+<text x="385" y="169" font-size="11.5" font-weight="700" text-anchor="middle" fill="#12222f">Optimized planning</text>
+<text x="385" y="184" font-size="8.5" text-anchor="middle" fill="#5b7185">geometry_aware_ep_bfd</text>
+<rect data-node="COMPARE" x="530" y="150" width="210" height="46" rx="7" fill="#ffffff" stroke="#5b7185" stroke-width="1.6"/>
+<text x="635" y="169" font-size="11.5" font-weight="700" text-anchor="middle" fill="#12222f">Compare strategies</text>
+<text x="635" y="184" font-size="8.5" text-anchor="middle" fill="#5b7185">decision support (no state change)</text>
+<rect data-node="GENERATE_CUT_ALTERNATIVES" x="780" y="150" width="210" height="46" rx="7" fill="#ffffff" stroke="#5b7185" stroke-width="1.6"/>
+<text x="885" y="169" font-size="11.5" font-weight="700" text-anchor="middle" fill="#12222f">Generate cut alternatives</text>
+<text x="885" y="184" font-size="8.5" text-anchor="middle" fill="#5b7185">bounded candidates</text>
+<rect data-node="DIGITAL_TWIN_VALIDATE_CUT_PLAN" x="30" y="230" width="210" height="46" rx="7" fill="#eaf6ef" stroke="#0e8a6d" stroke-width="1.6"/>
+<text x="135" y="249" font-size="11.5" font-weight="700" text-anchor="middle" fill="#12222f">Validate cut plan</text>
+<text x="135" y="264" font-size="8.5" text-anchor="middle" fill="#5b7185">conservation + lineage (INDEPENDENT)</text>
+<rect data-node="WAIT_FOR_CUT_APPROVAL" x="280" y="230" width="210" height="46" rx="7" fill="#fff6e6" stroke="#c05a11" stroke-width="1.6"/>
+<text x="385" y="249" font-size="11.5" font-weight="700" text-anchor="middle" fill="#12222f">Wait for cut approval</text>
+<text x="385" y="264" font-size="8.5" text-anchor="middle" fill="#5b7185">SEPARATE from packing approval</text>
+<rect data-node="CUT_REQUESTED" x="530" y="230" width="210" height="46" rx="7" fill="#ffffff" stroke="#5b7185" stroke-width="1.6"/>
+<text x="635" y="249" font-size="11.5" font-weight="700" text-anchor="middle" fill="#12222f">Cut requested</text>
+<text x="635" y="264" font-size="8.5" text-anchor="middle" fill="#5b7185">external cutting skill (SIMULATED)</text>
+<rect data-node="CUT_COMPLETED" x="780" y="230" width="210" height="46" rx="7" fill="#ffffff" stroke="#5b7185" stroke-width="1.6"/>
+<text x="885" y="249" font-size="11.5" font-weight="700" text-anchor="middle" fill="#12222f">Cut completed / failed</text>
+<text x="885" y="264" font-size="8.5" text-anchor="middle" fill="#5b7185">SIMULATED</text>
+<rect data-node="REGISTER_DERIVED_ITEMS" x="30" y="310" width="210" height="46" rx="7" fill="#ffffff" stroke="#5b7185" stroke-width="1.6"/>
+<text x="135" y="329" font-size="11.5" font-weight="700" text-anchor="middle" fill="#12222f">Register derived items</text>
+<text x="135" y="344" font-size="8.5" text-anchor="middle" fill="#5b7185">actual segment sizes + lineage</text>
+<rect data-node="REPLAN_AFTER_CUT" x="280" y="310" width="210" height="46" rx="7" fill="#ffffff" stroke="#5b7185" stroke-width="1.6"/>
+<text x="385" y="329" font-size="11.5" font-weight="700" text-anchor="middle" fill="#12222f">Re-plan after cut</text>
+<text x="385" y="344" font-size="8.5" text-anchor="middle" fill="#5b7185">packing approval required again</text>
+<rect data-node="CHECK_CONTAINER_AVAILABILITY" x="530" y="310" width="210" height="46" rx="7" fill="#ffffff" stroke="#5b7185" stroke-width="1.6"/>
+<text x="635" y="329" font-size="11.5" font-weight="700" text-anchor="middle" fill="#12222f">Check container availability</text>
+<text x="635" y="344" font-size="8.5" text-anchor="middle" fill="#5b7185">inventory-aware planning</text>
+<rect data-node="RESERVE_CONTAINER" x="780" y="310" width="210" height="46" rx="7" fill="#ffffff" stroke="#5b7185" stroke-width="1.6"/>
+<text x="885" y="329" font-size="11.5" font-weight="700" text-anchor="middle" fill="#12222f">Reserve container</text>
+<text x="885" y="344" font-size="8.5" text-anchor="middle" fill="#5b7185">FIWARE-backed inventory</text>
+<rect data-node="WAIT_FOR_CONTAINER" x="30" y="390" width="210" height="46" rx="7" fill="#fff6e6" stroke="#c05a11" stroke-width="1.6"/>
+<text x="135" y="409" font-size="11.5" font-weight="700" text-anchor="middle" fill="#12222f">Wait for container</text>
+<text x="135" y="424" font-size="8.5" text-anchor="middle" fill="#5b7185">delivery / shortage</text>
+<rect data-node="DIGITAL_TWIN_VALIDATE" x="280" y="390" width="210" height="46" rx="7" fill="#eaf6ef" stroke="#0e8a6d" stroke-width="1.6"/>
+<text x="385" y="409" font-size="11.5" font-weight="700" text-anchor="middle" fill="#12222f">Digital Twin validation</text>
+<text x="385" y="424" font-size="8.5" text-anchor="middle" fill="#5b7185">INDEPENDENT validator</text>
+<rect data-node="WAIT_FOR_OPERATOR_APPROVAL" x="530" y="390" width="210" height="46" rx="7" fill="#fff6e6" stroke="#c05a11" stroke-width="1.6"/>
+<text x="635" y="409" font-size="11.5" font-weight="700" text-anchor="middle" fill="#12222f">Wait for operator approval</text>
+<text x="635" y="424" font-size="8.5" text-anchor="middle" fill="#5b7185">the gate — never times out</text>
+<rect data-node="COLLECT_FULL_CONTAINER" x="780" y="390" width="210" height="46" rx="7" fill="#f2f0fb" stroke="#8e44ad" stroke-width="1.6"/>
+<text x="885" y="409" font-size="11.5" font-weight="700" text-anchor="middle" fill="#12222f">Collect full container</text>
+<text x="885" y="424" font-size="8.5" text-anchor="middle" fill="#5b7185">SIMULATED logistics</text>
+<rect data-node="APPROVE" x="30" y="470" width="210" height="46" rx="7" fill="#fff6e6" stroke="#c05a11" stroke-width="1.6"/>
+<text x="135" y="489" font-size="11.5" font-weight="700" text-anchor="middle" fill="#12222f">Approve</text>
+<text x="135" y="504" font-size="8.5" text-anchor="middle" fill="#5b7185">operator</text>
+<rect data-node="REJECT" x="280" y="470" width="210" height="46" rx="7" fill="#fff6e6" stroke="#c05a11" stroke-width="1.6"/>
+<text x="385" y="489" font-size="11.5" font-weight="700" text-anchor="middle" fill="#12222f">Reject / alternative strategy</text>
+<text x="385" y="504" font-size="8.5" text-anchor="middle" fill="#5b7185">-&gt; re-plan -&gt; gate</text>
+<rect data-node="PICK_ITEM" x="530" y="470" width="210" height="46" rx="7" fill="#f2f0fb" stroke="#8e44ad" stroke-width="1.6"/>
+<text x="635" y="489" font-size="11.5" font-weight="700" text-anchor="middle" fill="#12222f">Pick item</text>
+<text x="635" y="504" font-size="8.5" text-anchor="middle" fill="#5b7185">SIMULATED robot</text>
+<rect data-node="VERIFY_PICK" x="780" y="470" width="210" height="46" rx="7" fill="#f2f0fb" stroke="#8e44ad" stroke-width="1.6"/>
+<text x="885" y="489" font-size="11.5" font-weight="700" text-anchor="middle" fill="#12222f">Verify pick</text>
+<text x="885" y="504" font-size="8.5" text-anchor="middle" fill="#5b7185">SIMULATED</text>
+<rect data-node="PLACE_ITEM" x="30" y="550" width="210" height="46" rx="7" fill="#f2f0fb" stroke="#8e44ad" stroke-width="1.6"/>
+<text x="135" y="569" font-size="11.5" font-weight="700" text-anchor="middle" fill="#12222f">Place item</text>
+<text x="135" y="584" font-size="8.5" text-anchor="middle" fill="#5b7185">SIMULATED robot</text>
+<rect data-node="VERIFY_PLACEMENT" x="280" y="550" width="210" height="46" rx="7" fill="#eaf6ef" stroke="#0e8a6d" stroke-width="1.6"/>
+<text x="385" y="569" font-size="11.5" font-weight="700" text-anchor="middle" fill="#12222f">Verify placement</text>
+<text x="385" y="584" font-size="8.5" text-anchor="middle" fill="#5b7185">re-validate vs geometry</text>
+<rect data-node="UPDATE_CONTAINER_STATE" x="530" y="550" width="210" height="46" rx="7" fill="#f2f0fb" stroke="#8e44ad" stroke-width="1.6"/>
+<text x="635" y="569" font-size="11.5" font-weight="700" text-anchor="middle" fill="#12222f">Update container state</text>
+<rect data-node="NEXT_ITEM" x="780" y="550" width="210" height="46" rx="7" fill="#f2f0fb" stroke="#8e44ad" stroke-width="1.6"/>
+<text x="885" y="569" font-size="11.5" font-weight="700" text-anchor="middle" fill="#12222f">Next item</text>
+<text x="885" y="584" font-size="8.5" text-anchor="middle" fill="#5b7185">loop back</text>
+<rect data-node="DYN" x="30" y="630" width="210" height="46" rx="7" fill="#ffffff" stroke="#5b7185" stroke-width="1.6"/>
+<text x="135" y="649" font-size="11.5" font-weight="700" text-anchor="middle" fill="#12222f">Dynamic event handling</text>
+<text x="135" y="664" font-size="8.5" text-anchor="middle" fill="#5b7185">inject / remove / unavailable</text>
+<rect data-node="ANOM" x="280" y="630" width="210" height="46" rx="7" fill="#fdecea" stroke="#c0392b" stroke-width="1.6"/>
+<text x="385" y="649" font-size="11.5" font-weight="700" text-anchor="middle" fill="#12222f">Anomaly Monitoring</text>
+<text x="385" y="664" font-size="8.5" text-anchor="middle" fill="#5b7185">SIMULATED, deterministic</text>
+<rect data-node="ANOM_PAUSE" x="530" y="630" width="210" height="46" rx="7" fill="#fff6e6" stroke="#c05a11" stroke-width="1.6"/>
+<text x="635" y="649" font-size="11.5" font-weight="700" text-anchor="middle" fill="#12222f">Anomaly PAUSE (warning)</text>
+<text x="635" y="664" font-size="8.5" text-anchor="middle" fill="#5b7185">acknowledge to resume</text>
+<rect data-node="ANOM_HOLD" x="780" y="630" width="210" height="46" rx="7" fill="#fdecea" stroke="#c0392b" stroke-width="1.6"/>
+<text x="885" y="649" font-size="11.5" font-weight="700" text-anchor="middle" fill="#12222f">Anomaly HOLD (critical)</text>
+<text x="885" y="664" font-size="8.5" text-anchor="middle" fill="#5b7185">revoke authorisation</text>
+<rect data-node="ACK" x="30" y="710" width="210" height="46" rx="7" fill="#fff6e6" stroke="#c05a11" stroke-width="1.6"/>
+<text x="135" y="729" font-size="11.5" font-weight="700" text-anchor="middle" fill="#12222f">Acknowledge anomaly</text>
+<text x="135" y="744" font-size="8.5" text-anchor="middle" fill="#5b7185">operator</text>
+<rect data-node="PAUSE" x="280" y="710" width="210" height="46" rx="7" fill="#ffffff" stroke="#5b7185" stroke-width="1.6"/>
+<text x="385" y="729" font-size="11.5" font-weight="700" text-anchor="middle" fill="#12222f">Pause / resume / step</text>
+<text x="385" y="744" font-size="8.5" text-anchor="middle" fill="#5b7185">operator supervision</text>
+<rect data-node="REPLAN" x="530" y="710" width="210" height="46" rx="7" fill="#ffffff" stroke="#5b7185" stroke-width="1.6"/>
+<text x="635" y="729" font-size="11.5" font-weight="700" text-anchor="middle" fill="#12222f">Re-plan</text>
+<text x="635" y="744" font-size="8.5" text-anchor="middle" fill="#5b7185">freeze executed, re-optimize</text>
+<rect data-node="REAPPROVE" x="780" y="710" width="210" height="46" rx="7" fill="#fff6e6" stroke="#c05a11" stroke-width="1.6"/>
+<text x="885" y="729" font-size="11.5" font-weight="700" text-anchor="middle" fill="#12222f">Renewed approval required</text>
+<text x="885" y="744" font-size="8.5" text-anchor="middle" fill="#5b7185">back to the gate</text>
+<rect data-node="COMPLETE" x="30" y="790" width="210" height="46" rx="7" fill="#eef4fb" stroke="#1266d1" stroke-width="1.6"/>
+<text x="135" y="809" font-size="11.5" font-weight="700" text-anchor="middle" fill="#12222f">Complete</text>
+<text x="135" y="824" font-size="8.5" text-anchor="middle" fill="#5b7185">artefacts written</text>
+<rect data-node="DEGRADED" x="280" y="790" width="210" height="46" rx="7" fill="#fdecea" stroke="#c0392b" stroke-width="1.6"/>
+<text x="385" y="809" font-size="11.5" font-weight="700" text-anchor="middle" fill="#12222f">Degraded / failure hold</text>
+<text x="385" y="824" font-size="8.5" text-anchor="middle" fill="#5b7185">held, never auto-continue</text>
+<text x="24" y="900" font-size="10" font-weight="700" fill="#c0392b">CORE INVARIANT</text>
+<text x="24" y="914" font-size="10" fill="#12222f">No pick or placement may execute unless the exact current plan revision is independently validated and explicitly approved.</text>
+</svg>

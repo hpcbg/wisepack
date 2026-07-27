@@ -33,6 +33,11 @@
           "entityId": "urn:ngsi-ld:WISEPACKSystem:main",
           "attribute": "readiness"
         },
+        "rt/wisepack/execution/backend": {
+          "entityType": "WISEPACKSystem",
+          "entityId": "urn:ngsi-ld:WISEPACKSystem:main",
+          "attribute": "executionBackend"
+        },
         "rt/wisepack/scenario/state": {
           "entityType": "WISEPACKScenario",
           "entityId": "urn:ngsi-ld:WISEPACKScenario:current",
@@ -53,10 +58,25 @@
           "entityId": "urn:ngsi-ld:WISEPACKPackingPlan:current",
           "attribute": "summary"
         },
+        "rt/wisepack/plan/strategy_comparison": {
+          "entityType": "WISEPACKPackingPlan",
+          "entityId": "urn:ngsi-ld:WISEPACKPackingPlan:current",
+          "attribute": "strategyComparison"
+        },
         "rt/wisepack/plan/status_json": {
           "entityType": "WISEPACKPackingPlan",
           "entityId": "urn:ngsi-ld:WISEPACKPackingPlan:current",
           "attribute": "status"
+        },
+        "rt/wisepack/anomaly/event": {
+          "entityType": "WISEPACKAnomaly",
+          "entityId": "urn:ngsi-ld:WISEPACKAnomaly:main",
+          "attribute": "latest"
+        },
+        "rt/wisepack/anomaly/state": {
+          "entityType": "WISEPACKAnomaly",
+          "entityId": "urn:ngsi-ld:WISEPACKAnomaly:main",
+          "attribute": "state"
         },
         "rt/wisepack/execution/current_item": {
           "entityType": "WISEPACKRobot",
@@ -72,6 +92,56 @@
           "entityType": "WISEPACKRobot",
           "entityId": "urn:ngsi-ld:WISEPACKRobot:arm-01",
           "attribute": "progressPct"
+        },
+        "rt/wisepack/cutting/proposal": {
+          "entityType": "WISEPACKCutting",
+          "entityId": "urn:ngsi-ld:WISEPACKCutting:main",
+          "attribute": "proposal"
+        },
+        "rt/wisepack/cutting/state": {
+          "entityType": "WISEPACKCutting",
+          "entityId": "urn:ngsi-ld:WISEPACKCutting:main",
+          "attribute": "state"
+        },
+        "rt/wisepack/cutting/result": {
+          "entityType": "WISEPACKCutting",
+          "entityId": "urn:ngsi-ld:WISEPACKCutting:main",
+          "attribute": "result"
+        },
+        "rt/wisepack/inventory/container_state": {
+          "entityType": "WISEPACKInventory",
+          "entityId": "urn:ngsi-ld:WISEPACKInventory:main",
+          "attribute": "containers"
+        },
+        "rt/wisepack/inventory/summary": {
+          "entityType": "WISEPACKInventory",
+          "entityId": "urn:ngsi-ld:WISEPACKInventory:main",
+          "attribute": "summary"
+        },
+        "rt/wisepack/inventory/container_event": {
+          "entityType": "WISEPACKInventory",
+          "entityId": "urn:ngsi-ld:WISEPACKInventory:main",
+          "attribute": "lastEvent"
+        },
+        "rt/wisepack/inventory/reservation": {
+          "entityType": "WISEPACKInventory",
+          "entityId": "urn:ngsi-ld:WISEPACKInventory:main",
+          "attribute": "reservation"
+        },
+        "rt/wisepack/logistics/container_task": {
+          "entityType": "WISEPACKLogistics",
+          "entityId": "urn:ngsi-ld:WISEPACKLogistics:main",
+          "attribute": "task"
+        },
+        "rt/wisepack/logistics/container_task_state": {
+          "entityType": "WISEPACKLogistics",
+          "entityId": "urn:ngsi-ld:WISEPACKLogistics:main",
+          "attribute": "taskState"
+        },
+        "rt/wisepack/logistics/mobile_robot_state": {
+          "entityType": "WISEPACKLogistics",
+          "entityId": "urn:ngsi-ld:WISEPACKLogistics:main",
+          "attribute": "mobileRobot"
         },
         "rt/wisepack/kpi/containers_baseline": {
           "entityType": "WISEPACKKPI",
@@ -122,6 +192,16 @@
           "entityType": "WISEPACKSystem",
           "entityId": "urn:ngsi-ld:WISEPACKSystem:main",
           "attribute": "command"
+        },
+        "rt/wisepack/cutting/approval": {
+          "entityType": "WISEPACKSystem",
+          "entityId": "urn:ngsi-ld:WISEPACKSystem:main",
+          "attribute": "cutApproval"
+        },
+        "rt/wisepack/inventory/request": {
+          "entityType": "WISEPACKSystem",
+          "entityId": "urn:ngsi-ld:WISEPACKSystem:main",
+          "attribute": "inventoryRequest"
         }
       }
     }

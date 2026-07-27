@@ -149,8 +149,50 @@ def reset_run(page, **settings) -> None:
     if res["status"] != 200:
         raise RuntimeError(f"reset failed: {res}")
     wait_stage(page, "WAIT_FOR_OPERATOR_APPROVAL")
+    # Wait for the Digital Twin to render at least one placement. The dense demo
+    # scenario draws dozens; the small cut scenarios draw only a few, so the
+    # threshold must not assume a large batch.
     page.wait_for_function(
-        "() => document.querySelectorAll('#twin rect').length > 20", timeout=60_000)
+        "() => document.querySelectorAll('#twin rect').length > 1", timeout=60_000)
+
+
+def set_light_theme(page) -> None:
+    """Select the LIGHT theme and ASSERT it (brief §22).
+
+    The generator must FAIL rather than produce a dark capture, so this clicks
+    the Light button, waits for the theme to actually change, and asserts both
+    that light is active and that Dark is not.
+    """
+    page.click("#theme-l")
+    page.wait_for_function(
+        "() => document.documentElement.dataset.theme === 'light'", timeout=5000)
+    assert page.get_attribute("#theme-l", "aria-pressed") == "true", \
+        "LIGHT theme button is not active — refusing to capture a dark frame"
+    assert page.get_attribute("#theme-d", "aria-pressed") == "false", \
+        "DARK theme button is still active — refusing to capture a dark frame"
+
+
+#: The retired anomaly product name must never appear in a fresh capture. Built
+#: from fragments so this guard does not itself trip the stale-label grep.
+_OLD_ANOMALY_TITLE = "EDF Topic #2 " + "Integration Demo"
+_NEW_ANOMALY_TITLE = "Anomaly Monitoring & Workflow Response"
+
+
+def assert_anomaly_title(page) -> None:
+    """A capture that shows the anomaly panel must show the NEW title only.
+
+    Uses textContent (not inner_text): the panel title contains a literal ``&``
+    that inner_text's whitespace/entity handling does not preserve verbatim.
+    """
+    body = page.evaluate("() => document.body.textContent || ''")
+    if _OLD_ANOMALY_TITLE in body:
+        raise RuntimeError(
+            f"refusing to capture: the retired title {_OLD_ANOMALY_TITLE!r} is "
+            "still visible")
+    if _NEW_ANOMALY_TITLE not in body:
+        raise RuntimeError(
+            f"refusing to capture: the anomaly panel title "
+            f"{_NEW_ANOMALY_TITLE!r} is not visible")
 
 
 def _assert_simulated_badge(page) -> None:
@@ -250,12 +292,155 @@ def scene_container_unavailable(page, rec: Recorder) -> None:
     rec.hold(2.6)
 
 
+def scene_cut_aware(page, rec: Recorder) -> None:
+    """GIF 4 — no-cut vs cut-aware: cutting a pipe avoids a whole container."""
+    reset_run(page, preset="cut_avoids_extra_container", seed=7)
+    _assert_simulated_badge(page)
+    rec.hold(1.6)
+    command(page, "compare_cut_aware")
+    rec.until("(document.querySelector('#cut-state')?.textContent||'')"
+              ".includes('CUT RECOMMENDED')", timeout_s=25)
+    rec.hold(3.0)                                    # the comparison table
+    command(page, "approve_cut")
+    rec.hold(1.4)
+    command(page, "simulate_cut")
+    rec.until("document.querySelector('#b-stage')?.textContent?.trim() === "
+              "'WAIT_FOR_OPERATOR_APPROVAL'", timeout_s=25)
+    rec.hold(2.6)                                    # re-planned, fewer containers
+    command(page, "approve")
+    rec.hold(2.4)
+
+
+def scene_inventory(page, rec: Recorder) -> None:
+    """GIF 5 — the FIWARE-backed container inventory filling up."""
+    reset_run(page, preset="cut_avoids_extra_container", seed=7)
+    command(page, "init_inventory", {"count": 4})
+    page.goto(BASE_FOR(page) + "/inventory", wait_until="networkidle")
+    set_light_theme(page)
+    page.wait_for_timeout(500)
+    rec.hold(2.2)                                    # KPI tiles + table
+    command(page, "check_containers")
+    rec.until("document.querySelectorAll('#rows tr').length >= 1", timeout_s=25)
+    rec.hold(3.0)                                    # reserved + delivered to cell
+
+
+def scene_logistics(page, rec: Recorder) -> None:
+    """GIF 6 — simulated container logistics: delivery to the cell, collection."""
+    reset_run(page, preset="cut_avoids_extra_container", seed=7)
+    command(page, "init_inventory", {"count": 4})
+    command(page, "check_containers")
+    page.goto(BASE_FOR(page) + "/logistics", wait_until="networkidle")
+    set_light_theme(page)
+    page.wait_for_timeout(500)
+    rec.hold(3.0)                                    # facility map + robot + tasks
+    command(page, "collect_full_containers")
+    rec.hold(2.6)
+
+
+def scene_anomaly(page, rec: Recorder) -> None:
+    """GIF 7 — a SIMULATED critical anomaly holds the workflow."""
+    reset_run(page, preset="cut_avoids_extra_container", seed=7)
+    _assert_simulated_badge(page)
+    assert_anomaly_title(page)                       # new title only (brief §7)
+    command(page, "approve")
+    rec.until("parseFloat(document.querySelector('#progbar').style.width||'0') > 0",
+              timeout_s=25)
+    rec.hold(1.6)                                    # normal execution
+    page.select_option("#a-class", "shear_position_too_high")
+    command(page, "inject_anomaly", {"anomaly_class": "shear_position_too_high"})
+    rec.until("(document.querySelector('#anomaly-state')?.textContent||'')"
+              ".includes('HELD')", timeout_s=25)
+    rec.hold(3.0)                                    # workflow held, authorisation revoked
+    command(page, "acknowledge_anomaly")
+    rec.hold(1.6)
+
+
+def BASE_FOR(page) -> str:
+    """The dashboard origin for the current page (for cross-route navigation)."""
+    import urllib.parse
+    u = urllib.parse.urlparse(page.url)
+    return f"{u.scheme}://{u.netloc}"
+
+
 SCENES: Dict[str, Dict] = {
     "approve": {"fn": scene_approve, "file": "hitl-approve-execute.gif"},
     "replan": {"fn": scene_replan, "file": "hitl-dynamic-replan.gif"},
     "container": {"fn": scene_container_unavailable,
                   "file": "hitl-container-unavailable.gif"},
+    "cut": {"fn": scene_cut_aware, "file": "cut-aware-comparison.gif"},
+    "inventory": {"fn": scene_inventory, "file": "container-inventory.gif"},
+    "logistics": {"fn": scene_logistics, "file": "container-logistics.gif"},
+    "anomaly": {"fn": scene_anomaly, "file": "anomaly-workflow.gif"},
 }
+
+
+def _capture_screenshots(browser, dash, theme: str) -> List[str]:
+    """The required light-theme still screenshots (brief §22)."""
+    written: List[str] = []
+
+    def shot(name: str, driver, route: str = "/", clip=None) -> None:
+        ctx = browser.new_context(viewport=VIEWPORT, device_scale_factor=1,
+                                  color_scheme=theme)
+        page = ctx.new_page()
+        errors: List[str] = []
+        page.on("pageerror", lambda e: errors.append(str(e)))
+        page.goto(dash.url + route, wait_until="networkidle")
+        page.wait_for_timeout(1500)
+        if theme == "light":
+            set_light_theme(page)
+        driver(page)
+        page.wait_for_timeout(800)
+        out = os.path.join(OUT_DIR, name)
+        page.screenshot(path=out, clip=clip)
+        if errors:
+            raise RuntimeError(f"{name}: page errors {errors}")
+        ctx.close()
+        written.append(out)
+        print(f"[shot] {name} ({os.path.getsize(out)/1e3:.0f} kB)")
+
+    def dashboard(page):
+        reset_run(page)
+    def strategy(page):
+        reset_run(page)
+        command(page, "compare_strategies")
+        page.wait_for_function(
+            "() => document.querySelectorAll('#strategies tr').length > 1",
+            timeout=25_000)
+    def cutaware(page):
+        reset_run(page, preset="cut_avoids_extra_container", seed=7)
+        command(page, "compare_cut_aware")
+        page.wait_for_function(
+            "() => (document.querySelector('#cut-state')?.textContent||'')"
+            ".includes('CUT RECOMMENDED')", timeout=25_000)
+    def anomaly(page):
+        reset_run(page, preset="cut_avoids_extra_container", seed=7)
+        assert_anomaly_title(page)                   # new title only (brief §7)
+        command(page, "approve")
+        page.wait_for_timeout(1200)
+        command(page, "inject_anomaly", {"anomaly_class": "shear_position_too_high"})
+        page.wait_for_function(
+            "() => (document.querySelector('#anomaly-state')?.textContent||'')"
+            ".includes('HELD')", timeout=25_000)
+    def inventory(page):
+        command(page, "init_inventory", {"count": 4})
+        command(page, "check_containers")
+        page.wait_for_function(
+            "() => document.querySelectorAll('#rows tr').length >= 1", timeout=25_000)
+    def logistics(page):
+        command(page, "init_inventory", {"count": 4})
+        command(page, "check_containers")
+        page.wait_for_timeout(1200)
+    def diagnostics(page):
+        page.wait_for_timeout(1800)
+
+    shot("dashboard-light.png", dashboard, "/", CLIP)
+    shot("strategy-comparison-light.png", strategy, "/", CLIP)
+    shot("cut-aware-light.png", cutaware, "/", CLIP)
+    shot("anomaly-light.png", anomaly, "/", CLIP)
+    shot("inventory-light.png", inventory, "/inventory")
+    shot("logistics-light.png", logistics, "/logistics")
+    shot("diagnostics-light.png", diagnostics, "/diagnostics")
+    return written
 
 
 def main() -> int:
@@ -264,6 +449,10 @@ def main() -> int:
     parser.add_argument("--fps", type=int, default=3,
                         help="capture and playback rate (2-4 reads well)")
     parser.add_argument("--width", type=int, default=1000)
+    parser.add_argument("--theme", choices=("light", "dark"), default="light",
+                        help="capture theme (light is the README default)")
+    parser.add_argument("--screenshots", action="store_true",
+                        help="capture the still light-theme screenshots instead of GIFs")
     parser.add_argument("--keep-frames", action="store_true")
     args = parser.parse_args()
 
@@ -274,7 +463,7 @@ def main() -> int:
               "  pip install playwright && playwright install chromium",
               file=sys.stderr)
         return 2
-    if not shutil.which("ffmpeg"):
+    if not args.screenshots and not shutil.which("ffmpeg"):
         print("ERROR: ffmpeg is required to assemble the GIFs.", file=sys.stderr)
         return 2
 
@@ -286,18 +475,27 @@ def main() -> int:
     try:
         with sync_playwright() as pw:
             browser = pw.chromium.launch()
+            if args.screenshots:
+                written = _capture_screenshots(browser, dash, args.theme)
+                browser.close()
+                dash.close()
+                print(f"\nwrote {len(written)} screenshot(s).")
+                return 0
             for name, spec in scenes.items():
                 folder = os.path.join(FRAME_ROOT, name)
                 shutil.rmtree(folder, ignore_errors=True)
                 ctx = browser.new_context(viewport=VIEWPORT,
-                                          device_scale_factor=1)
+                                          device_scale_factor=1,
+                                          color_scheme=args.theme)
                 page = ctx.new_page()
                 errors: List[str] = []
                 page.on("pageerror", lambda e: errors.append(str(e)))
                 page.goto(dash.url, wait_until="networkidle")
                 page.wait_for_timeout(2500)
+                if args.theme == "light":
+                    set_light_theme(page)
 
-                print(f"[gif] recording {name} ...")
+                print(f"[gif] recording {name} ({args.theme}) ...")
                 rec = Recorder(page, folder, args.fps)
                 spec["fn"](page, rec)
 

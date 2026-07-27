@@ -1,0 +1,237 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>WISEPACK — diagnostics</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect x='2' y='4' width='12' height='9' rx='1.5' fill='%235b7185'/%3E%3C/svg%3E"/>
+<style>
+  :root{color-scheme:dark;--bg:#0f1720;--panel:#16212e;--inset:#0e1926;--line:#22303f;
+    --ink:#e6edf3;--mut:#8aa0b4;--acc:#4aa3ff;--ok:#2ecc71;--warn:#f1c40f;--bad:#e74c3c;--hold:#e67e22}
+  :root[data-theme="light"]{color-scheme:light;--bg:#f4f6f9;--panel:#fff;--inset:#f7f9fb;
+    --line:#d8e0ea;--ink:#12222f;--mut:#5b7185;--acc:#1266d1;--ok:#12784a;--warn:#a76a00;--bad:#c0392b;--hold:#c05a11}
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);font:13px/1.45 ui-sans-serif,system-ui,Segoe UI,Arial}
+  header{padding:10px 16px;border-bottom:1px solid var(--line);display:flex;gap:12px;
+    align-items:center;background:var(--panel);position:sticky;top:0;z-index:10;flex-wrap:wrap}
+  header b{font-size:15px}
+  header .sub{font-size:11px;color:var(--mut)}
+  a{color:var(--acc);text-decoration:none}
+  .spacer{margin-left:auto}
+  .wrap{padding:12px;display:grid;grid-template-columns:1fr 1fr;gap:12px}
+  @media (max-width:1000px){.wrap{grid-template-columns:1fr}}
+  .panel{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:11px 12px;min-width:0}
+  .panel.full{grid-column:1 / -1}
+  h3{margin:0 0 9px;font-size:11px;letter-spacing:.09em;text-transform:uppercase;color:var(--mut)}
+  table{width:100%;border-collapse:collapse;font-size:12px}
+  th,td{text-align:left;padding:4px 7px;border-bottom:1px solid var(--line);vertical-align:top}
+  th{color:var(--mut);font-size:10px;text-transform:uppercase;letter-spacing:.04em}
+  td.k{color:var(--mut);white-space:nowrap}
+  .scroll{overflow-x:auto}
+  .pill{display:inline-block;padding:1px 7px;border-radius:999px;font-size:10.5px;font-weight:700}
+  .measured{background:rgba(46,204,113,.16);color:var(--ok)}
+  .simulated{background:rgba(241,196,15,.16);color:var(--warn)}
+  .external{background:rgba(74,163,255,.16);color:var(--acc)}
+  .future{background:rgba(91,113,133,.18);color:var(--mut)}
+  .live{background:rgba(46,204,113,.16);color:var(--ok)}
+  .st-ACTIVE{color:var(--ok);font-weight:700}
+  .st-WAITING{color:var(--warn)}
+  .st-SIMULATED{color:var(--warn)}
+  .st-NOT{color:var(--mut)}
+  .st-UNMAPPED{color:var(--mut)}
+  .st-ERROR{color:var(--bad);font-weight:700}
+  .note{color:var(--mut);font-size:11px;margin-top:8px}
+  pre{background:var(--inset);border:1px solid var(--line);border-radius:6px;padding:8px;
+    font:11px/1.4 ui-monospace,Menlo,Consolas,monospace;overflow:auto;max-height:220px}
+  button{border:1px solid var(--line);background:var(--inset);color:var(--ink);border-radius:6px;
+    padding:5px 9px;cursor:pointer;font:600 11px ui-sans-serif}
+  button:hover{border-color:var(--acc);color:var(--acc)}
+  .kv{display:grid;grid-template-columns:auto 1fr;gap:2px 10px;font-size:12px}
+  .kv .k{color:var(--mut)}
+  .warnbox{background:rgba(241,196,15,.12);border:1px solid var(--warn);color:var(--warn);
+    border-radius:7px;padding:7px 9px;font-size:11.5px;margin-bottom:9px}
+  .wpnav{display:flex;flex-wrap:wrap;gap:6px;align-items:center}
+  .wpnav a{font-size:11px;color:var(--mut);border:1px solid var(--line);
+    border-radius:999px;padding:3px 10px;text-decoration:none;white-space:nowrap}
+  .wpnav a:hover{color:var(--fg,var(--ink));border-color:var(--mut)}
+  .wpnav a[aria-current="page"]{color:var(--fg,var(--ink));border-color:var(--fg,var(--ink));font-weight:700}
+  @media (max-width:820px){
+    header{flex-wrap:wrap;row-gap:6px}
+    header .sub{display:none}
+    .wpnav{width:100%;order:99}
+  }
+</style>
+</head>
+<body>
+<header>
+  <b>WISEPACK diagnostics</b>
+  <span class="sub">local engineering &amp; interview transparency — read-only</span>
+  <span class="spacer"></span>
+  <nav class="wpnav" aria-label="Primary">
+    <a href="/">Dashboard</a>
+    <a href="/inventory">Container Inventory</a>
+    <a href="/diagnostics" aria-current="page">Diagnostics</a>
+    <a href="/simulator" id="nav-simulator" hidden>Simulator View</a>
+  </nav>
+  <button id="refresh">Refresh</button>
+  <button id="theme-d" aria-pressed="true">Dark</button>
+  <button id="theme-l" aria-pressed="false">Light</button>
+</header>
+
+<div class="wrap">
+  <div class="panel">
+    <h3>Runtime overview</h3>
+    <div class="kv" id="overview"></div>
+  </div>
+
+  <div class="panel">
+    <h3>Component status <span class="note">allowlisted</span></h3>
+    <div class="scroll"><table id="components"><tbody></tbody></table></div>
+  </div>
+
+  <div class="panel">
+    <h3>Cutting status <span class="note">SIMULATED cut-aware planning</span></h3>
+    <div class="kv" id="cutting"></div>
+  </div>
+
+  <div class="panel">
+    <h3>Inventory status <span class="note">FIWARE-backed container inventory</span></h3>
+    <div class="kv" id="inventory"></div>
+  </div>
+
+  <div class="panel">
+    <h3>Logistics status <span class="note">SIMULATED — no physical mobile robot</span></h3>
+    <div class="kv" id="logistics"></div>
+  </div>
+
+  <div class="panel full">
+    <h3>ROS topic diagnostics <span class="note">fixed allowlist from the contract — no arbitrary ros2 commands</span></h3>
+    <div class="scroll"><table id="topics"><tbody></tbody></table></div>
+  </div>
+
+  <div class="panel">
+    <h3>Simulated, unavailable and future interfaces</h3>
+    <div class="warnbox">Absence because of deliberate simulation is not a system failure.</div>
+    <div class="scroll"><table id="interfaces"><tbody></tbody></table></div>
+  </div>
+
+  <div class="panel">
+    <h3>Operation timing <span class="note">measured · simulated · derived · unavailable</span></h3>
+    <div class="kv" id="timing"></div>
+  </div>
+
+  <div class="panel full">
+    <h3>FIWARE mapping diagnostics <span class="note">parsed from the generated bridge configuration</span></h3>
+    <div class="note">Complete live placement geometry remains on ROS 2. FIWARE stores compact
+      semantic and audit summaries plus identifiers and digests.</div>
+    <div class="scroll"><table id="fiware"><tbody></tbody></table></div>
+  </div>
+
+  <div class="panel full">
+    <h3>Message &amp; event inspector <span class="note">latest of each kind, length-capped</span></h3>
+    <div id="inspector"></div>
+  </div>
+
+  <div class="panel full">
+    <h3>Security</h3>
+    <div class="note" id="security"></div>
+  </div>
+</div>
+
+<script>
+"use strict";
+const $ = s => document.querySelector(s);
+const el = (t,a={},k=[]) => { const n=document.createElement(t);
+  for(const[x,v]of Object.entries(a))n.setAttribute(x,v);
+  for(const c of[].concat(k))n.append(c); return n; };
+
+function setTheme(t){ document.documentElement.dataset.theme=t;
+  $("#theme-d").setAttribute("aria-pressed",String(t==="dark"));
+  $("#theme-l").setAttribute("aria-pressed",String(t==="light"));
+  try{localStorage.setItem("wisepack-theme",t)}catch(e){} }
+$("#theme-d").onclick=()=>setTheme("dark");
+$("#theme-l").onclick=()=>setTheme("light");
+
+async function api(p){ const r=await fetch(p); if(!r.ok)throw new Error(r.status); return r.json(); }
+
+function kv(host, obj){ host.innerHTML="";
+  for(const[k,v]of Object.entries(obj)){
+    host.append(el("div",{class:"k"},k));
+    host.append(el("div",{}, (v===null||v===undefined)?"—":(typeof v==="object"?JSON.stringify(v):String(v))));
+  }
+}
+function statusClass(s){ return "st-"+String(s).split(" ")[0]; }
+
+async function refresh(){
+  let d, ins;
+  try{ d=await api("/api/diagnostics"); ins=await api("/api/inspector"); }
+  catch(e){ $("#overview").textContent="diagnostics unavailable: "+e.message; return; }
+
+  kv($("#overview"), d.overview);
+  if(d.cutting_status) kv($("#cutting"), d.cutting_status);
+  if(d.inventory_status) kv($("#inventory"), d.inventory_status);
+  if(d.logistics_status) kv($("#logistics"), d.logistics_status);
+
+  const ct=$("#components tbody"); ct.innerHTML="";
+  ct.append(el("tr",{},["Component","Kind","Health","Role"].map(h=>el("th",{},h))));
+  for(const c of d.components) ct.append(el("tr",{},[
+    el("td",{},c.label), el("td",{},el("span",{class:"pill "+c.kind},c.kind)),
+    el("td",{},c.health), el("td",{class:"k"},c.role)]));
+
+  const tt=$("#topics tbody"); tt.innerHTML="";
+  tt.append(el("tr",{},["Topic","Type","Status","FIWARE","Expected source"].map(h=>el("th",{},h))));
+  for(const t of d.topics) tt.append(el("tr",{},[
+    el("td",{},t.topic), el("td",{class:"k"},t.type),
+    el("td",{class:statusClass(t.status)},t.status),
+    el("td",{class:"k"},t.fiware), el("td",{class:"k"},t.expected_source)]));
+
+  const it=$("#interfaces tbody"); it.innerHTML="";
+  it.append(el("tr",{},["Interface","State","Meaning"].map(h=>el("th",{},h))));
+  for(const i of d.interfaces){ const cls=i.state.split(" ")[0];
+    it.append(el("tr",{},[el("td",{},i.interface),
+      el("td",{},el("span",{class:"pill "+cls},i.state)), el("td",{class:"k"},i.meaning)])); }
+
+  kv($("#timing"), {
+    "optimization_time_ms": d.timing.optimization_time_ms,
+    "anomaly→hold latency ms": d.timing.anomaly_to_hold_latency_ms,
+    "DDS→FIWARE p50 ms": d.timing.dds_to_fiware_latency ? d.timing.dds_to_fiware_latency.ros_to_fiware_p50_ms : "not measured",
+    "DDS→FIWARE p95 ms": d.timing.dds_to_fiware_latency ? d.timing.dds_to_fiware_latency.ros_to_fiware_p95_ms : "not measured",
+    "duration by stage (ms)": d.timing.duration_by_stage_ms,
+    "labels": d.timing.labels
+  });
+
+  const ft=$("#fiware tbody"); ft.innerHTML="";
+  ft.append(el("tr",{},["ROS topic","Type","Direction","Entity","Attribute","Status"].map(h=>el("th",{},h))));
+  for(const m of d.fiware_mappings) ft.append(el("tr",{},[
+    el("td",{},m.ros_topic), el("td",{class:"k"},m.ros_type), el("td",{class:"k"},m.direction),
+    el("td",{class:"k"},m.entity), el("td",{},m.attribute),
+    el("td",{class:"st-ACTIVE"},m.status)]));
+
+  const box=$("#inspector"); box.innerHTML="";
+  for(const[k,v]of Object.entries(ins)){
+    box.append(el("h3",{style:"margin:10px 0 4px"},k));
+    box.append(el("pre",{}, v?JSON.stringify(v,null,1).slice(0,1200):"—"));
+  }
+  $("#security").textContent=d.security_note;
+}
+
+$("#refresh").onclick=refresh;
+(function(){ try{setTheme(localStorage.getItem("wisepack-theme")||"dark")}catch(e){setTheme("dark")}
+  refresh(); setInterval(refresh, 4000); })();
+
+// Simulator View is shown only when the ACTIVE backend actually offers a
+// visualization. A permanently-visible nav item that opens "stream unavailable"
+// trains an operator to ignore it; conditional visibility keeps it meaningful.
+async function refreshSimulatorNav(){
+  const link = document.querySelector("#nav-simulator");
+  if (!link) return;
+  try {
+    const d = await (await fetch("/api/visualization")).json();
+    link.hidden = !(d && d.transport && d.transport !== "none");
+  } catch (e) { link.hidden = true; }
+}
+refreshSimulatorNav();
+setInterval(refreshSimulatorNav, 5000);
+</script>
+</body>
+</html>
