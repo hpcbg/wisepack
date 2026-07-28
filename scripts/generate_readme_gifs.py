@@ -46,6 +46,25 @@ def _free_port() -> int:
         return s.getsockname()[1]
 
 
+class AttachedDashboard:
+    """An ALREADY-RUNNING dashboard, used as-is.
+
+    The sim dashboard below is self-contained and reproducible, which is right
+    for the workflow GIFs. But the panels that only exist in a live deployment —
+    the `FIWARE + ROS` source badge, the physical execution backend, the run
+    correlation and scene-readiness diagnostics — cannot be produced by a sim
+    process talking to nothing. Those are captured against a real stack the
+    operator has already started, so the screenshot shows the true state rather
+    than a mock of it.
+    """
+
+    def __init__(self, url: str):
+        self.url = url.rstrip("/")
+
+    def close(self) -> None:                            # nothing to stop
+        pass
+
+
 class Dashboard:
     """A sim-mode dashboard on its own port."""
 
@@ -374,6 +393,47 @@ SCENES: Dict[str, Dict] = {
 }
 
 
+def _capture_live_screenshots(browser, dash, theme: str) -> List[str]:
+    """Stills that only exist against a real deployment.
+
+    Everything here depends on state a sim process cannot produce: an Orion-LD
+    read-back, an execution backend that is actually running, a physical scene
+    that has been acknowledged for this run. Captured from whatever stack is
+    attached, so the image is evidence rather than illustration.
+    """
+    written: List[str] = []
+
+    def shot(name: str, route: str, driver=None, clip=None) -> None:
+        ctx = browser.new_context(viewport=VIEWPORT, device_scale_factor=1,
+                                  color_scheme=theme)
+        page = ctx.new_page()
+        errors: List[str] = []
+        page.on("pageerror", lambda e: errors.append(str(e)))
+        page.goto(dash.url + route, wait_until="networkidle")
+        page.wait_for_timeout(2500)
+        if theme == "light":
+            set_light_theme(page)
+        if driver:
+            driver(page)
+        page.wait_for_timeout(1200)
+        out = os.path.join(OUT_DIR, name)
+        page.screenshot(path=out, clip=clip)
+        if errors:
+            raise RuntimeError(f"{name}: page errors {errors}")
+        ctx.close()
+        written.append(out)
+        print(f"[shot] {name} ({os.path.getsize(out)/1e3:.0f} kB)")
+
+    shot("dashboard-live-light.png", "/", clip=CLIP)
+    # Diagnostics is a long page; the correlation and scene rows are near the
+    # top, and a full-page capture would render them unreadably small.
+    # Tall enough to include the scene-readiness block below the correlation
+    # rows: cropping it out would drop the evidence the shot exists for.
+    shot("diagnostics-run-correlation-light.png", "/diagnostics",
+         clip={"x": 0, "y": 0, "width": 1440, "height": 1010})
+    return written
+
+
 def _capture_screenshots(browser, dash, theme: str) -> List[str]:
     """The required light-theme still screenshots (brief §22)."""
     written: List[str] = []
@@ -454,6 +514,12 @@ def main() -> int:
     parser.add_argument("--screenshots", action="store_true",
                         help="capture the still light-theme screenshots instead of GIFs")
     parser.add_argument("--keep-frames", action="store_true")
+    parser.add_argument("--attach", default=None, metavar="URL",
+                        help=("capture against an already-running dashboard "
+                              "(e.g. http://127.0.0.1:8080) instead of starting "
+                              "a sim one — for the live-only panels"))
+    parser.add_argument("--live-shots", action="store_true",
+                        help="with --attach: capture the live-deployment stills")
     args = parser.parse_args()
 
     try:
@@ -471,11 +537,19 @@ def main() -> int:
     scenes = {args.only: SCENES[args.only]} if args.only else SCENES
     written: List[str] = []
 
-    dash = Dashboard()
+    dash = AttachedDashboard(args.attach) if args.attach else Dashboard()
     try:
         with sync_playwright() as pw:
             browser = pw.chromium.launch()
-            if args.screenshots:
+            if args.live_shots:
+                # NOT sim-badge guarded: these exist precisely to show a live
+                # deployment, where the badge must NOT read SIMULATED.
+                written = _capture_live_screenshots(browser, dash, args.theme)
+                for path in written:
+                    print(f"[live] {os.path.basename(path)}")
+                print(f"\nwrote {len(written)} live screenshot(s).")
+                return 0
+            elif args.screenshots:
                 written = _capture_screenshots(browser, dash, args.theme)
                 browser.close()
                 dash.close()

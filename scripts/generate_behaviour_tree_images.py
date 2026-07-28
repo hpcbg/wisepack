@@ -39,6 +39,11 @@ KIND = {
     "hold": ("#fdecea", "#c0392b"),        # anomaly / degraded hold
     "loop": ("#f2f0fb", "#8e44ad"),
     "done": ("#eef4fb", "#1266d1"),
+    # The EXECUTION BACKEND lane. Deliberately its own colour: these are not
+    # workflow stages and not behaviour-tree nodes, they are the interchangeable
+    # implementations behind one contract.
+    "backend": ("#eaf1f8", "#1266d1"),
+    "planned": ("#f6f7f9", "#98a6b5"),     # designed, NOT implemented
 }
 
 #: The core invariant, printed on every diagram.
@@ -97,9 +102,25 @@ def full_tree() -> Tuple[List, List[Tuple[str, str, str]]]:
          "SIMULATED logistics", "loop"),
         ("APPROVE", "Approve", "operator", "gate"),
         ("REJECT", "Reject / alternative strategy", "-> re-plan -> gate", "gate"),
-        (S.PICK_ITEM.value, "Pick item", "SIMULATED robot", "loop"),
-        (S.VERIFY_PICK.value, "Verify pick", "SIMULATED", "loop"),
-        (S.PLACE_ITEM.value, "Place item", "SIMULATED robot", "loop"),
+        (S.PICK_ITEM.value, "Pick item", "via execution backend", "loop"),
+        (S.VERIFY_PICK.value, "Verify pick", "via execution backend", "loop"),
+        (S.PLACE_ITEM.value, "Place item", "via execution backend", "loop"),
+        # --- the backend-neutral execution contract ------------------------
+        ("BACKEND", "Execution backend contract",
+         "IsaacCommand / IsaacFeedback over ROS 2", "backend"),
+        ("BE_SIM", "Simulated robot model",
+         "seeded outcomes, no physics", "backend"),
+        ("BE_ISAAC", "Isaac Sim 6.0.1",
+         "Panda + PhysX, deterministic state machine", "backend"),
+        ("BE_REAL", "Real robot cell",
+         "same contract — NOT implemented", "planned"),
+        # --- two readiness levels, never collapsed -------------------------
+        ("SIM_READY", "SIMULATOR_READY",
+         "process + ROS bridge up — authorises nothing", "backend"),
+        ("SCENE_READY", "SCENE_READY",
+         "scene verified for THIS run + revision", "validate"),
+        ("SCENE_HOLD", "Scene mismatch / reset failed",
+         "hold with an actionable reason", "hold"),
         (S.VERIFY_PLACEMENT.value, "Verify placement",
          "re-validate vs geometry", "validate"),
         (S.UPDATE_CONTAINER_STATE.value, "Update container state", "", "loop"),
@@ -150,6 +171,17 @@ def full_tree() -> Tuple[List, List[Tuple[str, str, str]]]:
         (S.WAIT_FOR_OPERATOR_APPROVAL.value, "REJECT", "reject"),
         ("REJECT", S.REPLAN.value, ""),
         ("APPROVE", S.PICK_ITEM.value, ""),
+        # Execution is dispatched through ONE contract; only the implementation
+        # behind it differs, which is what makes the backends interchangeable.
+        (S.PICK_ITEM.value, "BACKEND", "dispatch"),
+        ("BACKEND", "BE_SIM", "execution_backend=simulated"),
+        ("BACKEND", "BE_ISAAC", "execution_backend=isaac"),
+        ("BACKEND", "BE_REAL", "future"),
+        ("BE_ISAAC", "SIM_READY", "reports"),
+        ("SIM_READY", "SCENE_READY", "SYNC_SCENE for this run"),
+        ("SCENE_READY", S.WAIT_FOR_OPERATOR_APPROVAL.value, "gates approval"),
+        ("SIM_READY", "SCENE_HOLD", "no correlated acknowledgement"),
+        ("SCENE_HOLD", S.DEGRADED.value, "timeout"),
         (S.PICK_ITEM.value, S.VERIFY_PICK.value, ""),
         (S.VERIFY_PICK.value, S.PLACE_ITEM.value, ""),
         (S.PLACE_ITEM.value, S.VERIFY_PLACEMENT.value, ""),
@@ -186,7 +218,11 @@ def interview_tree() -> Tuple[List, List[Tuple[str, str, str]]]:
         ("RE", "Re-plan on actual segments", "renewed", "action"),
         ("APP", "Human packing approval", "the gate", "gate"),
         ("RES", "Reserve / deliver container", "SIMULATED logistics", "action"),
-        ("PACK", "Pack", "SIMULATED robot", "loop"),
+        ("PACK", "Pack", "simulated model OR Isaac Sim", "loop"),
+        ("BE", "Execution backend contract",
+         "one contract, interchangeable backends", "backend"),
+        ("SCN", "SCENE_READY for this run",
+         "physical scene verified", "validate"),
         ("COLL", "Collect full container", "SIMULATED", "loop"),
         ("FA", "FIWARE analytics", "auditable state", "done"),
         ("ANOM", "Anomaly Monitoring", "SIMULATED, hold", "hold"),
@@ -195,7 +231,9 @@ def interview_tree() -> Tuple[List, List[Tuple[str, str, str]]]:
         ("GEN", "INV", ""), ("INV", "OPT", ""), ("OPT", "DTV", ""),
         ("DTV", "CUT", ""), ("CUT", "SKILL", "cut"), ("CUT", "APP", "no cut"),
         ("SKILL", "RE", ""), ("RE", "APP", ""), ("APP", "RES", "approve"),
-        ("RES", "PACK", ""), ("PACK", "COLL", "full"), ("COLL", "FA", ""),
+        ("RES", "PACK", ""), ("PACK", "BE", "dispatch"), ("BE", "SCN", "physical"),
+        ("SCN", "APP", "gates approval"),
+        ("PACK", "COLL", "full"), ("COLL", "FA", ""),
         ("PACK", "ANOM", "on event"), ("ANOM", "APP", "re-approve"),
     ]
     return nodes, edges

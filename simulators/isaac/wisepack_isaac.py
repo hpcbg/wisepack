@@ -98,6 +98,13 @@ def _parse_args():
                               "execute the first item of the new run."))
     parser.add_argument("--reset-seed", type=int, default=1234,
                         help="Seed for the second scenario in --reset-test")
+    parser.add_argument("--capture-frames", default="", metavar="DIR",
+                        help=("Write DemoCamera RGB frames to DIR while the run "
+                              "proceeds, for README media. Purely observational: "
+                              "it renders the existing spectator camera and "
+                              "changes no motion, no timing and no gating."))
+    parser.add_argument("--capture-every", type=int, default=4,
+                        help="Capture one frame every N simulation frames")
     parser.add_argument("--smoke-test", type=int, default=0, metavar="N",
                         help=("Self-driving physical validation: plan locally "
                               "with the SAME optimizer the stack uses, then "
@@ -330,8 +337,66 @@ class WisepackIsaacApp:
             on_state=self._on_sequence_state, on_done=self._on_item_done)
         self.sequence.attach_robot(self.robot)
 
+        self._capture_rgb = None
+        self._capture_dir = ""
+        self._capture_n = 0
+        self._capture_every = 4
+        self._start_capture()
+
         init_ros()
         self.bridge = IsaacRosBridge(on_command=self._on_command)
+
+    # -- observational frame capture (README media) ----------------------- #
+
+    def _start_capture(self) -> None:
+        """Attach an RGB annotator to the DemoCamera. Observational only.
+
+        It renders the SAME spectator camera the scene builder already places,
+        writes PNGs, and touches nothing else: no motion parameter, no timing,
+        no gate. A capture path that changed what the robot did would make the
+        resulting media evidence of something other than the validated system,
+        which is the opposite of the point.
+        """
+        directory = getattr(ARGS, "capture_frames", "") or ""
+        if not directory:
+            return
+        try:
+            import omni.replicator.core as rep          # noqa: PLC0415
+        except ImportError as exc:                      # noqa: BLE001
+            carb.log_warn(f"{LOG_APP} frame capture unavailable: {exc}")
+            return
+        os.makedirs(directory, exist_ok=True)
+        camera_path = "/World/DemoCamera"
+        product = rep.create.render_product(camera_path, (1280, 720))
+        self._capture_rgb = rep.AnnotatorRegistry.get_annotator("rgb")
+        self._capture_rgb.attach([product])
+        self._capture_dir = directory
+        self._capture_n = 0
+        self._capture_every = max(1, int(getattr(ARGS, "capture_every", 4)))
+        print(f"{LOG_APP} capturing DemoCamera frames to {directory} "
+              f"(every {self._capture_every} frames)")
+
+    def _capture_frame(self) -> None:
+        """One frame, if capture is on and this is a capture frame."""
+        if getattr(self, "_capture_rgb", None) is None:
+            return
+        self._capture_n += 1
+        if self._capture_n % self._capture_every:
+            return
+        try:
+            import numpy as _np                          # noqa: PLC0415
+            from PIL import Image                        # noqa: PLC0415
+            data = self._capture_rgb.get_data()
+            if data is None or not len(data):
+                return
+            frame = _np.asarray(data)[:, :, :3].astype("uint8")
+            index = self._capture_n // self._capture_every
+            Image.fromarray(frame).save(
+                os.path.join(self._capture_dir, f"f{index:05d}.png"))
+        except Exception as exc:                         # noqa: BLE001
+            # NEVER let a media concern break a physical run.
+            carb.log_warn(f"{LOG_APP} frame capture failed: {exc}")
+            self._capture_rgb = None
 
     def _pin_spectator_camera(self) -> None:
         """Point the streamed viewport at the workcell, once, at startup.
@@ -984,6 +1049,7 @@ class WisepackIsaacApp:
         def pump(frames=1):
             for _ in range(frames):
                 simulation_app.update()
+                self._capture_frame()      # observational; no-op unless enabled
                 self.bridge.spin_once()
                 self._pump_smoke_queue()
                 if self.pending is not None and not self.sequence.busy:
@@ -1161,6 +1227,7 @@ class WisepackIsaacApp:
 
         while simulation_app.is_running():
             simulation_app.update()
+            self._capture_frame()          # observational; no-op unless enabled
             self.bridge.spin_once()
             self._pump_smoke_queue()
 

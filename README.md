@@ -3,9 +3,9 @@
 **Intelligent Robotic Sorting and Volume-Optimized Packaging of Nuclear Waste
 with Human-in-the-Loop AI**
 
-A running software demonstrator of the WISEPACK novel contribution —
+A running software demonstrator of the WISEPACK novel contribution -
 **geometry-aware container packaging with Digital Twin validation and operator
-approval** — built as ROS 2 Jazzy modules over DDS with a FIWARE NGSI-LD audit
+approval** - built as ROS 2 Jazzy modules over DDS with a FIWARE NGSI-LD audit
 trail.
 
 | | |
@@ -13,15 +13,155 @@ trail.
 | **Scope** | Interview demonstrator, not the nine-month TRL6 implementation. See [Limitations](#17-limitations). |
 | **Runtime** | ROS 2 Jazzy on Vulcanexus / Fast DDS, Orion-LD (NGSI-LD), FastAPI dashboard |
 | **Host requirements** | Docker only. No host ROS 2, no host Python packages. A no-Docker mode also works. |
-| **Licence** | MIT. Reuses **TEMPO**, **HARVEST** and **HARMONY** — see [NOTICE](NOTICE) and [§19](#19-attribution). |
+| **Licence** | MIT. Reuses **TEMPO**, **HARVEST** and **HARMONY** - see [NOTICE](NOTICE) and [§19](#19-attribution). |
 | **Tests** | unit, contract, QoS, cut-aware, inventory, logistics, whole-process, anomaly, diagnostics, behaviour-tree, media, Isaac backend and headless-browser |
+
+---
+
+## What this demonstrator does, in nine images
+
+Every asset below is generated from the running system by the scripts in this
+repository - no mock-ups, no hand-drawn diagrams. Captions state exactly what is
+real, simulated, measured or not yet implemented.
+
+### 1. The operator's view
+
+![WISEPACK dashboard in live FIWARE + ROS mode: optimized Digital Twin, Human-in-the-Loop controls, anomaly monitoring and measured baseline-versus-optimized KPIs](images/generated/dashboard-live-light.png)
+
+*`mixed_pipes_dense` awaiting approval, captured from a **live deployment**:
+state read back through Orion-LD (`source: FIWARE + ROS`) while the Digital Twin
+renders from ROS 2. The approval gate, the anomaly panel and the KPI table are
+one screen. Robot outcomes in this capture are the **simulated** execution
+backend; the packing arithmetic is **measured**.*
+
+```bash
+./run_wisepack_dashboard.sh sim        # no Docker, no ROS
+./run_wisepack_dashboard.sh fiware     # live ROS 2/DDS + Orion-LD read-back
+```
+
+### 2. Baseline versus optimized - the value proposition
+
+![Baseline needs three containers; the optimized plan needs two, at 59.3% utilization](images/generated/comparison-mixed_pipes_dense.svg)
+
+*`mixed_pipes_dense`, 40 items: **3 containers → 2**, utilization **39.6% →
+59.3%**, a 33% reduction. Both plans pass the independent Digital Twin
+validator. Measured by the optimizer in this repository, not estimated.*
+
+### 3. Human-in-the-Loop approval
+
+![Operator approves the optimized plan and execution begins](images/generated/hitl-approve-execute.gif)
+
+*No pick or placement executes until the exact current plan of the exact current
+scenario revision is approved. The gate never times out - "nobody answered" is
+not consent.*
+
+### 4. Anomaly response and recovery
+
+![A critical anomaly holds execution; acknowledgement returns the workflow to a genuine pending decision](images/generated/anomaly-workflow.gif)
+
+***Simulated** anomaly source demonstrating ROS 2 event integration,
+deterministic workflow response, FIWARE traceability and analytics. It is **not
+a validated anomaly detector**. A critical event revokes authorisation, and
+acknowledging it leads either to execution or to a genuine renewed decision -
+never to a gate with nothing to decide.*
+
+### 5. Isaac Sim physical execution
+
+![Isaac Sim 6.0.1: the Panda approaches a cylinder, grasps, lifts, moves above the container, releases, and PhysX resolves the settling](images/generated/isaac-pick-drop.gif)
+
+*Isaac Sim 6.0.1 physical execution: the Panda picks a procedurally generated
+cylinder, releases it above the container and **PhysX resolves the final
+settling** - the item is never teleported to its planned pose. Rendered from the
+scene's fixed DemoCamera.*
+
+*Two honest limitations. **Ground-truth object poses are used in the current
+Isaac integration; camera-based perception is planned for the next iteration.**
+And the settled pose is where physics puts it - the last validated run measured
+43 mm from the planned pose - not a reproduction of the target.*
+
+```bash
+WISEPACK_ISAAC_VIEW_MODE=desktop \
+  WISEPACK_ISAAC_HEADLESS=0 \
+  ./run_wisepack_dashboard.sh isaac
+```
+
+### 6. Safe repeated runs - the scene reset
+
+![Reset run & generate: the placed object is cleared, the Panda returns home and four source cylinders respawn](images/generated/isaac-scene-reset.gif)
+
+*A new software scenario is not a physical reset. "Reset run & generate" stops
+the arm, releases the grasp joint, homes the Panda, clears the container and
+respawns the source objects - then publishes `SCENE_READY` correlated to the
+exact new run and revision. Approval stays blocked until that arrives.*
+
+*Measured in the bounded live validation: container cleared, **4/4 objects
+respawned at their source poses**, robot home to 0.001 rad, grasp joint
+released, first item of the new run completed.*
+
+### 7. Watching a physical run
+
+Two independent options, and WISEPACK manages neither of them:
+
+| how | what you need | who runs it |
+|---|---|---|
+| **Host desktop** | an Isaac window on a real display | your existing NoMachine or Sunshine/Moonlight session |
+| **Native WebRTC** | NVIDIA Isaac Sim WebRTC Streaming Client | you, on the viewing machine |
+
+```bash
+WISEPACK_ISAAC_VIEW_MODE=webrtc \
+  WISEPACK_ISAAC_STREAMING=1 \
+  WISEPACK_ISAAC_HEADLESS=1 \
+  WISEPACK_ISAAC_STREAM_HOST=<reachable-server-address> \
+  ./run_wisepack_dashboard.sh isaac-fiware
+```
+
+**A browser cannot display this stream.** Isaac Sim 6.0.1 ships no in-browser
+WebRTC client, so the dashboard links out to NVIDIA's native client rather than
+embedding a frame that could only stay blank.
+Isaac Sim 6.0.1 streams the live DemoCamera view to NVIDIA’s desktop WebRTC client. The client needs **both**
+`49100/TCP` (signalling) and `47998/UDP` (media) - a TCP-only SSH tunnel
+negotiates a connection and then shows no picture. No stream latency is quoted
+here because none was measured.
+
+### 8. Container Inventory and Diagnostics
+
+![Container Inventory: semantic container state, capacity and reservations](images/generated/inventory-light.png)
+
+![Diagnostics: ROS/FIWARE run correlation, FIWARE synchronization status, physical scene readiness and per-component health](images/generated/diagnostics-run-correlation-light.png)
+
+*Captured from a live `isaac-fiware` run. Diagnostics shows the canonical
+ROS/DDS run beside what Orion-LD believes - here `canonical_run_id ==
+fiware_run_id`, both revisions 1, `fiware_sync_status: synchronized`, *"all 6
+entities describe run …, revision 1"*, `rejected_stale_fields: none` - and the
+two Isaac readiness levels: `simulator_process` / `ros_bridge` ready, against a
+scene whose **requested and acknowledged revision, object count (4/4) and
+fingerprint all match** for this exact run.*
+
+### 9. Architecture and behaviour
+
+![WISEPACK behaviour tree: authoritative WorkflowEngine, the approval gate, anomaly hold and recovery, and the backend-neutral execution contract](images/generated/wisepack_behaviour_tree_interview.svg)
+
+*The mission-level tree is `py_trees`; the `WorkflowEngine` is authoritative.
+Execution is dispatched through **one backend-neutral contract** with three
+implementations: the simulated model, Isaac Sim, and a real robot cell that is
+**designed for but not implemented**. Isaac runs a **deterministic state
+machine**, not a second behaviour tree - the full engineering view is
+[here](images/generated/wisepack_behaviour_tree.svg).*
+
+Regenerate every diagram and figure from source:
+
+```bash
+./generate_behaviour_tree_images.sh
+./generate_demo_artifacts.sh --images-only
+./generate_readme_gifs.sh                     # requires playwright + ffmpeg
+```
 
 ---
 
 ## 1. The problem
 
-Decommissioning a nuclear plant generates large volumes of metallic waste —
-tubes, bent pipes, flat and curved sheets, curved panels, I-beams — that must be
+Decommissioning a nuclear plant generates large volumes of metallic waste -
+tubes, bent pipes, flat and curved sheets, curved panels, I-beams - that must be
 packed into certified containers for transport and storage at facilities with
 limited capacity. Today that packing is done either manually, exposing operators
 to radiation, or by robots that retrieve objects but do not optimise container
@@ -31,7 +171,7 @@ The reason this is hard is easy to see and easy to under-estimate: **a pipe is
 mostly air**. In the generated scenarios here, a straight tube's bounding box is
 typically 60–85% empty space. Where each pipe is placed, and at what
 orientation, therefore decides how many certified containers a site buys, ships
-and stores — and existing bin-picking systems have no model of container
+and stores - and existing bin-picking systems have no model of container
 occupancy at all.
 
 Current industrial bin-picking returns a *grasp pose*. Academic bin-packing
@@ -46,7 +186,7 @@ optimises *known geometries* with no robot. WISEPACK closes that loop.
 | `mixed_pipes_dense`, seed 42 | 40 pipes | **3 containers** | **2 containers** | 39.6% -> 59.3% | **33.3%** |
 
 **Measured by this software demonstrator.** Both plans come from real algorithms
-on real geometry, and both pass the *same independent validator* — which runs in
+on real geometry, and both pass the *same independent validator* - which runs in
 its own ROS 2 process and re-derives every bounding box from scratch. Reproduce
 it with `./run_wisepack_dashboard.sh sim`, or from a shell:
 
@@ -71,7 +211,7 @@ Three things this result is *not* saying:
 - **33.3% is not the proposal's >50% KPI4 target.** It is measured against a
   *competent* baseline, and the shortfall is analysed rather than tuned away.
 - **It is still operationally meaningful.** One fewer certified container for
-  this batch — and a certified container is a purchased, transported and
+  this batch - and a certified container is a purchased, transported and
   permanently stored asset.
 
 ### The demonstrator at a glance (light theme)
@@ -126,7 +266,7 @@ Everything in this list was executed and verified on this machine.
 7. **The demo runs with nothing installed.** `./run_wisepack_demo.sh --core-only`
    needs only Python 3.
 
-## 3. What is simulated — read this before quoting any number
+## 3. What is simulated - read this before quoting any number
 
 This is the most important section in the README.
 
@@ -143,7 +283,7 @@ This is the most important section in the README.
 | Robot | **SIMULATED** | No kinematics, no MoveIt2, no physics. A failed grasp is a seeded coin flip. |
 | Pick / end-to-end success rate | **SIMULATED** | Reflects the configured failure probability, nothing else |
 | Dose class | **SIMULATED METADATA** | There is no radiation model anywhere in this repository |
-| 5 of 6 geometry classes | **APPROXIMATED** | Conservative bounding box — over-estimates space, never under-estimates |
+| 5 of 6 geometry classes | **APPROXIMATED** | Conservative bounding box - over-estimates space, never under-estimates |
 
 Every figure in the dashboard, the artefacts and the reports carries a
 `measured` / `simulated` / `operator` / `target` label. Nothing is unlabelled.
@@ -152,18 +292,18 @@ Every figure in the dashboard, the artefacts and the reports carries a
 
 The WISEPACK proposal states four acceptance KPIs. Three of them **cannot be
 measured by this demonstrator at all**, and are reported as `not_applicable`
-rather than scored — a green tick on a simulated grasp rate would be fabrication.
+rather than scored - a green tick on a simulated grasp rate would be fabrication.
 
 | KPI | Proposal target | This demonstrator |
 |---|---|---|
-| KPI1 Vision detection rate | > 85% | `not_applicable` — no perception model exists |
-| KPI2 Pick success rate | > 80% | `not_applicable` — no robot exists |
-| KPI3 End-to-end success rate | > 80% | `not_applicable` — derived from simulated picks |
+| KPI1 Vision detection rate | > 85% | `not_applicable` - no perception model exists |
+| KPI2 Pick success rate | > 80% | `not_applicable` - no robot exists |
+| KPI3 End-to-end success rate | > 80% | `not_applicable` - derived from simulated picks |
 | KPI4 Volume reduction | > 50% | **`not_met`: 33.3% measured** on the dense scenario |
 
 **KPI4 is not met by this demonstrator, and that is an honest and useful
-finding.** Against a *competent* arrival-order baseline — one that puts an item
-in whichever open container accepts it — the measured reduction is 33–50%
+finding.** Against a *competent* arrival-order baseline - one that puts an item
+in whichever open container accepts it - the measured reduction is 33–50%
 depending on scenario, and never exceeds 50%. Three reasons, all real:
 
 - **Integer quantisation.** Container counts are small integers, so the
@@ -176,7 +316,7 @@ depending on scenario, and never exceeds 50%. Three reasons, all real:
   over-states their volume and understates what a real geometric model would
   achieve.
 
-Reaching >50% is a legitimate objective for the full project — with exact
+Reaching >50% is a legitimate objective for the full project - with exact
 geometry for all six classes, physically-executed cutting (the cut-aware planner
 is implemented and validated here in simulation; see
 [§13d](#13d-whole-process-optimization-cut-aware)), and a baseline calibrated
@@ -236,7 +376,7 @@ Mission–Task–Skill, in the four layers the proposal describes.
 
 **There is no `wisepack_interfaces` package.** The mandatory audit path is
 Orion-LD's built-in DDS bridge, and that bridge maps *only* single-member scalar
-`std_msgs` — it cannot represent a custom message at all. Custom ROS types would
+`std_msgs` - it cannot represent a custom message at all. Custom ROS types would
 have forced the audit trail off the DDS path, which the brief forbids. So rich
 objects travel as versioned JSON inside `std_msgs/String`, and the typed domain
 model lives in `wisepack_core` as plain Python dataclasses. HARMONY reached the
@@ -244,7 +384,7 @@ same conclusion independently; its generator skips every `custom_interfaces/*`
 topic as "not representable".
 
 A second consequence: `wisepack_core` imports **no ROS at all**. That is what
-makes "the same logic in both modes" true rather than aspirational — sim mode is
+makes "the same logic in both modes" true rather than aspirational - sim mode is
 this code with a different transport, not a re-implementation.
 
 ## 6. Quick start
@@ -275,7 +415,7 @@ reason when Isaac Sim or a GPU is unavailable.
 ```bash
 ./run_wisepack_dashboard.sh              # live ROS 2 / DDS
 ./run_wisepack_dashboard.sh fiware       # live + Orion-LD, state read back over NGSI-LD
-./run_wisepack_dashboard.sh sim          # presentation only — no ROS, no FIWARE, no Docker
+./run_wisepack_dashboard.sh sim          # presentation only - no ROS, no FIWARE, no Docker
 ./run_wisepack_dashboard.sh isaac        # live + PHYSICAL execution in Isaac Sim (§15)
 ./run_wisepack_dashboard.sh isaac-fiware # ...and state read back from Orion-LD
 
@@ -287,7 +427,7 @@ Then open <http://127.0.0.1:8080>.
 
 The `isaac` modes execute the approved placements with a Franka Panda in NVIDIA
 Isaac Sim 6.0.1 on the host instead of with the simulated robot model. Execution
-backend and dashboard data source are **different axes** — see
+backend and dashboard data source are **different axes** - see
 [§15](#15-isaac-sim-physical-execution). `sim` is unchanged: still no ROS, no
 FIWARE and no simulator.
 
@@ -307,42 +447,42 @@ seconds) so a run can never validate a stale `install/`. Opt out deliberately
 with `WISEPACK_SKIP_BUILD=1`.
 
 Browser tests need `pip install playwright && playwright install chromium`; the
-GIF tooling additionally needs `ffmpeg`. Both are optional — the rest of the
+GIF tooling additionally needs `ffmpeg`. Both are optional - the rest of the
 suite skips cleanly without them.
 
 ## 7. Dashboard walkthrough
 
 ![Optimized packing](images/generated/optimized-packing.svg)
 
-1. **Header** — scenario, run id, workflow stage, **source badge**
+1. **Header** - scenario, run id, workflow stage, **source badge**
    (`SIMULATED` / `ROS 2 / DDS` / `FIWARE`) and FIWARE connection state. The
    badge is the honesty contract: it always names where the data came from.
-2. **Digital Twin** — top and side projections per container, drawn from real
+2. **Digital Twin** - top and side projections per container, drawn from real
    placement geometry. Switch Optimized / Baseline / Side-by-side. Colour is the
    segregation group; solid is executed, faded-dashed is planned, red-dashed is a
    validator rejection, orange outline is a dynamic-event item, and the orange
-   dashed lines are the baseline's shelf plates — the thing that explains its
+   dashed lines are the baseline's shelf plates - the thing that explains its
    wasted height.
-3. **Operator panel** — Approve, Reject & re-plan, Alternative strategy, Inject
+3. **Operator panel** - Approve, Reject & re-plan, Alternative strategy, Inject
    item, Container unavailable, Grasp failure, Pause/Resume/Step. While a plan is
    pending the page states plainly that no physical action is authorised.
-4. **Scenario controls** — preset, seed, item count, length/diameter ranges,
+4. **Scenario controls** - preset, seed, item count, length/diameter ranges,
    container spec, pick failure probability, dynamic events on/off.
-5. **Baseline vs optimized** — containers, utilisation, required capacity, empty
+5. **Baseline vs optimized** - containers, utilisation, required capacity, empty
    capacity, unplaced items, computation time, validator verdict, and which plan
    was selected *and why*.
-6. **KPI cards** — each with a `measured` / `simulated` provenance chip. An
+6. **KPI cards** - each with a `measured` / `simulated` provenance chip. An
    unmeasured KPI reads **"not measured"** in muted grey, never `0`.
-7. **System topology** — live node status; solid arrows telemetry, dashed
+7. **System topology** - live node status; solid arrows telemetry, dashed
    commands.
-8. **Event timeline** — newest-first action log with sequence number, stage,
+8. **Event timeline** - newest-first action log with sequence number, stage,
    item, container, result and source; dynamic events marked.
 
 ## 8. The two algorithms
 
 ![Baseline vs optimized](images/generated/comparison-mixed_pipes_dense.svg)
 
-### Baseline — `arrival_order_shelf`
+### Baseline - `arrival_order_shelf`
 
 Items in arrival order, one fixed orientation, filled as shelves: left-to-right
 along a row, rows front-to-back on a level, levels resting on shelf plates, and a
@@ -352,17 +492,17 @@ It is called `arrival_order_shelf` and **not** "manual industry average", becaus
 no evidence for the latter exists in this repository.
 
 It is deliberately simple but deliberately **not a strawman**. It will put an
-item in whichever already-open container accepts it — which is what an operator
+item in whichever already-open container accepts it - which is what an operator
 with several open boxes does. An earlier version only ever looked at the *last*
 container and used 22 containers on the segregated scenario; that was an unfair
 comparison and was fixed. What it lacks is optimization, not competence: no
 sorting, no orientation search, no reconsideration.
 
 Its levels rest on **zero-thickness shelf plates**. That is the assumption most
-favourable to it — a real plate consumes height it is not charged for here — so
+favourable to it - a real plate consumes height it is not charged for here - so
 any margin the optimizer shows is understated, not inflated.
 
-### Optimized — `geometry_aware_ep_bfd`
+### Optimized - `geometry_aware_ep_bfd`
 
 Best-fit-decreasing over **extreme points**:
 
@@ -381,7 +521,7 @@ Best-fit-decreasing over **extreme points**:
 
 > A note on the fit score, since it is the one number that changed the result
 > most: an earlier version weighted height twice as heavily as contact. That is
-> correct for minimising an open stack and *wrong* for a fixed bin — it made the
+> correct for minimising an open stack and *wrong* for a fixed bin - it made the
 > optimizer lay one flat layer and spill sideways into a second container instead
 > of building upward in the first.
 
@@ -398,7 +538,7 @@ score = packing_density
 
 **Hard constraints are not in this expression.** Three operator-selectable
 strategies (`max_density`, `retrievability`, `segregation`) differ *only* in
-these weights — same constraints, same search, same validator — which is exactly
+these weights - same constraints, same search, same validator - which is exactly
 the "compare packing strategies before execution" the proposal promises.
 
 ### The nine hard constraints
@@ -424,9 +564,9 @@ Deterministic: the same `(preset, seed)` produces byte-identical scenario JSON o
 any machine. One seeded RNG, drawn in a fixed order, no set iteration, no salted
 string hashing, values rounded at creation.
 
-Measured results for the six packing presets, seed 42 — reproduce with
-`./generate_demo_artifacts.sh` (three further curated **cut-aware** presets —
-`cut_avoids_extra_container`, `cut_not_worthwhile`, `cut_result_deviation` — are
+Measured results for the six packing presets, seed 42 - reproduce with
+`./generate_demo_artifacts.sh` (three further curated **cut-aware** presets -
+`cut_avoids_extra_container`, `cut_not_worthwhile`, `cut_result_deviation` - are
 covered in [§13d](#13d-whole-process-optimization-cut-aware); nine presets total):
 
 | Scenario | Baseline | Baseline util. | Optimized | Optimized util. | Volume requirement reduction |
@@ -439,8 +579,8 @@ covered in [§13d](#13d-whole-process-optimization-cut-aware); nine presets tota
 | `curated_volume_reduction` | 2 | 33.6% | 1 | 67.1% | **50.0%** |
 
 A seventh preset, `isaac_cylinders_smoke`, is **absent from this table on
-purpose**. It is the physical smoke scenario for the Isaac backend — four
-bench-scale pipe segments sized for a Franka gripper, not for a packing contest —
+purpose**. It is the physical smoke scenario for the Isaac backend - four
+bench-scale pipe segments sized for a Franka gripper, not for a packing contest -
 and it is kept entirely separate so it cannot affect the measured
 baseline-versus-optimized result above. See
 [§15](#15-isaac-sim-physical-execution).
@@ -463,7 +603,7 @@ shelf packing, and its construction is published in full:
 - the optimizer sorts by volume, rotates freely and nests.
 
 It contains **no random draw at all**, so the seed is irrelevant to it. The
-50.0% it reports is what the two algorithms computed on this input — it is a
+50.0% it reports is what the two algorithms computed on this input - it is a
 curated demonstration, **not a general performance claim**. The sizing was chosen
 as the largest item count for which the optimizer still reaches a *single*
 container (measured across 6/8/10/12/14/16 pairs and several geometry variants);
@@ -474,7 +614,7 @@ larger counts make the ratio worse, not better.
 ![WISEPACK Behaviour Tree](images/generated/wisepack_behaviour_tree_interview.svg)
 
 *Generated from the implementation (`./generate_behaviour_tree_images.sh`), so it
-cannot drift from the code — the node set is derived from the `Stage` enum. The
+cannot drift from the code - the node set is derived from the `Stage` enum. The
 [full engineering view](images/generated/wisepack_behaviour_tree.png) adds every
 stage, the anomaly hold/acknowledge branch and the degraded path.*
 
@@ -493,14 +633,14 @@ approval → execution → monitoring → (dynamic or anomaly event) → re-plan
 > **No pick or placement may execute unless the exact current plan revision is
 > independently validated and explicitly approved.**
 
-A `py_trees` behaviour tree whose behaviours are **thin adapters** — each calls
+A `py_trees` behaviour tree whose behaviours are **thin adapters** - each calls
 exactly one `WorkflowEngine` method and translates the result into a
 `py_trees.Status`. None re-implements planning, validation or the approval rule.
 
 **The safety invariant is enforced twice.** `ExecuteLoop` sits behind
 `AwaitApproval` in a `Sequence`, so the tree structurally cannot reach a pick
 before approval; and `step_execution()` independently raises `ApprovalRequired`
-if the plan is not approved. `AwaitApproval` never times out — a timeout would
+if the plan is not approved. `AwaitApproval` never times out - a timeout would
 mean "proceed because nobody answered".
 
 The scenarios below are what an operator actually does. Every one of them runs
@@ -508,12 +648,12 @@ in all three modes (`sim`, `ros`, `fiware`); in live modes the command travels
 `dashboard → /wisepack/operator/command → DDS → orchestrator`, the same path an
 external NGSI-LD client uses.
 
-### Scenario A — plan review and approval
+### Scenario A - plan review and approval
 
 ![Operator approves the optimized plan and execution begins](images/generated/hitl-approve-execute.gif)
 
 *Watch for: the plan is on screen and nothing moves. The Approve button is the
-only thing that starts execution — and once it does, Approve/Reject grey out
+only thing that starts execution - and once it does, Approve/Reject grey out
 while Pause/Step become available.*
 
 1. Generate the dense pipe scenario (**Generate & plan**).
@@ -527,7 +667,7 @@ while Pause/Step become available.*
 7. The operator approves.
 8. Execution begins; every action is logged and published over DDS.
 
-### Scenario B — the operator rejects, or asks for another strategy
+### Scenario B - the operator rejects, or asks for another strategy
 
 1. **Reject & re-plan** records the operator's reason and re-runs the optimizer.
 2. **Alternative strategy** rotates the objective weighting instead.
@@ -535,14 +675,14 @@ while Pause/Step become available.*
 4. **Execution stays blocked.** A re-plan never inherits the previous approval.
 5. The operator must approve the new plan.
 
-The three strategies differ *only* in objective weights — identical hard
+The three strategies differ *only* in objective weights - identical hard
 constraints, identical search, identical validator, so none of them can buy
 density with a boundary or segregation violation:
 
 | Strategy | Optimises for | Expect |
 |---|---|---|
 | `max_density` | fewest containers, tightest fill | the KPI4 configuration |
-| `retrievability` | items reachable without unstacking | more containers — the trade-off is shown, not hidden |
+| `retrievability` | items reachable without unstacking | more containers - the trade-off is shown, not hidden |
 | `segregation` | each waste group consolidated | fewer mixed-group boxes, possibly more boxes |
 
 ### The approval invariant
@@ -551,15 +691,15 @@ An approval is not a boolean. It is a decision about **one plan of one batch
 revision**, and the workflow enforces that rather than assuming it:
 
 * `WAIT_FOR_OPERATOR_APPROVAL` always means `approval_state = pending`. The gate
-  is reachable from exactly two functions — `request_approval()` and
-  `revoke_approval()` — and both set the approval state as well as the stage. A
+  is reachable from exactly two functions - `request_approval()` and
+  `revoke_approval()` - and both set the approval state as well as the stage. A
   test counts the call sites so a third one cannot be added quietly.
 * An **approved plan with no active hold advances to execution**. It never sits
   at the gate, because the dashboard would then have to say "decision required"
-  while correctly disabling every control — a decision the operator is asked for
+  while correctly disabling every control - a decision the operator is asked for
   and cannot give.
-* Anything that needs renewed authorisation — a critical anomaly, a re-plan, a
-  scenario reset, any change to the batch — calls `revoke_approval()`, which
+* Anything that needs renewed authorisation - a critical anomaly, a re-plan, a
+  scenario reset, any change to the batch - calls `revoke_approval()`, which
   **withdraws the approval, re-stamps it to the current revision and plan, and
   only then enters the gate**, in that order. Revocation is unconditional: an
   earlier version revoked only an `approved` plan, and every other state fell
@@ -577,7 +717,7 @@ operator controls.
 The orchestrator's topics are latched and independent, so the dashboard's mirror
 is always a mixture of whatever each publisher last said. After a reset the
 scenario topic can carry the new run while the plan topic still carries the old
-one — observed as scenario `mixed_pipes_dense-s42` rendered beside plan
+one - observed as scenario `mixed_pipes_dense-s42` rendered beside plan
 `plan-optimized-isaac_cylinders_smoke-s42`, a plan for a different batch.
 
 Every document the dashboard merges is therefore stamped with `run_id`,
@@ -589,8 +729,8 @@ Every document the dashboard merges is therefore stamped with `run_id`,
 | `selected_plan_id` | the plan summary vs the published plan |
 | `approval_plan_id`, `approval_revision` | the pending decision vs the selected plan |
 
-When they disagree the dashboard reports a degraded diagnostic — *"Inconsistent
-state — controls withheld: …"* — and withholds Approve, Reject and Alternative
+When they disagree the dashboard reports a degraded diagnostic - *"Inconsistent
+state - controls withheld: …"* - and withholds Approve, Reject and Alternative
 until the orchestrator republishes a consistent set. It does **not** guess which
 half is current, and it does not render the mixture. Components published by an
 older orchestrator carry no stamp; those are treated as unknown rather than
@@ -599,7 +739,7 @@ conflicting, so a rolling upgrade does not disable the controls.
 The Diagnostics page shows the canonical control state beside the displayed one,
 which is what makes a FIWARE echo lag distinguishable from a real contradiction.
 
-### Scenario C — a late-arriving waste component
+### Scenario C - a late-arriving waste component
 
 ![A late waste component triggers re-planning and renewed approval](images/generated/hitl-dynamic-replan.gif)
 
@@ -608,14 +748,14 @@ to `WAIT_FOR_OPERATOR_APPROVAL`, and the already-executed placements stay put.*
 
 1. Execution is already under way.
 2. A high-priority ILW component arrives (`Inject item`).
-3. **Already-executed placements are frozen** — those pipes are physically in a
+3. **Already-executed placements are frozen** - those pipes are physically in a
    container and re-planning cannot move them.
 4. Only the remainder is re-optimized, around the frozen geometry.
 5. The new plan is validated by the Digital Twin.
 6. Execution returns to the approval gate.
 7. The operator approves or rejects the revised plan.
 
-### Scenario D — a container becomes unavailable
+### Scenario D - a container becomes unavailable
 
 ![An unavailable container triggers a revised packing plan](images/generated/hitl-container-unavailable.gif)
 
@@ -623,15 +763,15 @@ to `WAIT_FOR_OPERATOR_APPROVAL`, and the already-executed placements stay put.*
 operator is asked again before anything else is placed.*
 
 1. A container is marked unavailable (damage, contamination, transport booked).
-2. It is excluded from all future placements, and **its id is never re-issued** —
+2. It is excluded from all future placements, and **its id is never re-issued** -
    the container index advances past it, so a re-plan cannot silently resurrect
    a box that is out of service.
 3. Placements already executed into it remain recorded; a container going out of
    service does not levitate its contents back out.
 4. The remaining batch is re-planned.
-5. The operator reviews the operational impact — usually one more container.
+5. The operator reviews the operational impact - usually one more container.
 
-### Scenario E — a simulated grasp failure
+### Scenario E - a simulated grasp failure
 
 1. `Grasp failure` forces exactly the next simulated grasp to fail.
 2. The failure is logged as its own ActionEvent with `result: failed`.
@@ -642,13 +782,13 @@ operator is asked again before anything else is placed.*
 5. Only when the retry budget is exhausted is the item abandoned, and the cycle
    is then counted as attempted-but-not-completed in the KPIs.
 
-### Scenario F — controlled execution
+### Scenario F - controlled execution
 
 | Control | Effect |
 |---|---|
 | **Pause** | stops automatic execution. The plan stays **approved**, so resuming needs no second approval. |
 | **Resume** | continues. Refused with a stated reason if the plan is not approved. |
-| **Step** | executes exactly one workflow step — useful for narrating a demo. |
+| **Step** | executes exactly one workflow step - useful for narrating a demo. |
 | **Write artefacts** | writes the run, plan, KPI and event artefacts *now*, before or after completion, and returns the paths. |
 
 These are **supervision and evidence-generation functions, not a safety system.**
@@ -658,13 +798,13 @@ dashboard would never be in that path.
 
 ### The Action Event Timeline
 
-Every row in the timeline is one structured `ActionEvent` — the same record that
+Every row in the timeline is one structured `ActionEvent` - the same record that
 is published on `/wisepack/action/event`, crosses DDS into Orion-LD, and is
 written to `results/wisepack-actions-*.jsonl`. Each carries:
 
 | Field | Purpose |
 |---|---|
-| `sequence` | monotonic, gap-free — a missing number is a lost event, visibly |
+| `sequence` | monotonic, gap-free - a missing number is a lost event, visibly |
 | `timestamp` | UTC, millisecond resolution |
 | `stage` | which workflow stage produced it |
 | `action` | what happened (`pick_item`, `replan_start`, …) |
@@ -672,7 +812,7 @@ written to `results/wisepack-actions-*.jsonl`. Each carries:
 | `item_id` / `container_id` | what it happened to |
 | `result` | `ok` / `failed` / `retry` / `rejected` / `pending` |
 | `duration_ms` | how long it took |
-| `source` | `measured`, `simulated` or `operator` — never guessed |
+| `source` | `measured`, `simulated` or `operator` - never guessed |
 | `details` | structured payload, truncated *visibly* if oversized |
 
 Visual semantics in the dashboard:
@@ -689,7 +829,7 @@ A normal execution cycle reads:
 
 ```
  #7  WAIT_FOR_OPERATOR_APPROVAL   plan awaiting operator decision; no physical action is authorised
- #8  WAIT_FOR_OPERATOR_APPROVAL   approve_plan — selected plan approved by operator      [operator]
+ #8  WAIT_FOR_OPERATOR_APPROVAL   approve_plan - selected plan approved by operator      [operator]
  #9  PICK_ITEM                    item-001 selected from source bin                      [simulated]
  #10 VERIFY_PICK                  simulated grasp verified                               [simulated]
  #11 PLACE_ITEM                   item-001 placed into CNT-01                            [simulated]
@@ -700,10 +840,10 @@ A normal execution cycle reads:
 And a disturbance reads:
 
 ```
- #24 NEXT_ITEM                    dynamic_event:item_inject — high-priority ILW component arrives
- #25 REPLAN                       replan_start — cause: dynamic event item_inject
- #26 REPLAN                       replan_complete — 2 containers, optimized selected
- #27 DIGITAL_TWIN_VALIDATE        validate_placements — 41/41 placements pass
+ #24 NEXT_ITEM                    dynamic_event:item_inject - high-priority ILW component arrives
+ #25 REPLAN                       replan_start - cause: dynamic event item_inject
+ #26 REPLAN                       replan_complete - 2 containers, optimized selected
+ #27 DIGITAL_TWIN_VALIDATE        validate_placements - 41/41 placements pass
  #28 WAIT_FOR_OPERATOR_APPROVAL   plan awaiting operator decision; no physical action is authorised
 ```
 
@@ -719,13 +859,13 @@ Nine event types: `item_inject`, `item_removed`, `item_reclassified`,
 `container_unavailable`, `container_restored`, `operator_reject`,
 `grasp_failure`, `segregation_rule_change`, `optimizer_timeout`.
 
-Triggers are `stage:<STAGE>`, `placement:<n>` or `t:<seconds>` — deliberately not
+Triggers are `stage:<STAGE>`, `placement:<n>` or `t:<seconds>` - deliberately not
 wall-clock, so a demonstration is identical on a fast laptop and a loaded CI
 runner. (HARVEST times its events on a simulated clock, which suits a day-long
 farm simulation and not a 30-second packing cycle.)
 
-Re-planning **freezes already-executed placements** — those items are physically
-in the container and cannot be moved — and re-optimises only the remainder.
+Re-planning **freezes already-executed placements** - those items are physically
+in the container and cannot be moved - and re-optimises only the remainder.
 
 A `grasp_failure` deliberately does **not** trigger a re-plan: it is a retry at
 the execution layer. Re-planning a whole container because one grasp slipped
@@ -736,25 +876,25 @@ would be both wasteful and a misleading demonstration of what re-planning is for
 29 topics, all scalar `std_msgs` (see [§5](#5-architecture)). Full list in
 [`topics.py`](wisepack_ws/src/wisepack_bringup/wisepack_bringup/topics.py).
 
-Two further topics — `/wisepack/isaac/{command,feedback}` — exist only when the
+Two further topics - `/wisepack/isaac/{command,feedback}` - exist only when the
 optional Isaac backend is selected, and are deliberately kept out of
 `all_topics()` for that reason: every entry there has a publisher in every run,
 which is what lets the live QoS test treat a publisher-less topic as a bug. See
 [§15](#15-isaac-sim-physical-execution).
 
-Plan topics carry the **complete** `PackingPlan` — every placement's position,
+Plan topics carry the **complete** `PackingPlan` - every placement's position,
 size, axis and validation status (~27 kB for a 40-item scenario). A dashboard
 cannot draw a container from "59.3% utilization", and publishing only summaries
 is precisely why the live Digital Twin used to render empty.
 
 | Profile | Topics | Why |
 |---|---|---|
-| `event_qos` | action events, dynamic events | RELIABLE + **TRANSIENT_LOCAL**, depth 200 — an audit trail that only exists for whoever was already listening is not a record |
-| `state_qos` | scenario, plans, KPIs, execution state, action sequence | RELIABLE + TRANSIENT_LOCAL — a late joiner must see the current value |
+| `event_qos` | action events, dynamic events | RELIABLE + **TRANSIENT_LOCAL**, depth 200 - an audit trail that only exists for whoever was already listening is not a record |
+| `state_qos` | scenario, plans, KPIs, execution state, action sequence | RELIABLE + TRANSIENT_LOCAL - a late joiner must see the current value |
 | `heartbeat_qos` | `/wisepack/system/heartbeat` (**publisher only**) | offers Deadline + Liveliness so a strict external consumer can use them |
-| `watchdog_subscribe_qos` | heartbeat (subscriber) | plain latched state — see below |
+| `watchdog_subscribe_qos` | heartbeat (subscriber) | plain latched state - see below |
 | `command_qos` | operator approval, operator command | RELIABLE + TRANSIENT_LOCAL, **no deadline** |
-| `telemetry_qos` | progress only | BEST_EFFORT — genuinely high-rate |
+| `telemetry_qos` | progress only | BEST_EFFORT - genuinely high-rate |
 
 ### The QoS rule this project learned the hard way
 
@@ -762,7 +902,7 @@ is precisely why the live Digital Twin used to render empty.
 
 A reader only matches a writer whose *offered* policy is at least as strict.
 Orion-LD's DDS enabler creates a bare-DDS publisher on **every topic it
-discovers** — not merely the ones it maps — and each offers an *infinite* lease
+discovers** - not merely the ones it maps - and each offers an *infinite* lease
 and no deadline. So any subscription requesting either policy silently matches
 nothing. rclpy does not raise; the topic is simply dead.
 
@@ -787,8 +927,8 @@ The resolution is a clean split, with the watchdog on its own topic:
                               generic publisher ever appears on it.
 ```
 
-Orchestrator loss is still detected — the dashboard reports `DEGRADED` and holds
-— it is just detected at the application layer, because the DDS-level route is
+Orchestrator loss is still detected - the dashboard reports `DEGRADED` and holds
+- it is just detected at the application layer, because the DDS-level route is
 unavailable in a deployment that includes a generic bridge. `tests/test_qos_contract.py`
 pins all of this, and with `WISEPACK_QOS_LIVE=1` it parses the **actual running
 graph** from `ros2 topic info -v` rather than trusting the Python objects.
@@ -835,7 +975,7 @@ Measured on this machine, `ROS 2 → DDS → Orion-LD → NGSI-LD attribute read
 The ROS → FIWARE figure *includes* the probe's 5 ms HTTP polling interval, so it
 is an **upper bound** on true propagation delay, not a lower one. Reproduce with
 `./run_vulcanexus_wisepack.sh measure_dds_fiware_latency.sh`. When the benchmark
-has never run, the dashboard reads `not measured` — never `0 ms`.
+has never run, the dashboard reads `not measured` - never `0 ms`.
 
 ### Which panels read from FIWARE, and which from ROS
 
@@ -870,10 +1010,10 @@ actionJson               REAL  {"sequence":97,"stage":"WAIT_FOR_OPERATOR_APPROVA
 `WISEPACKActionStream.actionJson` holds the **latest** action, not an append-only
 log; `.sequence` holds the highest number reached. The append-only record is the
 timestamped `results/wisepack-actions-*.jsonl` artefact. Historical retention in
-FIWARE would come from QuantumLeap subscribing to these entities — that is
+FIWARE would come from QuantumLeap subscribing to these entities - that is
 documented as an extension point, not implied as present.
 
-### Bidirectional — verified
+### Bidirectional - verified
 
 ```bash
 curl -X PATCH \
@@ -889,8 +1029,8 @@ shape is required.
 ### Vulcanexus is required, not preferred
 
 The FIWARE DDS Enabler only fills a value once the publisher propagates the
-`std_msgs` TypeObject. Plain ROS 2 Jazzy announces the topic — so Orion-LD
-creates the entity — but does not reliably propagate the type, and every
+`std_msgs` TypeObject. Plain ROS 2 Jazzy announces the topic - so Orion-LD
+creates the entity - but does not reliably propagate the type, and every
 attribute stays `"uninitialized"` forever with no error anywhere. The validation
 scripts detect and explain this case rather than reporting a mysterious failure.
 
@@ -930,7 +1070,7 @@ anomaly source  → /wisepack/anomaly/external  (ingest seam: simulator/adapter/
                 → DDS → Orion-LD               (WISEPACKAnomaly, analytics/traceability)
 ```
 
-Safety-critical response is **local and deterministic** — the orchestrator holds
+Safety-critical response is **local and deterministic** - the orchestrator holds
 the workflow the moment the event arrives; FIWARE is an *additional* analytics
 path, never the stopping mechanism.
 
@@ -940,11 +1080,11 @@ path, never the stopping mechanism.
 |---|---|---|
 | `info` | `operation_ok` | record, continue |
 | `warning` | `camera_view_lost`, `tool_pose_deviation` | **pause**; operator must acknowledge to resume (plan stays approved) |
-| `critical` | `shear_position_too_high/_low`, `shear_closed_before_contact` | **hold**: revoke execution authorisation, preserve completed placements, require a new approval — acknowledgement alone is *not* authorisation |
+| `critical` | `shear_position_too_high/_low`, `shear_closed_before_contact` | **hold**: revoke execution authorisation, preserve completed placements, require a new approval - acknowledgement alone is *not* authorisation |
 
 Operator controls: **Inject anomaly** (deterministic class selector) and
 **Acknowledge**, in the dashboard's *Anomaly Monitoring & Workflow Response*
-panel, which always displays *"Simulated anomaly event — not a validated anomaly
+panel, which always displays *"Simulated anomaly event - not a validated anomaly
 detector"*. Every injection and acknowledgement is an ActionEvent.
 
 ![Anomaly monitoring (light)](images/generated/anomaly-workflow.gif)
@@ -955,7 +1095,7 @@ The ordinary packing optimizer is unchanged and remains the **no-cut** plan. A
 separate **cut-aware planning layer** (`wisepack_core/cutting.py`,
 `cut_validator.py`, `cut_optimizer.py`) evaluates whether segmenting a straight
 pipe would let its pieces fit residual container cavities that the whole pipe
-cannot — and, crucially, whether that is *worth it*.
+cannot - and, crucially, whether that is *worth it*.
 
 The deterministic pipeline: run the ordinary optimizer → find cuttable pipes that
 are unplaced or push into the last container → read residual cavity lengths →
@@ -966,7 +1106,7 @@ packer under each strategy → validate the cut **and** the packing **independen
 → score whole-process alternatives. Each cut is charged its real cost: number of
 cuts, minimum segment length, kerf (material swept to swarf), added cutting and
 handling time, and operational complexity. Hard constraints (boundaries,
-segregation, minimum segment, maximum cuts) are never penalties — a candidate that
+segregation, minimum segment, maximum cuts) are never penalties - a candidate that
 breaks one fails validation and is discarded. **"No cut recommended"** always sits
 in the comparison at net benefit 0, so cutting is recommended only when a saved
 container out-earns its process cost.
@@ -998,14 +1138,14 @@ republication never duplicates it.
 ## 13e. FIWARE container inventory
 
 `wisepack_core/inventory.py` implements a real operational inventory, not a static
-table. Each container is one NGSI-LD entity — `urn:ngsi-ld:WISEPACKContainer:<id>`
-— carrying **compact semantic state**: container id/type, inner dimensions, max
+table. Each container is one NGSI-LD entity - `urn:ngsi-ld:WISEPACKContainer:<id>`
+- carrying **compact semantic state**: container id/type, inner dimensions, max
 payload, current payload, capacity, occupied volume, utilization, remaining
 capacity, compatible/active segregation group, lifecycle state, availability,
 location, workstation, reservation, related scenario/plan, transport task, item
 count, sealed flag, inspection state, plan/contents digests, revision, last
 update, source. **Full placement geometry stays on ROS 2 / the Digital Twin / the
-immutable artefacts — never in FIWARE.**
+immutable artefacts - never in FIWARE.**
 
 A validated 16-state lifecycle (`REGISTERED … RETIRED`) with an explicit
 transition table rejects and logs illegal moves (`SEALED → AVAILABLE`,
@@ -1032,14 +1172,14 @@ and revision.
 (deliver empty / remove full / replace unavailable / move to inspection / return
 to storage) and a fully **deterministic, tick-driven** simulation of a single
 mobile robot over a fixed facility map (storage, packing cell, inspection,
-dispatch). Movement is a pure function of tick count — no wall-clock, no
-randomness — so a test and the dashboard see identical motion. Task milestones
+dispatch). Movement is a pure function of tick count - no wall-clock, no
+randomness - so a test and the dashboard see identical motion. Task milestones
 drive the matching audited inventory operation (an arriving delivery moves the
 container to the cell; a completed collection dispatches it).
 
 `/logistics` (<http://127.0.0.1:8080/logistics>) renders the facility map,
 containers at each location, the simulated robot, and pending/active/completed
-transport tasks. It is labelled **"Simulated container-logistics integration — no
+transport tasks. It is labelled **"Simulated container-logistics integration - no
 physical mobile robot"**: there is no SLAM, no Nav2 and no physical transport.
 
 ![Container logistics (light)](images/generated/container-logistics.gif)
@@ -1049,13 +1189,13 @@ physical mobile robot"**: there is no SLAM, no Nav2 and no physical transport.
 Whole-process analytics carry explicit provenance (measured / simulated /
 derived / unavailable):
 
-- **Cutting** — pipes evaluated, cut candidates, recommendation, containers
+- **Cutting** - pipes evaluated, cut candidates, recommendation, containers
   avoided, cuts, cutting/handling time, kerf loss, cuts executed, resulting
   segments (`provenance: simulated_cutting_measured_packing`).
-- **Inventory** — available capacity by segregation group, reservations,
+- **Inventory** - available capacity by segregation group, reservations,
   shortage events, container counts by state, revision (`provenance:
   software_state`).
-- **Logistics** — delivery/collection requests, task duration, request-to-arrival
+- **Logistics** - delivery/collection requests, task duration, request-to-arrival
   time, failed tasks, mobile-robot utilization (`source: simulated`).
 
 The action-event timeline has category filters (packing, cutting, inventory,
@@ -1077,8 +1217,8 @@ and Logistics status panels alongside the ROS topic and FIWARE mapping diagnosti
 | Container inventory (lifecycle) | real software | **measured** | per-container semantic state |
 | Container logistics (transport) | simulator | simulated | task + robot state |
 | Anomaly source | simulator/adapter | architectural demo | mapped |
-| ROS 2 / DDS transport | Vulcanexus Fast DDS | **real** | — |
-| FIWARE event mapping | Orion-LD DDS bridge | **live** | — |
+| ROS 2 / DDS transport | Vulcanexus Fast DDS | **real** | - |
+| FIWARE event mapping | Orion-LD DDS bridge | **live** | - |
 | Physical RGB-D camera | future | not implemented | no |
 | MoveIt2 execution | future | not implemented | no |
 
@@ -1091,27 +1231,27 @@ each topic `ACTIVE` / `WAITING` / `SIMULATED SOURCE` / `FUTURE INTERFACE`.
 <http://127.0.0.1:8080/diagnostics> (linked from the dashboard header). Read-only,
 for local engineering and interview transparency:
 
-- **Runtime overview** — mode, uptime, run/scenario id, scenario revision, stage,
+- **Runtime overview** - mode, uptime, run/scenario id, scenario revision, stage,
   approval state, heartbeat age, action sequence and gap-free check, per-panel
   data source.
-- **Component status** — an allowlisted roster (generator, perception, optimizer,
+- **Component status** - an allowlisted roster (generator, perception, optimizer,
   twin validator, orchestrator, robot sim, anomaly sim, dashboard, Orion-LD,
   Mongo-DDS), each labelled measured / simulated / external.
-- **ROS topic diagnostics** — a fixed allowlist from the contract (no arbitrary
+- **ROS topic diagnostics** - a fixed allowlist from the contract (no arbitrary
   `ros2` commands), with per-topic status, type, expected source and FIWARE
   mapping.
-- **Simulated, unavailable and future interfaces** — the honesty table above.
-- **Operation timing** — durations by stage, optimization time, anomaly→hold
+- **Simulated, unavailable and future interfaces** - the honesty table above.
+- **Operation timing** - durations by stage, optimization time, anomaly→hold
   latency, DDS→FIWARE latency; each labelled measured / derived / unavailable.
-- **FIWARE mapping diagnostics** — parsed from the generated bridge config.
-- **Message & event inspector** — the latest of each message kind, length-capped.
+- **FIWARE mapping diagnostics** - parsed from the generated bridge config.
+- **Message & event inspector** - the latest of each message kind, length-capped.
 
 **Security.** The page and its scripts expose **no** environment dumps,
 credentials, tokens, keys, file contents, Docker socket, or shell execution.
 Container facts come only from an allowlisted host-generated file
 (`scripts/collect_runtime_status.sh`, restricted to the three `wisepack-*`
 container names). A safe support bundle is produced by
-`./collect_wisepack_diagnostics.sh` — allowlisted files only, with a secret-scan
+`./collect_wisepack_diagnostics.sh` - allowlisted files only, with a secret-scan
 guard that aborts if anything sensitive is found. `tests/test_diagnostics.py`
 enforces all of this.
 
@@ -1127,14 +1267,14 @@ volume_requirement_reduction_pct =
 ```
 
 Total pipe **material volume must never be the denominator**. It is identical for
-both algorithms — nothing an optimizer does changes how much steel exists — so
+both algorithms - nothing an optimizer does changes how much steel exists - so
 using it produces a number that cannot distinguish a good plan from a bad one.
 There is a test asserting exactly this.
 
 Other definitions worth stating: `packing_density_gain_pct` is a **relative**
 gain (30%→60% is +100%, not "+30"); absolute percentage points are reported
 separately. Container counts use containers *actually holding a placement*. A
-rate with zero attempts is **`not measured`**, never `0` — "no attempts yet" and
+rate with zero attempts is **`not measured`**, never `0` - "no attempts yet" and
 "0% success" are different statements.
 
 Full list: `items_generated`, `items_packed`, `unplaced_items`,
@@ -1165,8 +1305,8 @@ WISEPACK_ISAAC_HEADLESS=1 ./run_wisepack_dashboard.sh isaac    # over SSH
 
 | | |
 |---|---|
-| **Data source** | `sim` / `ros` / `fiware` — where the **dashboard reads state from** |
-| **Execution backend** | `simulated` / `isaac` — **who moves the item** |
+| **Data source** | `sim` / `ros` / `fiware` - where the **dashboard reads state from** |
+| **Execution backend** | `simulated` / `isaac` - **who moves the item** |
 
 Isaac is **not** a fourth data source. A run can be executed by Isaac and
 observed through FIWARE; a simulated run can be observed over ROS. The dashboard
@@ -1175,7 +1315,7 @@ reads `ISAAC SIM / PHYSICS` only when a physical backend is genuinely reporting;
 existing simulated execution is never relabelled.
 
 The launch argument is `execution_backend:=simulated|isaac`. When `isaac` is
-selected the orchestrator **never calls** `WorkflowEngine.step_execution()` —
+selected the orchestrator **never calls** `WorkflowEngine.step_execution()` -
 that is the single-authority guarantee. There is no moment at which a simulated
 outcome and a physical outcome both claim the same placement, because only one of
 the two code paths is reachable.
@@ -1198,13 +1338,13 @@ the two code paths is reachable.
 ### Read this before quoting a physical result
 
 **Isaac Sim 6.0.1 is required**, with an NVIDIA GPU. Discovery order:
-`ISAAC_SIM_ROOT`, then known server locations, **newest first** — an older major
+`ISAAC_SIM_ROOT`, then known server locations, **newest first** - an older major
 version is never silently selected, because 5.x has a different core API.
 
 **Isaac runs on the host**, in its own bundled Python, while WISEPACK may run in
 Docker with host networking. They meet on the DDS wire on a shared
 `ROS_DOMAIN_ID` and nowhere else. The launcher scrubs the host ROS environment
-and then restores Isaac's *own* — sourcing `/opt/ros/jazzy/setup.bash` into that
+and then restores Isaac's *own* - sourcing `/opt/ros/jazzy/setup.bash` into that
 interpreter puts an ABI-incompatible `rclpy` ahead of Isaac's and crashes inside
 its C extension.
 
@@ -1212,7 +1352,7 @@ its C extension.
 automatically and says so. `WISEPACK_ISAAC_HEADLESS=1` forces it.
 
 **No perception.** No camera, no detector, no pose estimator. Item poses are
-**ground truth** — the simulator spawned the items, so it knows where they are.
+**ground truth** - the simulator spawned the items, so it knows where they are.
 Extension point: `wisepack_core.isaac_transform.table_pose_for_index`.
 
 **Temporary fixed-joint grasp.** When the gripper closes, the item is welded to
@@ -1231,7 +1371,7 @@ its measured final pose and its distance from the planned one, and that error is
 never rounded away or replaced by the target. Millimetre agreement with the
 optimizer is not claimed.
 
-Measured on this machine — a complete four-item run, the WISEPACK stack in Docker
+Measured on this machine - a complete four-item run, the WISEPACK stack in Docker
 driving Isaac Sim on the host, `isaac_cylinders_smoke` seed 42, all four items
 settled inside the container:
 
@@ -1249,7 +1389,7 @@ target.
 
 **The release happens at the rim, not at the planned depth**, and that is the
 largest single source of the error above. A good packing plan puts items *flush*
-against the container walls — that is what makes it a good plan — so lowering a
+against the container walls - that is what makes it a good plan - so lowering a
 held item to its planned depth scrapes the wall and the arm stalls. The sequence
 therefore stops the descent at `rim + item radius`, releases there, and lets the
 item fall the rest of the way. Closing that gap means **clearance-aware
@@ -1257,8 +1397,8 @@ placement**: the optimizer leaving a few millimetres beside each wall for the
 gripper, at a small cost in density. That is second-iteration work.
 
 **An item is not complete because the gripper opened.** After the release the
-backend waits for the rigid body to come to rest — below both a linear and an
-angular velocity threshold for a stable interval, or until `settle_timeout` — and
+backend waits for the rigid body to come to rest - below both a linear and an
+angular velocity threshold for a stable interval, or until `settle_timeout` - and
 then verifies it exists, is inside the container footprint, is above the floor
 and is not perched above the rim.
 
@@ -1267,7 +1407,7 @@ bench-scale pipe segments into one open-top bin, sized for the arm (⌀ ≤ 70 m
 an 80 mm gripper; length ≤ 250 mm; horizontal axes only). It is **not** a packing
 benchmark and contributes nothing to the measured baseline-versus-optimized
 result in [§2](#2-what-this-demonstrator-proves). The 40-item
-`mixed_pipes_dense` benchmark is deliberately not the physical default — forty
+`mixed_pipes_dense` benchmark is deliberately not the physical default - forty
 robotic cycles is twenty minutes of watching an arm. The Isaac modes default to
 the smoke preset; an explicit `WISEPACK_PRESET` is always honoured.
 
@@ -1277,7 +1417,7 @@ construction**. There is no second hard-coded object list.
 
 ### Contract
 
-Two `std_msgs/String` topics carrying versioned JSON — no custom messages, so
+Two `std_msgs/String` topics carrying versioned JSON - no custom messages, so
 Isaac's bundled interpreter never needs a colcon-built package:
 
 | topic | writer | payload |
@@ -1288,11 +1428,11 @@ Isaac's bundled interpreter never needs a colcon-built package:
 
 Schema `wisepack-isaac/1.0`, defined once in `wisepack_core/isaac_contract.py`
 and imported by **both** ends from that same file. A mismatched schema MAJOR is
-refused rather than best-effort parsed. Feedback states — `READY`,
+refused rather than best-effort parsed. Feedback states - `READY`,
 `MOVING_TO_PICK`, `GRASPING`, `LIFTING`, `MOVING_TO_CONTAINER`, `RELEASING`,
 `SETTLING`, `ITEM_COMPLETED`, `ITEM_FAILED`, `RUN_COMPLETED`, `RUN_FAILED`, plus
 the scene lifecycle `RESET_REQUESTED`, `RESETTING`, `SCENE_READY`,
-`RESET_FAILED` — map
+`RESET_FAILED` - map
 onto the **existing** workflow stages, so the timeline, the audit trail and the
 FIWARE `stage` attribute keep their vocabulary. There is no parallel
 dashboard-only state machine.
@@ -1301,7 +1441,7 @@ Physical events reach FIWARE as ordinary `ActionEvent`s with actor `isaac_sim` o
 the existing `/wisepack/action/event` topic: simulator ready, item grasped, item
 released, item settled, item failed, run completed. No separate FIWARE model.
 
-**Nothing in the contract is Isaac-specific** — no USD path, no PhysX setting, no
+**Nothing in the contract is Isaac-specific** - no USD path, no PhysX setting, no
 joint. A real robot cell answering these two topics is a drop-in replacement, and
 `wisepack_orchestration/isaac_bridge.py` would not change: it contains no
 simulator imports. Nothing outside `simulators/isaac/` imports `isaacsim`,
@@ -1325,7 +1465,7 @@ operator: "Reset run & generate"
                stop the timeline · delete every item · rebuild from (preset,seed)
                play · re-home · zero velocities · settle · PROVE it is usable
   Isaac        ──SCENE_READY(scenario_revision=N)────▶
-  orchestrator: approval and picking unblock — for revision N exactly
+  orchestrator: approval and picking unblock - for revision N exactly
 ```
 
 Until `SCENE_READY` arrives **for that exact revision**, the orchestrator refuses
@@ -1337,8 +1477,8 @@ pose readable, and the item is not already sitting in the destination container.
 
 **The stage is mutated only while the timeline is stopped.** This is the
 load-bearing detail. Deleting a rigid body while physics is playing invalidates
-the PhysX *tensor simulation view* for the whole stage — the Franka articulation
-included — and the first live attempt did exactly that: items rebuilt correctly,
+the PhysX *tensor simulation view* for the whole stage - the Franka articulation
+included - and the first live attempt did exactly that: items rebuilt correctly,
 `SCENE_READY` published, and the very next read of the arm's joints raised
 `Simulation view object is invalidated`. A scene that reports ready while the
 robot is unusable is the failure this handshake exists to prevent, so the order
@@ -1346,7 +1486,7 @@ is stop → mutate → play, and `SCENE_READY` is published only after the rebui
 world has been *proven* usable (joints readable and finite, every item's pose
 readable, no grasp joint surviving).
 
-In-process reset is therefore **enabled** — "Reset run & generate" works in the
+In-process reset is therefore **enabled** - "Reset run & generate" works in the
 Isaac modes and no launcher restart is required. That is not an assumption; it is
 what the bounded live validation measures:
 
@@ -1373,7 +1513,7 @@ scenario and stays one.
 ### Coordinates
 
 `wisepack_core/isaac_transform.py` is the **only** place WISEPACK units become
-Isaac units — millimetres to metres, min-corner to centre, container frame to
+Isaac units - millimetres to metres, min-corner to centre, container frame to
 world. Scattered axis swaps are individually plausible and collectively
 unfalsifiable, and the failure they produce (a mirrored container) looks like a
 physics problem rather than an arithmetic one. It is covered by tests that need
@@ -1384,7 +1524,7 @@ placement.
 
 `pre_grasp_height`, `lift_height`, `container_clearance`, `drop_height`,
 `settle_timeout`, `linear_velocity_threshold`, `angular_velocity_threshold` and
-the rest are `WISEPACK_ISAAC_*` environment overrides — see
+the rest are `WISEPACK_ISAAC_*` environment overrides - see
 [`simulators/isaac/README.md`](simulators/isaac/README.md) for the full list,
 the module layout and the robot state machine. Inconsistent combinations are
 rejected before a robot moves.
@@ -1407,7 +1547,7 @@ started, by PID and process group. No pattern kills; the existing protection
 against competing WISEPACK containers is unchanged. A startup failure propagates
 a non-zero exit status.
 
-### Simulator View — watching the physical run
+### Simulator View - watching the physical run
 
 A dedicated dashboard page at **`/simulator`**, reached from the header
 navigation. The nav item appears **only when the active execution backend
@@ -1424,7 +1564,7 @@ physical state, the stream endpoint and camera, and Connect / Open full screen /
 Copy endpoint controls.
 
 **Execution telemetry and visual streaming are different transports, on
-purpose.** ROS 2 and FIWARE carry state and metadata — item ids, stages,
+purpose.** ROS 2 and FIWARE carry state and metadata - item ids, stages,
 timestamps, measured poses. Rendered frames never travel on those paths: they
 would bloat the regulatory record with data that has no audit value and make the
 dashboard's poll loop as slow as the renderer. The picture comes over WebRTC.
@@ -1432,7 +1572,7 @@ dashboard's poll loop as slow as the renderer. The picture comes over WebRTC.
 #### Choose how to watch Isaac
 
 One variable picks the whole configuration, because the individual switches
-interact — WebRTC needs headless, desktop needs a display. Copy-paste one of
+interact - WebRTC needs headless, desktop needs a display. Copy-paste one of
 these.
 
 **A. GUI on the host desktop (NoMachine / Sunshine+Moonlight)**
@@ -1445,11 +1585,11 @@ WISEPACK_ISAAC_HEADLESS=0 \
 
 An Isaac Sim window opens on the active display. **No WebRTC variables and no
 stream ports are involved.** Watch the host desktop with your existing NoMachine
-or Moonlight session — WISEPACK does not install, start or manage those. The
+or Moonlight session - WISEPACK does not install, start or manage those. The
 launcher refuses this mode when no display exists rather than failing inside the
 renderer.
 
-**B. Headless WebRTC server — local or forwarded**
+**B. Headless WebRTC server - local or forwarded**
 
 ```bash
 WISEPACK_ISAAC_VIEW_MODE=webrtc \
@@ -1463,7 +1603,7 @@ endpoint. For a remote native client, set `WISEPACK_ISAAC_STREAM_HOST` to an
 address reachable by that client."* Use this when the client runs on this host or
 reaches it through a forward.
 
-**B2. Headless WebRTC server — direct remote native client**
+**B2. Headless WebRTC server - direct remote native client**
 
 ```bash
 WISEPACK_ISAAC_VIEW_MODE=webrtc \
@@ -1484,7 +1624,7 @@ That exact address becomes the native-client endpoint in Simulator View.
 | 47998 | **UDP** | media |
 
 **A normal browser cannot display this stream, and an SSH TCP tunnel alone
-cannot carry it** — the media is UDP, and Isaac Sim 6.0.1 ships no in-browser
+cannot carry it** - the media is UDP, and Isaac Sim 6.0.1 ships no in-browser
 client. Use NVIDIA's **Isaac Sim WebRTC Streaming Client** with direct or VPN
 connectivity to both ports.
 
@@ -1495,12 +1635,12 @@ dial**. It is not a bind address:
 
 | | |
 |---|---|
-| **bind/listen** | `0.0.0.0:49100` — Kit binds every interface, always |
+| **bind/listen** | `0.0.0.0:49100` - Kit binds every interface, always |
 | **advertised** | `127.0.0.1` by default, or whatever you set |
 
 Setting it opens nothing; leaving it unset closes nothing. Access control is a
 firewall or SSH-forward decision, and the stream is unauthenticated. Simulator
-View shows both rows so the distinction is visible rather than assumed — a
+View shows both rows so the distinction is visible rather than assumed - a
 native client once connected successfully through the server's reachable address
 while the page displayed `http://127.0.0.1:49100`, which is the reporting bug
 these two rows exist to prevent. WISEPACK never discovers or publishes this
@@ -1515,13 +1655,13 @@ cp config/local.env.example config/local.env
 ```
 
 `config/local.env` is **optional**, git-ignored and **unrelated to whether WebRTC
-works** — it only saves retyping host-specific values that would otherwise be
+works** - it only saves retyping host-specific values that would otherwise be
 exported inline. It is read by an allowlist parser and never sourced as shell.
 See [§ Host-specific settings](#host-specific-settings-configlocalenv).
 
 **C. GUI *and* WebRTC at the same time**
 
-**Not supported here — choose desktop or webrtc.** In Isaac Sim 6.0.1 the
+**Not supported here - choose desktop or webrtc.** In Isaac Sim 6.0.1 the
 livestream extension captures the application framebuffer and the shipped
 configuration (`isaacsim.exp.full.streaming.kit`, and the standalone
 `livestream.py` example) runs it headless with `--no-window`. I did not find a
@@ -1539,12 +1679,12 @@ WISEPACK_ISAAC_HEADLESS=1 \
 ```
 
 Physical execution still runs and remains fully visible as **state and
-telemetry** — stages, item outcomes, measured poses, the audit trail. There is
+telemetry** - stages, item outcomes, measured poses, the audit trail. There is
 simply no video.
 
-The launcher prints the resolved configuration at startup — view mode, headless,
+The launcher prints the resolved configuration at startup - view mode, headless,
 DISPLAY, streaming, advertised host, signalling and media ports, and where to
-watch — so what you got is never in doubt. It never prints secrets or this
+watch - so what you got is never in doubt. It never prints secrets or this
 host's SSH port.
 
 #### Streaming environment variables
@@ -1568,7 +1708,7 @@ follows the package's own
 used.
 
 The streamed viewport is pinned to a **fixed spectator camera** framing the
-table, the Panda, the pick row and the container together — not the default
+table, the Panda, the pick row and the container together - not the default
 development viewport, which on a fresh stage points away from the workcell.
 
 **No in-browser client ships with Isaac Sim 6.0.1** (verified by inspection: no
@@ -1580,13 +1720,13 @@ blank. The Simulator View still shows availability and connection diagnostics.
 
 The livestream serves **one client per instance**; a second viewer on the same
 signal port is refused. The launcher checks the port first and fails with a clear
-message rather than letting Kit silently fall back to a different port — which
+message rather than letting Kit silently fall back to a different port - which
 would publish a URL pointing at some other, older stream.
 
 #### Access and security
 
-The stream has **no authentication and no encryption**, and — measured on this
-install — **Kit binds the signal port on `0.0.0.0`, every interface**, whatever
+The stream has **no authentication and no encryption**, and - measured on this
+install - **Kit binds the signal port on `0.0.0.0`, every interface**, whatever
 host WISEPACK advertises. `WISEPACK_ISAAC_STREAM_HOST` controls the *published
 URL*, not the bind address: it cannot restrict who can reach the port.
 
@@ -1599,7 +1739,7 @@ firewall rule.
 # local
 http://127.0.0.1:49100
 
-# remote — forward the signal port over SSH, then connect to localhost
+# remote - forward the signal port over SSH, then connect to localhost
 ssh -p "${WISEPACK_SSH_PORT}" -L 49100:127.0.0.1:49100 <user>@<host>
 ```
 
@@ -1608,7 +1748,7 @@ ssh -p "${WISEPACK_SSH_PORT}" -L 49100:127.0.0.1:49100 <user>@<host>
 ##### Host-specific settings: `config/local.env`
 
 **Optional.** Nothing in it is required to run WISEPACK, and **nothing in it
-decides whether WebRTC works** — every value can be exported inline instead. It
+decides whether WebRTC works** - every value can be exported inline instead. It
 exists so host-specific settings do not have to be retyped on every invocation:
 
 ```bash
@@ -1619,23 +1759,23 @@ cp config/local.env.example config/local.env
 
 | key | safe default when unresolved |
 |---|---|
-| `WISEPACK_SSH_PORT` | **none — 22 is never assumed** |
+| `WISEPACK_SSH_PORT` | **none - 22 is never assumed** |
 | `WISEPACK_ISAAC_STREAM_HOST` | `127.0.0.1`, labelled *local/forwarded* |
 
 Every value resolves in the same order, most explicit first:
 
-1. an already-exported environment variable — an operator override always wins;
+1. an already-exported environment variable - an operator override always wins;
 2. `config/local.env`;
 3. a safe default, or an explicit *unresolved* diagnostic.
 
 `WISEPACK_SSH_PORT` has a fourth step before giving up: the server-side field of
 `$SSH_CONNECTION` when the launcher runs inside an SSH session. Failing that it
-becomes the literal `<ssh-port>` with a diagnostic. **Port 22 is never assumed** —
+becomes the literal `<ssh-port>` with a diagnostic. **Port 22 is never assumed** -
 a wrong port produces a command that looks right and connects nowhere. A template
 copied but not edited counts as unresolved, so `YOUR_SSH_PORT` and
 `YOUR_REACHABLE_SERVER_ADDRESS` never reach a command line.
 
-The file is read by an **allowlist parser** in `scripts/lib_local_env.sh` — only
+The file is read by an **allowlist parser** in `scripts/lib_local_env.sh` - only
 the two keys above are honoured, and it is **never sourced as shell**, so a
 backtick or `$(...)` in a value is data rather than a command.
 
@@ -1654,7 +1794,7 @@ ports.
 | Isaac GUI on the host desktop | you | `desktop` |
 | NoMachine / Sunshine+Moonlight to that desktop | **externally managed** | `desktop` |
 | Isaac WebRTC livestream | WISEPACK launcher | `webrtc` |
-| simulated backend, or headless with streaming off | — | `none` |
+| simulated backend, or headless with streaming off | - | `none` |
 
 WISEPACK never installs, starts, restarts, reconfigures or stops NoMachine or
 Sunshine. When Isaac runs with a GUI on a real display, the descriptor simply
@@ -1663,8 +1803,8 @@ reports `desktop` so the Simulator View says something true instead of
 
 #### Backend-neutral by design, and XR-ready
 
-The dashboard consumes one descriptor —
-`wisepack_core/visualization.py` — with fields `backend`, `available`,
+The dashboard consumes one descriptor -
+`wisepack_core/visualization.py` - with fields `backend`, `available`,
 `transport`, `viewer_url`, `stream_id`, `camera_name`, `interactive`, `status`
 and `message`. It contains **no simulator concept**: no extension name, no kit
 setting, no USD path. Isaac-specific discovery lives in
@@ -1672,19 +1812,19 @@ setting, no USD path. Isaac-specific discovery lives in
 Panda cell exposing `webrtc`, `rtsp`, `mjpeg` or `none` needs no dashboard change.
 
 **XR is deliberately not implemented here, and deliberately not blocked.** Three
-concerns are kept apart — robot execution, state telemetry, and rendered
-visualization — so a future XR client is a new *consumer* of existing contracts
+concerns are kept apart - robot execution, state telemetry, and rendered
+visualization - so a future XR client is a new *consumer* of existing contracts
 rather than a change to them. It can consume the same execution-state contracts,
 the same timestamped robot/object poses in named frames with a documented
 transform (`wisepack_core/isaac_transform.py`), and this same descriptor to find
-a spectator stream — **without** depending on the HTML dashboard or scraping
+a spectator stream - **without** depending on the HTML dashboard or scraping
 pixels out of the video. No XR dependency exists in `wisepack_core`, in the
 orchestration layer, or in the Isaac adapter.
 
 #### Runtime artefacts
 
-NVIDIA's streaming stack writes trace files — `NvStreamer-*.etli`, about 7 MB per
-minute of streaming — into the **process working directory**. Launched from the
+NVIDIA's streaming stack writes trace files - `NvStreamer-*.etli`, about 7 MB per
+minute of streaming - into the **process working directory**. Launched from the
 repository root that is the repository root, and one WebRTC session left 53 MB of
 binary traces among the source. They are NVIDIA runtime artefacts, not WISEPACK
 files.
@@ -1699,13 +1839,13 @@ So the simulator runs from a directory the launcher owns:
 Only the launcher's own temporary directory is removed; a results directory
 belongs to the operator and its contents are diagnostics. Every path handed to
 the simulator is absolute, so changing the working directory cannot break imports
-or asset discovery. `NvStreamer-*.etli` is also in `.gitignore` as a backstop —
+or asset discovery. `NvStreamer-*.etli` is also in `.gitignore` as a backstop -
 belt and braces, because an ignored 53 MB artefact is still 53 MB in the way.
 
 #### Process ownership
 
 Ctrl-C stops the dashboard stack, the WISEPACK container and **only** the Isaac
-process group that invocation started — including the WebRTC service Kit owns as
+process group that invocation started - including the WebRTC service Kit owns as
 part of that process. Ownership is recorded by the new session leader writing its
 own PID (which is the process-group id): `setsid` *forks*, so the shell's `$!` is
 a parent that exits immediately, and a cleanup keyed on it finds nothing to kill
@@ -1716,7 +1856,7 @@ group is gone. No `pkill` patterns are used anywhere, and unrelated Isaac
 sessions, ROS nodes, containers, SSH sessions, NoMachine and Sunshine are never
 touched.
 
-If `htop` appears to show dozens of Isaac entries, those are **threads** — Kit is
+If `htop` appears to show dozens of Isaac entries, those are **threads** - Kit is
 heavily threaded and htop lists TIDs by default (press `H` to hide them). They
 are not separate simulator instances.
 
@@ -1731,7 +1871,7 @@ WISEPACK_BROWSER_ROS=http://127.0.0.1:8080 \
 ```
 
 The standard suite never requires Isaac Sim or an NVIDIA GPU. The Isaac smoke
-validator is separate and **skips with exit code 77** — distinct from failure —
+validator is separate and **skips with exit code 77** - distinct from failure -
 when the simulator or the GPU is genuinely absent.
 
 | File | Covers |
@@ -1762,8 +1902,8 @@ Artefacts written to `results/` per run, all timestamped: `wisepack-run-*.json`,
 `wisepack-validation-*.md`, `wisepack-fiware-validation-*.md`,
 `wisepack-dds-fiware-latency-*.{json,csv}`.
 
-Figures in `images/generated/` are produced by running the real pipeline —
-`./generate_demo_artifacts.sh` — never drawn from constants.
+Figures in `images/generated/` are produced by running the real pipeline -
+`./generate_demo_artifacts.sh` - never drawn from constants.
 
 ## 17. Limitations
 
@@ -1772,7 +1912,7 @@ Stated plainly, because a demonstrator that hides its edges is not evidence.
 1. **No perception.** No camera, RGB-D, detector or 6D pose estimation.
    Extension point: `wisepack_sim/perception_sim.py::detect()`.
 2. **The default backend has no robot.** No kinematics, no MoveIt2, no
-   collision-free trajectories — a pick outcome is a seeded coin flip. The
+   collision-free trajectories - a pick outcome is a seeded coin flip. The
    **optional Isaac Sim backend** ([§15](#15-isaac-sim-physical-execution)) does
    move a real Panda against real PhysX contacts, but within its own stated
    limits: no perception, a temporary fixed-joint grasp during the carry, and a
@@ -1783,7 +1923,7 @@ Stated plainly, because a demonstrator that hides its edges is not evidence.
    segregation machinery.
 4. **Five of six geometry classes are bounding boxes.** Conservative, so plans
    are safe but pessimistic. Only the straight tube is exact.
-5. **KPI4 is not met** — 33–50% measured, target >50%. See [§3](#3-what-is-simulated--read-this-before-quoting-any-number).
+5. **KPI4 is not met** - 33–50% measured, target >50%. See [§3](#3-what-is-simulated--read-this-before-quoting-any-number).
 6. **Axis-aligned orientations only.** No arbitrary rotation, no curved-pipe
    collision geometry.
 7. **FIWARE history is state-oriented.** No QuantumLeap/CrateDB/Grafana stack
@@ -1796,7 +1936,7 @@ Stated plainly, because a demonstrator that hides its edges is not evidence.
     upper bound on true propagation delay, not a lower one.
 11. **Orion-LD caches endpoint QoS.** Change a QoS profile and the running
     broker keeps offering the old one, producing incompatibility warnings that
-    survive the fix. Restart it — see [§12](#12-ros-2--dds-contract).
+    survive the fix. Restart it - see [§12](#12-ros-2--dds-contract).
 12. **DDS-level liveliness detection is unavailable to subscribers here.** A
     generic bridge on the domain publishes with an infinite lease on every topic
     it discovers, so orchestrator loss is detected from the heartbeat counter
@@ -1809,7 +1949,7 @@ Stated plainly, because a demonstrator that hides its edges is not evidence.
 15. **Container transport is simulated.** Deterministic tick-driven robot motion,
     **no physical mobile robot**, no SLAM and no Nav2.
 16. **Inventory state is real software / FIWARE state**, but it models an
-    operational inventory for the demonstrator — not a site asset-management system.
+    operational inventory for the demonstrator - not a site asset-management system.
 
 ## 18. From here to TRL6
 
@@ -1817,8 +1957,8 @@ Stated plainly, because a demonstrator that hides its edges is not evidence.
 |---|---|---|
 | 1 | Replace `perception_sim.detect()` with YOLOv12-OBB + SAM2 + FPFH/ICP on real RGB-D | O1, KPI1, MS2 |
 | 2 | Exact geometry for the five approximated classes (convex decomposition or voxel masks) instead of bounding boxes | O3, KPI4 |
-| 3 | Replace the robot simulator with MoveIt2 trajectory generation and a real arm. The [Isaac backend](#15-isaac-sim-physical-execution) already provides the execution interface a real cell would answer — its two ROS 2 topics contain no simulator concept — so this is a sibling implementation, not a rewrite | O2, KPI2/KPI3, MS4 |
-| 4 | Deepen the Isaac backend: **clearance-aware placement** (the largest measured contributor to the 43 mm target-vs-actual gap — see §15), then a real friction grasp instead of the temporary fixed joint, then perception in place of ground-truth poses | MS4 |
+| 3 | Replace the robot simulator with MoveIt2 trajectory generation and a real arm. The [Isaac backend](#15-isaac-sim-physical-execution) already provides the execution interface a real cell would answer - its two ROS 2 topics contain no simulator concept - so this is a sibling implementation, not a rewrite | O2, KPI2/KPI3, MS4 |
+| 4 | Deepen the Isaac backend: **clearance-aware placement** (the largest measured contributor to the 43 mm target-vs-actual gap - see §15), then a real friction grasp instead of the temporary fixed joint, then perception in place of ground-truth poses | MS4 |
 | 5 | Calibrate the baseline against real EDF/CEA site practice so KPI4 is measured against reality, not a textbook packer | KPI4, MS6 |
 | 6 | QuantumLeap + CrateDB + Grafana on the existing NGSI-LD entities for true historical retention | O5, MS5 |
 | 7 | Re-attach HARMONY's Vosk voice and MediaPipe gesture modules to the same operator attributes | O4 |
@@ -1837,7 +1977,7 @@ Full detail in [NOTICE](NOTICE).
 |---|---|---|
 | **TEMPO** | topic/QoS contract modules, Docker-only operation, `lib_validate.sh`, `clean_dds_shm.sh`, FastAPI dashboard structure, position-free topology, "KPI from artefact / not measured" pattern, two-theme tokens | adapted code |
 | **HARMONY** | `generate_config.py`, `docker-compose.dds.yml`, `bridge_config.yaml` structure, latency measurement method, `orion_classify` rule, py_trees task pattern, and the hard-won DDS knowledge (Vulcanexus requirement, reserved `status` leaf, `value.data` nesting) | adapted code + documented findings |
-| **HARVEST** | seeded task generator pattern, YAML dynamic-event model, scenario comparison, map-style rendering | **concepts only — no code.** HARVEST ships no licence file, so everything was re-implemented from scratch. |
+| **HARVEST** | seeded task generator pattern, YAML dynamic-event model, scenario comparison, map-style rendering | **concepts only - no code.** HARVEST ships no licence file, so everything was re-implemented from scratch. |
 
 ---
 

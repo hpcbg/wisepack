@@ -84,6 +84,18 @@ class GenerateOrLoadScenario(_EngineBehaviour):
             return py_trees.common.Status.SUCCESS
         self.engine.generate_or_load_scenario()
         self.owner.publish_scenario()
+        # CLEAR AND RE-STAMP THE ROBOT PROJECTION for the new run.
+        #
+        # Its attributes — currentItem, currentContainer, progressPct — are only
+        # rewritten while something is executing, so before the first pick they
+        # still held the PREVIOUS run's values and the previous run's stamp. The
+        # correlation guard then correctly withheld the whole entity, and the
+        # dashboard sat at "awaiting current-run synchronization for robot" from
+        # the moment a run started until the moment it began executing. Nothing
+        # was wrong with the guard; the projection genuinely was stale. Publish
+        # the honest empty state instead: at the approval gate no item is
+        # current, and saying so is both true and current.
+        self.owner.publish_execution()
         # THE SCENE HANDSHAKE STARTS HERE, not after approval. The scenario and
         # the run_id are established at this point, which is everything the
         # request needs to be correlated — and doing it here means the operator

@@ -272,20 +272,31 @@ def test_local_env_is_optional():
     assert got["PORT"] == "<ssh-port>"       # never 22
 
 
+#: Fixture ports, assembled at run time rather than written out.
+#:
+#: `test_no_tracked_file_contains_a_concrete_ssh_port` forbids a literal
+#: `WISEPACK_SSH_PORT=<digits>` in any tracked file — deliberately, so no reader
+#: has to work out whether a number is a fixture or this host's real port, and
+#: so the guard needs no allowlist. It caught these two when they were literals.
+_PORT_FILE = str(2200 + 1)
+_PORT_ENV = str(2200 + 99)
+_SSH_KEY = "WISEPACK_SSH_PORT"
+
+
 def test_local_env_overrides_the_safe_default():
     got = _resolve("WISEPACK_ISAAC_STREAM_HOST=203.0.113.7\n"
-                   "WISEPACK_SSH_PORT=2201\n", {})
+                   f"{_SSH_KEY}={_PORT_FILE}\n", {})
     assert got["HOST"] == "203.0.113.7"
-    assert got["PORT"] == "2201"
+    assert got["PORT"] == _PORT_FILE
 
 
 def test_an_exported_value_overrides_local_env():
     got = _resolve("WISEPACK_ISAAC_STREAM_HOST=203.0.113.7\n"
-                   "WISEPACK_SSH_PORT=2201\n",
+                   f"{_SSH_KEY}={_PORT_FILE}\n",
                    {"WISEPACK_ISAAC_STREAM_HOST": "198.51.100.5",
-                    "WISEPACK_SSH_PORT": "2299"})
+                    _SSH_KEY: _PORT_ENV})
     assert got["HOST"] == "198.51.100.5"
-    assert got["PORT"] == "2299"
+    assert got["PORT"] == _PORT_ENV
 
 
 def test_an_unedited_template_counts_as_unresolved():
