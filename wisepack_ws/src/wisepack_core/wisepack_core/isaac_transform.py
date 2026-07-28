@@ -327,6 +327,93 @@ def placement_pose(placement: Placement) -> Pose:
     )
 
 
+@dataclass
+class ReleaseClearance:
+    """How much room a released object is given, in millimetres.
+
+    All three are configurable because they trade against each other: more wall
+    clearance means a released cylinder is less likely to strike a wall on the
+    way down, but it also moves the release point further from the planned pose,
+    and past a point there is not enough interior left to keep objects apart.
+    """
+
+    #: Between the object's footprint and every interior wall.
+    wall_mm: float = 25.0
+    #: Between this object's footprint and one already placed.
+    object_mm: float = 15.0
+
+
+DEFAULT_RELEASE_CLEARANCE = ReleaseClearance()
+
+
+def safe_release_pose(planned: Pose, dimensions, container_inner: Vec3,
+                      *, clearance: ReleaseClearance = DEFAULT_RELEASE_CLEARANCE,
+                      occupied: Optional[Sequence[Tuple[float, float]]] = None
+                      ) -> Tuple[Pose, float]:
+    """WHERE TO LET GO, given where the plan wants the object to end up.
+
+    Returns (release pose, how far it was moved in mm).
+
+    THE PROBLEM THIS SOLVES. A good packing plan puts items *flush* against the
+    container walls: that is what makes it dense, and it is the whole point of
+    the optimizer. But a flush target is a bad place to release an object from.
+    The gripper cannot descend to the planned depth without scraping the wall,
+    so the release happens above the rim and the object falls the rest of the
+    way. Falling beside a wall it can clip the rim, rotate, and end up somewhere
+    neither the plan nor the physics intended. In the first measured run the two
+    largest errors, 67 mm and 60 mm, came with 42 and 36 degrees of axis error,
+    which is what a wall strike looks like.
+
+    So the release point is CLAMPED into the interior region where the object's
+    own footprint clears every wall, and nudged away from footprints already
+    occupied. An already-interior target is left exactly where it is: this only
+    moves a release that would otherwise happen against a wall.
+
+    It does NOT move the object after release, and it does not change the plan.
+    The planned pose remains the reference the final settled pose is measured
+    against, so this can only be judged by whether the measured error improves.
+    """
+    half_len = float(dimensions.length_mm) / 2.0
+    radius = float(dimensions.outer_diameter_mm) / 2.0
+    axis = str(getattr(planned, "axis", "x")).lower()
+
+    # The footprint half-extents in container X/Y, from the cylinder's axis.
+    if axis == "x":
+        half_x, half_y = half_len, radius
+    elif axis == "y":
+        half_x, half_y = radius, half_len
+    else:                                   # upright: a circle either way
+        half_x, half_y = radius, radius
+
+    def _clamp(value: float, half: float, span: float) -> float:
+        low = half + clearance.wall_mm
+        high = span - half - clearance.wall_mm
+        if low > high:                      # too big to clear both walls: centre
+            return span / 2.0
+        return min(max(value, low), high)
+
+    x = _clamp(planned.x_mm, half_x, float(container_inner.x))
+    y = _clamp(planned.y_mm, half_y, float(container_inner.y))
+
+    # Keep away from what is already down there. One pass, smallest push that
+    # separates: a released object landing on another one is the other way a
+    # placement goes wrong.
+    for other_x, other_y in (occupied or ()):
+        dx, dy = x - other_x, y - other_y
+        need = clearance.object_mm
+        if abs(dx) < (2 * half_x + need) and abs(dy) < (2 * half_y + need):
+            if abs(dx) >= abs(dy):
+                x = _clamp(other_x + math.copysign(2 * half_x + need, dx or 1.0),
+                           half_x, float(container_inner.x))
+            else:
+                y = _clamp(other_y + math.copysign(2 * half_y + need, dy or 1.0),
+                           half_y, float(container_inner.y))
+
+    moved = math.hypot(x - planned.x_mm, y - planned.y_mm)
+    return Pose(x_mm=x, y_mm=y, z_mm=planned.z_mm, axis=planned.axis,
+                frame=planned.frame), moved
+
+
 def dimensions_for(item: WasteItem):
     """The contract ``Dimensions`` for a domain item."""
     from .isaac_contract import Dimensions            # local: keeps the cycle out

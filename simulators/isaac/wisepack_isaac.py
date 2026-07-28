@@ -524,6 +524,7 @@ class WisepackIsaacApp:
         self.items_completed = 0
         self.items_failed = 0
         self.sequence.abort("new run opened")
+        self.sequence.reset_release_history()
         self.pending = None
         self._announce_ready()
 
@@ -641,6 +642,9 @@ class WisepackIsaacApp:
             # 1. Stop the arm and drop anything it is holding. Order matters:
             #    abort() detaches the grasp joint BEFORE any body is deleted.
             self.sequence.abort("scene reset requested")
+            # A rebuilt scene is an empty container: release footprints from the
+            # previous run must not push this run's drops around.
+            self.sequence.reset_release_history()
             self.pending = None
             self._last_command = None
 

@@ -48,7 +48,7 @@ import numpy as np
 from wisepack_core.domain import Axis, Vec3
 from wisepack_core.isaac_contract import IsaacCommand, IsaacState, Pose
 from wisepack_core.isaac_transform import (
-    SceneLayout, mm_to_m, pose_to_world, world_to_pose,
+    SceneLayout, mm_to_m, pose_to_world, world_to_pose, safe_release_pose,
 )
 
 from .config import LOG_ROBOT, MotionConfig
@@ -159,10 +159,23 @@ class PandaSequence:
         self._settle: Optional[SettleMonitor] = None
         self._failure: str = ""
         self._axis_approximated = False
+        #: CLEARANCE-AWARE RELEASE. Where the arm actually lets go, which is not
+        #: always where the plan wants the item to end up: a dense plan puts
+        #: items flush against the walls, and releasing there lets the falling
+        #: object clip the rim. Computed per item in `begin()`.
+        self._release_pose: Optional[Pose] = None
+        self._release_offset_mm: float = 0.0
+        #: Release footprints already used in this run, so two objects are not
+        #: dropped onto the same spot.
+        self._released_xy: List[Tuple[float, float]] = []
 
     # ------------------------------------------------------------------ #
     # Wiring
     # ------------------------------------------------------------------ #
+
+    def reset_release_history(self) -> None:
+        """Forget where previous items were released. Called for a new run."""
+        self._released_xy = []
 
     def attach_robot(self, robot) -> None:
         self.robot = robot
@@ -216,8 +229,21 @@ class PandaSequence:
         return np.array(position, dtype=float)
 
     def _target_world(self) -> np.ndarray:
+        """WHERE THE ARM GOES, which is not always where the plan wants the item.
+
+        A dense plan puts items flush against the container walls. Releasing
+        there means the object falls beside a wall and can clip the rim, rotate
+        and land somewhere nobody planned. So the arm is sent to a
+        clearance-aware release point instead, computed once per item in
+        `begin()`.
+
+        The PLAN is untouched: `command.target_pose` is still what the settled
+        pose is measured against in `_finish_item`, so this can only be judged
+        by whether the measured error improves, never by moving the goalposts.
+        """
         assert self.command is not None and self.command.target_pose is not None
-        position, _ = pose_to_world(self.command.target_pose, self.layout)
+        pose = self._release_pose or self.command.target_pose
+        position, _ = pose_to_world(pose, self.layout)
         return np.array(position, dtype=float)
 
     def _live_item_world(self) -> Optional[np.ndarray]:
@@ -247,11 +273,25 @@ class PandaSequence:
         self._axis_approximated = False
         self._failure = ""
         self.grasp.detach()
+        self._release_pose = None
+        self._release_offset_mm = 0.0
+        inner = command.container_inner_mm or {}
+        if (command.target_pose is not None and command.dimensions is not None
+                and inner.get("x") and inner.get("y")):
+            self._release_pose, self._release_offset_mm = safe_release_pose(
+                command.target_pose, command.dimensions,
+                Vec3(int(inner["x"]), int(inner["y"]), int(inner.get("z", 0))),
+                clearance=self.motion.release_clearance,
+                occupied=list(self._released_xy))
+            self._released_xy.append(
+                (self._release_pose.x_mm, self._release_pose.y_mm))
         self._enter(SequenceState.HOME)
+        moved = (f", release moved {self._release_offset_mm:.0f} mm inward for "
+                 "wall clearance" if self._release_offset_mm > 0.5 else "")
         print(f"{LOG_ROBOT} item {command.item_id} #{command.sequence_index}: "
               f"pick {self._source_world().round(3)} -> place "
               f"{self._target_world().round(3)} (axis "
-              f"{command.target_pose.axis if command.target_pose else '?'})")
+              f"{command.target_pose.axis if command.target_pose else '?'}{moved})")
         return True
 
     def abort(self, reason: str) -> None:

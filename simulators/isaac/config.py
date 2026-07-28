@@ -67,6 +67,18 @@ class MotionConfig:
     #: Retreat height above the rim after releasing, before moving laterally.
     retreat_height: float = 0.20
 
+    #: CLEARANCE-AWARE RELEASE, in millimetres because the container and the
+    #: items are specified in millimetres and converting twice invites mistakes.
+    #:
+    #: A dense plan puts items flush against the container walls; releasing an
+    #: object there lets it clip the rim on the way down and land rotated. These
+    #: two values clamp the release point into the interior instead. They are
+    #: deliberately small: every millimetre of clearance also moves the release
+    #: away from the planned pose, so this trades one source of error against
+    #: another and only a measured run can say whether it is worth it.
+    release_wall_clearance_mm: float = 10.0
+    release_object_clearance_mm: float = 8.0
+
     #: End-effector position error under which a servo goal counts as reached.
     #: Differential IK converges asymptotically, so without a tolerance the
     #: sequence would wait forever for an exact match.
@@ -135,6 +147,13 @@ class MotionConfig:
             raise ValueError("Isaac motion configuration is inconsistent:\n  - "
                              + "\n  - ".join(problems))
 
+    @property
+    def release_clearance(self):
+        """The transform layer's clearance record, built from these settings."""
+        from wisepack_core.isaac_transform import ReleaseClearance  # noqa: PLC0415
+        return ReleaseClearance(wall_mm=self.release_wall_clearance_mm,
+                                object_mm=self.release_object_clearance_mm)
+
     @staticmethod
     def from_env() -> "MotionConfig":
         """Build from WISEPACK_ISAAC_* environment overrides.
@@ -147,6 +166,10 @@ class MotionConfig:
             lift_height=_env_float("WISEPACK_ISAAC_LIFT_HEIGHT", 0.25),
             container_clearance=_env_float("WISEPACK_ISAAC_CONTAINER_CLEARANCE", 0.10),
             drop_height=_env_float("WISEPACK_ISAAC_DROP_HEIGHT", 0.06),
+            release_wall_clearance_mm=_env_float(
+                "WISEPACK_ISAAC_RELEASE_WALL_CLEARANCE_MM", 10.0),
+            release_object_clearance_mm=_env_float(
+                "WISEPACK_ISAAC_RELEASE_OBJECT_CLEARANCE_MM", 8.0),
             retreat_height=_env_float("WISEPACK_ISAAC_RETREAT_HEIGHT", 0.20),
             goal_tolerance=_env_float("WISEPACK_ISAAC_GOAL_TOLERANCE", 0.015),
             settle_timeout=_env_float("WISEPACK_ISAAC_SETTLE_TIMEOUT", 6.0),

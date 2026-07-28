@@ -18,6 +18,20 @@ trail.
 
 ---
 
+## Full WISEPACK demonstration video
+
+> **Video coming soon.** This walkthrough will demonstrate all four execution and
+> data modes, operator decisions, anomaly recovery, physics-based execution in
+> Isaac Sim, safe
+> scene reset, FIWARE traceability and diagnostics.
+
+<!-- Replace this placeholder with the final public demonstration video link. -->
+
+It will cover `sim`, `fiware`, `isaac` and `isaac-fiware` modes, Human-in-the-Loop
+approval, anomaly response, scene reset, Container Inventory, Diagnostics and
+native WebRTC visualization. Until it is published, the images below are the
+evidence, and every one of them is generated from the running system.
+
 ## What this demonstrator does, in nine images
 
 Every asset below is generated from the running system by the scripts in this
@@ -65,19 +79,20 @@ a validated anomaly detector**. A critical event revokes authorisation, and
 acknowledging it leads either to execution or to a genuine renewed decision -
 never to a gate with nothing to decide.*
 
-### 5. Isaac Sim physical execution
+### 5. Physics-based execution in Isaac Sim
 
 ![Isaac Sim 6.0.1: the Panda approaches a cylinder, grasps, lifts, moves above the container, releases, and PhysX resolves the settling](images/generated/isaac-pick-drop.gif)
 
-*Isaac Sim 6.0.1 physical execution: the Panda picks a procedurally generated
-cylinder, releases it above the container and **PhysX resolves the final
+*Physics-based execution in Isaac Sim 6.0.1, not a physical robot: the Panda
+picks a procedurally generated cylinder, releases it above the container and **PhysX resolves the final
 settling** - the item is never teleported to its planned pose. Rendered from the
 scene's fixed DemoCamera.*
 
 *Two honest limitations. **Ground-truth object poses are used in the current
 Isaac integration; camera-based perception is planned for the next iteration.**
-And the settled pose is where physics puts it - the last validated run measured
-43 mm from the planned pose - not a reproduction of the target.*
+And the settled pose is where physics puts it, not a reproduction of the target:
+the latest four-item run measured a **mean final-position error after release and
+settling of about 35 mm** (see [§15](#15-isaac-sim-physical-execution)).*
 
 ```bash
 WISEPACK_ISAAC_VIEW_MODE=desktop \
@@ -114,6 +129,12 @@ WISEPACK_ISAAC_VIEW_MODE=webrtc \
   WISEPACK_ISAAC_STREAM_HOST=<reachable-server-address> \
   ./run_wisepack_dashboard.sh isaac-fiware
 ```
+
+![NVIDIA Isaac Sim WebRTC Streaming Client connected to the live run, showing the DemoCamera view of the Panda, the source cylinders and both containers](images/generated/isaac-webrtc-client.png)
+
+*The native NVIDIA client receiving the live stream: the same fixed DemoCamera
+view, the Panda and the physical scene. Cropped to the client window. No stream
+latency is quoted anywhere in this README because none was measured.*
 
 **A browser cannot display this stream.** Isaac Sim 6.0.1 ships no in-browser
 WebRTC client, so the dashboard links out to NVIDIA's native client rather than
@@ -169,7 +190,7 @@ utilisation.
 
 The reason this is hard is easy to see and easy to under-estimate: **a pipe is
 mostly air**. In the generated scenarios here, a straight tube's bounding box is
-typically 60–85% empty space. Where each pipe is placed, and at what
+typically 60-85% empty space. Where each pipe is placed, and at what
 orientation, therefore decides how many certified containers a site buys, ships
 and stores - and existing bin-picking systems have no model of container
 occupancy at all.
@@ -270,20 +291,40 @@ Everything in this list was executed and verified on this machine.
 
 This is the most important section in the README.
 
-| Component | Status | What that means |
-|---|---|---|
-| Packing algorithms | **REAL** | Two real algorithms on real geometry |
-| Placement validator | **REAL** | Nine hard constraints, independent process |
-| Container counts, utilisation, volume reduction | **MEASURED** | Computed, not asserted |
-| Optimizer computation time | **MEASURED** | Wall clock on this machine |
-| ROS 2 / DDS transport | **REAL** | Vulcanexus Fast DDS |
-| FIWARE audit trail | **REAL** | Orion-LD, NGSI-LD, over DDS |
-| DDS→FIWARE latency | **MEASURED** | When the benchmark has been run; `not measured` otherwise |
-| Perception | **SIMULATED** | No camera, no RGB-D, no detector, no pose estimation |
-| Robot | **SIMULATED** | No kinematics, no MoveIt2, no physics. A failed grasp is a seeded coin flip. |
-| Pick / end-to-end success rate | **SIMULATED** | Reflects the configured failure probability, nothing else |
-| Dose class | **SIMULATED METADATA** | There is no radiation model anywhere in this repository |
-| 5 of 6 geometry classes | **APPROXIMATED** | Conservative bounding box - over-estimates space, never under-estimates |
+**WISEPACK has two different simulation levels, and they are not
+interchangeable.** One advances the workflow logically. The other runs contact
+physics. A number that is honest at one level can be meaningless at the other,
+so the table below says which level produced it.
+
+| Component | Status | What is represented | What is not yet represented |
+|---|---|---|---|
+| Packing algorithms | **REAL** | Two real algorithms on real geometry | nothing: this is production-shaped software |
+| Placement validator | **REAL** | Nine hard constraints, independent process | nothing |
+| Container counts, utilisation, volume reduction | **MEASURED IN SOFTWARE** | Computed from the plan, not asserted | physical settling effects on final density |
+| Optimizer computation time | **MEASURED IN SOFTWARE** | Wall clock on this machine | facility-scale batch sizes |
+| ROS 2 / DDS transport | **REAL** | Vulcanexus Fast DDS | multi-site or wide-area deployment |
+| FIWARE audit trail | **REAL** | Orion-LD, NGSI-LD, over DDS | site-level identity and access control |
+| DDS to FIWARE latency | **MEASURED** | When the benchmark has been run; `not measured` otherwise | production network conditions |
+| Perception | **SIMULATED** | Ground-truth scenario poses stand in for detection | camera, RGB-D, detector, pose estimation |
+| Robot, default backend | **SIMULATED - LOGICAL** | Deterministic workflow advance, geometric placement per the accepted plan, seeded grasp failures and workflow events | mass, inertia, gravity, kinematics, contacts, friction, collision response, settling |
+| Robot, Isaac backend | **PHYSICS-BASED SIMULATION** | Articulated Franka Emika Panda, rigid bodies, mass, gravity, collision geometry, contacts, friction and settling in PhysX. Cylinders are carried and released, never teleported, and the measured settled pose is reported back | real hardware, safety functions, calibration, perception |
+| Pick / end-to-end success rate, logical backend | **SIMULATED LOGICAL OUTCOME** | The configured failure probability, nothing else | any physical cause of failure |
+| Placement error, Isaac backend | **MEASURED IN PHYSICS SIMULATION** | Distance from the planned pose to the pose PhysX settled the object at | how a real gripper, real friction and a real cell would differ |
+| Dose class | **SIMULATED METADATA** | A label carried through the workflow | any radiation model; there is none in this repository |
+| 5 of 6 geometry classes | **APPROXIMATED** | Conservative bounding box, over-estimates space | exact concave geometry |
+
+Reading the table:
+
+* the **packing algorithms are real software**, and the placement validation and
+  optimization metrics are **measured in software**;
+* the **logical simulator produces simulated outcomes** - a failed grasp there is
+  a seeded coin flip with no physical cause;
+* **Isaac produces measured outcomes inside a physics simulation** - a failed
+  grasp or a displaced item there has a mechanical cause that can be inspected;
+* **neither mode is a real robot experiment**, and no result here is evidence
+  about hardware;
+* **perception still uses ground-truth scenario poses** in the current Isaac
+  integration.
 
 Every figure in the dashboard, the artefacts and the reports carries a
 `measured` / `simulated` / `operator` / `target` label. Nothing is unlabelled.
@@ -303,7 +344,7 @@ rather than scored - a green tick on a simulated grasp rate would be fabrication
 
 **KPI4 is not met by this demonstrator, and that is an honest and useful
 finding.** Against a *competent* arrival-order baseline - one that puts an item
-in whichever open container accepts it - the measured reduction is 33–50%
+in whichever open container accepts it - the measured reduction is 33-50%
 depending on scenario, and never exceeds 50%. Three reasons, all real:
 
 - **Integer quantisation.** Container counts are small integers, so the
@@ -325,7 +366,7 @@ something this demonstrator can claim.
 
 ### Results from previous HPC work are not results of this demo
 
-The proposal cites COROB (98–99% segmentation accuracy, sub-millimetre 6D pose)
+The proposal cites COROB (98-99% segmentation accuracy, sub-millimetre 6D pose)
 and ARISE (multimodal HRI, Digital Twin, analytics). Those are **prior results
 from other projects**. Nothing in this repository reproduces or evidences them.
 
@@ -352,7 +393,7 @@ Three things make it more than a bin-packer:
 
 ## 5. Architecture
 
-Mission–Task–Skill, in the four layers the proposal describes.
+Mission-Task-Skill, in the four layers the proposal describes.
 
 ![Architecture](images/generated/topology.svg)
 
@@ -397,7 +438,7 @@ this code with a different transport, not a re-implementation.
 
 Builds the image, builds the workspace, runs the tests, starts Orion-LD, starts
 the ROS 2 nodes, plans, requests approval, executes, injects a dynamic event,
-re-plans, verifies FIWARE, and writes artefacts. Roughly 10–15 minutes on first
+re-plans, verifies FIWARE, and writes artefacts. Roughly 10-15 minutes on first
 run (image build dominates).
 
 ```bash
@@ -1288,9 +1329,87 @@ Full list: `items_generated`, `items_packed`, `unplaced_items`,
 
 ## 15. Isaac Sim physical execution
 
+**"Physical" here means contact physics, not a physical robot.** This section
+describes physically simulated execution inside NVIDIA Isaac Sim 6.0.1: an
+articulated robot model, rigid bodies, gravity, friction and collision response.
+No hardware is involved anywhere in this repository.
+
+### Why a physics simulator, and not just a nicer picture
+
+A geometry-only digital twin can show you **where an object is supposed to go**.
+That is genuinely useful, and it is what the Digital Twin panel does. But it
+cannot answer the questions that decide whether a plan survives contact with a
+real cell:
+
+* can the arm actually **reach** that pose, or is it outside the envelope?
+* does the object **strike a container wall** on the way in?
+* does it **rotate during release**, so the orientation the plan assumed is not
+  the orientation it ends up with?
+* where does it **finally settle** once gravity and friction have had their say?
+
+Isaac Sim closes that gap. It takes the plan WISEPACK already approved and tests
+it against a robot model and contact physics, which turns the digital twin from
+a passive drawing of an intended result into an **executable and observable
+model of the physical process**. Problems become visible before anyone commits
+to hardware: insufficient clearance, unreachable approach poses, container-wall
+contact, unsafe release heights, poor final orientation.
+
+The four-cylinder scene here is deliberately simple. Its value is not the scene,
+it is the **integration pattern**: an approved plan crossing a backend-neutral
+contract into a physics engine, and measured outcomes crossing back. That
+pattern is what scales to richer facilities, container types, tooling, sensors
+and manipulation skills.
+
+Isaac Sim 6.0.1 has been validated on this GPU server with the current NVIDIA
+driver stack, and runs smoothly enough for interactive viewing and for repeated
+WISEPACK demonstrations.
+
+The platform also **opens a path toward** synthetic data generation, domain
+randomization and reinforcement-learning experiments. Those are opportunities
+this integration makes reachable. **None of them is implemented here**, no
+synthetic perception training has been performed, and no simulation-to-real
+transfer has been validated. Simulation also does **not** remove the need for
+validation in a real cell; it reduces how much you discover there for the first
+time.
+
+### From Isaac Sim to a real robot
+
+The WISEPACK workflow contains **no Isaac-specific commands**. The orchestrator
+sends backend-neutral ROS 2 commands and receives backend-neutral feedback, and
+the simulator-specific code lives entirely in the Isaac adapter.
+
+```
+WISEPACK planning and approval
+    -> common execution contract
+        -> Isaac adapter today
+        -> real Panda adapter in a future deployment
+```
+
+The impact of that shape is practical: planning, operator approval, FIWARE
+traceability, dashboard logic and run correlation can stay **unchanged** when a
+real arm appears. A hardware backend implements the same lifecycle the Isaac
+adapter implements today - reset, ready, execute, progress, failure, cancel,
+home - and the layers above it do not need to know which one answered. That is
+substantially less integration effort than rewriting the workflow for hardware.
+
+This is a reusable contract, **not proven robot code**. Nothing validated in
+Isaac will drive a real arm unchanged. A real deployment still requires:
+
+* the robot hardware driver;
+* calibration between robot, cameras, tools and facility frames;
+* certified safety functions and a risk assessment;
+* real collision geometry and joint, velocity and force limits;
+* hardware-specific motion planning and tuning;
+* physical validation in the cell.
+
+What transfers is the **contract and the orchestration**. What gets replaced or
+extended is the **hardware adapter and the safety layer**.
+
+### The backend itself
+
 An **optional execution backend** that performs the approved placements with a
 Franka Emika Panda in **NVIDIA Isaac Sim 6.0.1**, instead of resolving them with
-the built-in simulated robot model.
+the built-in logical robot model.
 
 ```bash
 ./run_wisepack_dashboard.sh isaac              # live stack + dashboard + physics
@@ -1371,21 +1490,82 @@ its measured final pose and its distance from the planned one, and that error is
 never rounded away or replaced by the target. Millimetre agreement with the
 optimizer is not claimed.
 
-Measured on this machine - a complete four-item run, the WISEPACK stack in Docker
-driving Isaac Sim on the host, `isaac_cylinders_smoke` seed 42, all four items
-settled inside the container:
+### What the placement error actually is
 
-| item | placement error vs plan | axis error |
+`placement error` here is the **mean final-position error after release and
+settling**. It is worth being exact about, because it is easy to read as
+something it is not:
+
+* WISEPACK computes a **planned target pose** for the object;
+* the robot carries the object and **releases it above the container**;
+* **gravity and contacts decide** where it comes to rest;
+* the reported distance is between the **planned object-centre position** and the
+  **measured object-centre position after settling**.
+
+It is **not** a clearance gap, and it is **not** a robot joint-position error.
+
+`axis error` is the **angular difference between the planned principal cylinder
+axis and the axis the cylinder settled at**. It reflects rotation during release,
+contact with a wall or another object, and the settling itself.
+
+### Measured results, before and after clearance-aware release
+
+The first iteration released each object directly above its planned pose. A dense
+plan puts items flush against the container walls, and a reference screen
+recording of that first iteration confirms what that looks like: the held
+cylinder is lowered until it **rests on the container rim**, partially outside
+the interior, and is released from there. The same wall-flush release is visible
+on the first and the last item of the run.
+
+The second iteration clamps the release point into the container interior (see
+below) and leaves the plan untouched, so the error is still measured against the
+original planned pose.
+
+Both runs: `isaac_cylinders_smoke` seed 42, four items, WISEPACK stack in Docker
+driving Isaac Sim on the host, all four items settled inside the container in
+both runs.
+
+| item | position error before | after | axis error before | after |
+|---|---|---|---|---|
+| item-001 | 43 mm | **13 mm** | 41 deg | **0 deg** |
+| item-002 | 23 mm | 30 mm | 10 deg | 25 deg |
+| item-004 | 67 mm | **19 mm** | 42 deg | **1 deg** |
+| item-003 | 60 mm | 79 mm | 36 deg | **1 deg** |
+| **mean** | **48 mm** | **35 mm** | **32 deg** | **7 deg** |
+
+Read this honestly. In this **single seed-42 run**, the **mean position error
+decreased from approximately 48 mm to approximately 35 mm** and the **mean
+orientation error decreased from approximately 32 degrees to approximately 7
+degrees**. The orientation change is the larger one: objects mostly settle in the
+orientation the plan assumed. But the improvement is **not uniform**.
+Two items improved sharply, `item-002` was slightly worse, and `item-003`
+regressed from 60 mm to 79 mm - it settled 78 mm along the container's long axis
+from its planned position, consistent with landing near an already-placed object
+and sliding. These are single seeded runs, not a statistical result.
+
+**What changed, exactly.** The container was **not** modified: it remains
+300 x 220 x 150 mm inner, the same scene, the same seed, the same release height
+(`drop_height` 0.06 m). Only the release point moved, by these clearances:
+
+| setting | value | override |
 |---|---|---|
-| item-001 | 43 mm | 41° |
-| item-002 | 23 mm | 10° |
-| item-004 | 67 mm | 42° |
-| item-003 | 60 mm | 36° |
+| wall clearance | 10 mm | `WISEPACK_ISAAC_RELEASE_WALL_CLEARANCE_MM` |
+| object-to-object clearance | 8 mm | `WISEPACK_ISAAC_RELEASE_OBJECT_CLEARANCE_MM` |
 
-Roughly **48 mm mean**. Those figures are read straight out of the run's audit
-trail (`isaac_item_settled` events, actor `isaac_sim`) and are what the
-dashboard's diagnostics area shows. They are a first-iteration result, not a
-target.
+Per item that moved the release inward by 14, 14, 21 and 23 mm.
+
+**Wall contacts are not instrumented.** Nothing in this repository counts or
+detects them, so no contact-reduction figure is claimed here, and the orientation
+error is not offered as evidence of one. What is measured is that the **mean
+orientation error decreased from approximately 32 degrees to approximately 7
+degrees in this single seed-42 run**.
+
+`wisepack_core.isaac_transform.safe_release_pose` derives the release point from
+the container inner dimensions, the cylinder radius and length, the configurable
+wall and object clearances, and the release height. An object whose planned pose
+is already clear of the walls is **not** moved. The object still approaches from
+above, stays clear of the walls before release, is released over a valid interior
+region, and settles through PhysX. **It is never teleported to the desired pose.**
 
 **The release happens at the rim, not at the planned depth**, and that is the
 largest single source of the error above. A good packing plan puts items *flush*
@@ -1821,6 +2001,46 @@ a spectator stream - **without** depending on the HTML dashboard or scraping
 pixels out of the video. No XR dependency exists in `wisepack_core`, in the
 orchestration layer, or in the Isaac adapter.
 
+**Why that matters operationally.** A flat dashboard is a good instrument panel
+and a poor spatial one. An operator deciding whether to authorise a pick is
+reasoning about a three-dimensional cell through two-dimensional views. XR is the
+obvious way to close that gap, and the contracts above are what would make it
+possible without redesigning WISEPACK.
+
+A future XR operator experience could let an authorised operator:
+
+* view the digital twin **as if standing inside or beside the facility**;
+* see the robot, containers, tools and planned trajectories **in spatial
+  context**, at true scale;
+* read the current workflow state and warnings **without relying only on a flat
+  dashboard**;
+* **select or confirm** objects and target locations by looking at them;
+* leave **spatial annotations**: waypoints, keep-out zones, correction hints;
+* **preview a planned robot action before authorising it**;
+* supervise a remote cell under the **same WISEPACK approval gate and audit
+  trail** that the dashboard uses today.
+
+**Extending the digital twin beyond the camera.** XR can combine the direct
+camera image with robot state, object models, facility geometry and information
+from additional sensors. Objects that are outside the active camera view, or
+temporarily occluded, can still be shown when their pose is known from the
+digital twin, from earlier observations, or from auxiliary sensors. That is
+useful for understanding hidden constraints, for obstacle avoidance and for
+recovering an object that has moved out of view.
+
+To be precise about what that is and is not: **XR does not see through
+obstacles.** XR can visualize occluded or out-of-camera-view objects **when their
+state is available from the digital twin or other sensors**. If nothing knows
+where an object is, XR will not know either, and showing a confident model of an
+object whose position is stale would be worse than showing nothing.
+
+The technical foundation already exists for the reasons above: the same
+backend-neutral execution state, the timestamped poses in named frames, the
+documented transforms and the visualization descriptor that were introduced for
+the Isaac backend are exactly what an XR client would consume.
+
+**This is future work. No XR client is implemented in this repository.**
+
 #### Runtime artefacts
 
 NVIDIA's streaming stack writes trace files - `NvStreamer-*.etli`, about 7 MB per
@@ -1877,7 +2097,7 @@ when the simulator or the GPU is genuinely absent.
 | File | Covers |
 |---|---|
 | `test_generator.py` | determinism, dimension validity, segregation classes, JSON/CSV round trip |
-| `test_validator.py` | every hard constraint H1–H9, hand-built violating plans, support-area union |
+| `test_validator.py` | every hard constraint H1-H9, hand-built violating plans, support-area union |
 | `test_optimizer.py` | all placements validate, reproducibility, multi-container, honest selection, curated result computed not constant, speed |
 | `test_kpi.py` | exact known cases, zero-baseline protection, the material-volume anti-fudge test, target labelling |
 | `test_workflow.py` | approval gating, rejection→re-plan, frozen placements, dynamic events, audit-trail monotonicity |
@@ -1912,7 +2132,9 @@ Stated plainly, because a demonstrator that hides its edges is not evidence.
 1. **No perception.** No camera, RGB-D, detector or 6D pose estimation.
    Extension point: `wisepack_sim/perception_sim.py::detect()`.
 2. **The default backend has no robot.** No kinematics, no MoveIt2, no
-   collision-free trajectories - a pick outcome is a seeded coin flip. The
+   collision-free trajectories, and in that backend a pick outcome is a seeded
+   coin flip. The Isaac backend is different: it runs contact physics and
+   reports measured outcomes, but it is still a simulator and not hardware. The
    **optional Isaac Sim backend** ([§15](#15-isaac-sim-physical-execution)) does
    move a real Panda against real PhysX contacts, but within its own stated
    limits: no perception, a temporary fixed-joint grasp during the carry, and a
@@ -1923,7 +2145,7 @@ Stated plainly, because a demonstrator that hides its edges is not evidence.
    segregation machinery.
 4. **Five of six geometry classes are bounding boxes.** Conservative, so plans
    are safe but pessimistic. Only the straight tube is exact.
-5. **KPI4 is not met** - 33–50% measured, target >50%. See [§3](#3-what-is-simulated--read-this-before-quoting-any-number).
+5. **KPI4 is not met** - 33-50% measured, target >50%. See [§3](#3-what-is-simulated--read-this-before-quoting-any-number).
 6. **Axis-aligned orientations only.** No arbitrary rotation, no curved-pipe
    collision geometry.
 7. **FIWARE history is state-oriented.** No QuantumLeap/CrateDB/Grafana stack
@@ -1957,13 +2179,26 @@ Stated plainly, because a demonstrator that hides its edges is not evidence.
 |---|---|---|
 | 1 | Replace `perception_sim.detect()` with YOLOv12-OBB + SAM2 + FPFH/ICP on real RGB-D | O1, KPI1, MS2 |
 | 2 | Exact geometry for the five approximated classes (convex decomposition or voxel masks) instead of bounding boxes | O3, KPI4 |
-| 3 | Replace the robot simulator with MoveIt2 trajectory generation and a real arm. The [Isaac backend](#15-isaac-sim-physical-execution) already provides the execution interface a real cell would answer - its two ROS 2 topics contain no simulator concept - so this is a sibling implementation, not a rewrite | O2, KPI2/KPI3, MS4 |
-| 4 | Deepen the Isaac backend: **clearance-aware placement** (the largest measured contributor to the 43 mm target-vs-actual gap - see §15), then a real friction grasp instead of the temporary fixed joint, then perception in place of ground-truth poses | MS4 |
+| 3 | **Add the real Panda execution backend** using the same ROS 2 execution contract, with hardware drivers, calibrated robot/camera/tool/facility frames, safety integration and hardware-aware motion planning. **Retain Isaac as the pre-deployment and regression-testing environment.** There are now two simulator levels - the lightweight logical simulator and the Isaac physics simulator - and the hardware backend is a **sibling of Isaac, not a replacement for all simulation** | O2, KPI2/KPI3, MS4 |
+| 4 | Improve **clearance-aware release planning** to further reduce the measured mean final-position error after PhysX settling, currently about **35 mm** in the four-item smoke run (down from about 48 mm, see [§15](#15-isaac-sim-physical-execution)). Then replace the temporary fixed-joint grasp approximation with a friction/contact grasp, and replace ground-truth poses with perception | MS4 |
 | 5 | Calibrate the baseline against real EDF/CEA site practice so KPI4 is measured against reality, not a textbook packer | KPI4, MS6 |
 | 6 | QuantumLeap + CrateDB + Grafana on the existing NGSI-LD entities for true historical retention | O5, MS5 |
 | 7 | Re-attach HARMONY's Vosk voice and MediaPipe gesture modules to the same operator attributes | O4 |
 | 8 | Replace the simulated external cutting skill with a validated physical cutting backend and site-specific safety integration | O3 |
 | 9 | Replace the simulated container logistics with a real mobile-robot fleet (SLAM/Nav2) driving the same transport-task contract | O2 |
+
+**Longer-term research opportunities, separate from the TRL6 demonstration.**
+None of the following is required for the immediate demonstrator, and none is
+implemented:
+
+* more realistic facility and container models, including site-specific geometry;
+* richer manipulation tasks beyond single-object pick and place;
+* synthetic data generation and domain randomization for perception training;
+* reinforcement-learning research where it is the appropriate tool;
+* XR-assisted operator supervision (see
+  [§16](#backend-neutral-by-design-and-xr-ready));
+* simulator-to-real validation, which is the step that would let any Isaac
+  result be treated as evidence about hardware.
 
 **The highest-value next step is (2).** It is the only one that directly moves
 the measured KPI4 number, it needs no hardware, and the bounding-box

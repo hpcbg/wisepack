@@ -365,8 +365,9 @@ def test_the_documentation_states_that_local_env_is_optional():
 
 def test_the_documentation_gives_all_three_examples():
     readme = _read(os.path.join(REPO, "README.md"))
-    assert "**B. Headless WebRTC server — local or forwarded**" in readme
-    assert "**B2. Headless WebRTC server — direct remote native client**" in readme
+    # ASCII hyphen, not an em dash: the README uses only "-" by project rule.
+    assert "**B. Headless WebRTC server - local or forwarded**" in readme
+    assert "**B2. Headless WebRTC server - direct remote native client**" in readme
     assert "**B3. Host-specific values, without retyping them**" in readme
     assert "cp config/local.env.example config/local.env" in readme
     # Both ports, named as such.

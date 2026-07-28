@@ -448,6 +448,80 @@ def test_containment_tolerates_a_settled_item_leaning_on_a_wall():
     assert verdict.ok
 
 
+def test_a_release_clear_of_the_walls_is_not_moved():
+    """The rule only rescues a release that would happen against a wall."""
+    from wisepack_core.domain import Vec3
+    from wisepack_core.isaac_contract import Dimensions, Pose
+    from wisepack_core.isaac_transform import ReleaseClearance, safe_release_pose
+
+    inner = Vec3(300, 220, 150)
+    dims = Dimensions(length_mm=150, outer_diameter_mm=50, inner_diameter_mm=40)
+    middle = Pose(x_mm=150.0, y_mm=110.0, z_mm=25.0, axis="x", frame="c")
+    moved_pose, moved = safe_release_pose(middle, dims, inner)
+    assert moved == pytest.approx(0.0, abs=1e-6)
+    assert (moved_pose.x_mm, moved_pose.y_mm) == (150.0, 110.0)
+
+
+def test_a_flush_release_is_pulled_into_the_interior():
+    """A dense plan puts items against the wall; releasing there clips the rim."""
+    from wisepack_core.domain import Vec3
+    from wisepack_core.isaac_contract import Dimensions, Pose
+    from wisepack_core.isaac_transform import ReleaseClearance, safe_release_pose
+
+    inner = Vec3(300, 220, 150)
+    dims = Dimensions(length_mm=150, outer_diameter_mm=50, inner_diameter_mm=40)
+    clearance = ReleaseClearance(wall_mm=10.0, object_mm=8.0)
+    flush = Pose(x_mm=75.0, y_mm=25.0, z_mm=25.0, axis="x", frame="c")
+    pose, moved = safe_release_pose(flush, dims, inner, clearance=clearance)
+    assert moved > 0.0
+    # Footprint clears both walls: half-length 75 in x, radius 25 in y.
+    assert pose.x_mm >= 75.0 + 10.0 - 1e-6
+    assert pose.y_mm >= 25.0 + 10.0 - 1e-6
+    assert pose.x_mm <= 300 - 75.0 - 10.0 + 1e-6
+    # The plan is untouched: only z and axis carry through unchanged.
+    assert pose.z_mm == flush.z_mm and pose.axis == flush.axis
+
+
+def test_releases_are_kept_apart_from_what_is_already_down():
+    from wisepack_core.domain import Vec3
+    from wisepack_core.isaac_contract import Dimensions, Pose
+    from wisepack_core.isaac_transform import ReleaseClearance, safe_release_pose
+
+    inner = Vec3(300, 220, 150)
+    dims = Dimensions(length_mm=100, outer_diameter_mm=50, inner_diameter_mm=40)
+    clearance = ReleaseClearance(wall_mm=10.0, object_mm=8.0)
+    planned = Pose(x_mm=150.0, y_mm=110.0, z_mm=25.0, axis="x", frame="c")
+    pose, _ = safe_release_pose(planned, dims, inner, clearance=clearance,
+                                occupied=[(150.0, 110.0)])
+    assert (pose.x_mm, pose.y_mm) != (150.0, 110.0), \
+        "a second object must not be released onto the first"
+
+
+def test_an_object_too_long_to_clear_both_walls_is_centred():
+    """Better centred than clamped hard against one wall."""
+    from wisepack_core.domain import Vec3
+    from wisepack_core.isaac_contract import Dimensions, Pose
+    from wisepack_core.isaac_transform import safe_release_pose
+
+    inner = Vec3(300, 220, 150)
+    huge = Dimensions(length_mm=295, outer_diameter_mm=50, inner_diameter_mm=40)
+    planned = Pose(x_mm=10.0, y_mm=110.0, z_mm=25.0, axis="x", frame="c")
+    pose, _ = safe_release_pose(planned, huge, inner)
+    assert pose.x_mm == pytest.approx(150.0)
+
+
+def test_the_release_point_never_changes_the_reported_target():
+    """The error must stay measured against the PLAN, not the release point."""
+    src = _read(os.path.join(REPO, "simulators", "isaac", "robot.py"))
+    finish = src[src.index("    def _finish_item("):]
+    end = finish.find("\n    def ", 10)
+    finish = finish if end < 0 else finish[:end]
+    assert "target=command.target_pose" in finish, (
+        "the settled pose must be compared with the planned pose; comparing it "
+        "with the adjusted release point would flatter the metric")
+    assert "_release_pose" not in finish
+
+
 # --------------------------------------------------------------------------- #
 # Physical state -> workflow stage
 # --------------------------------------------------------------------------- #
