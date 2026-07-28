@@ -244,12 +244,38 @@ async def start_ros_observer(state) -> None:
             scenario["totals"] = totals
             self.mirror["scenario"] = scenario
 
+        def _record_stamp(self, key, doc):
+            # The stamp is also where the mirror learns the run_id. It used to
+            # come only from an ActionEvent's details, so before the first event
+            # the dashboard had no idea which run it was showing — and a
+            # correlation check with no reference run silently compares nothing.
+            """Remember WHICH run and revision this component described.
+
+            These topics are latched and arrive independently, so the mirror is
+            always a mixture of whatever each publisher last said. Keeping the
+            stamp per component is what lets the snapshot notice that the
+            scenario on screen and the plan on screen came from different runs
+            instead of silently rendering both.
+            """
+            if not isinstance(doc, dict):
+                return
+            self.mirror.setdefault("stamps", {})[key] = {
+                "run_id": doc.get("run_id"),
+                "scenario_revision": doc.get("scenario_revision"),
+                "scenario_id": doc.get("scenario_id"),
+            }
+            if doc.get("run_id"):
+                self.mirror["run_id"] = doc["run_id"]
+
         def _json_into(self, key):
             def handler(m):
                 try:
-                    self.mirror[key] = json.loads(m.data)
+                    doc = json.loads(m.data)
                 except ValueError:
                     self.get_logger().warn(f"malformed JSON on {key}")
+                    return
+                self.mirror[key] = doc
+                self._record_stamp(key, doc)
             return handler
 
         def _scenario(self, m):
@@ -262,7 +288,8 @@ async def start_ros_observer(state) -> None:
             scenario = dict(self.mirror.get("scenario") or {})
             items = scenario.get("items") or self.mirror.get("items") or []
             totals = dict(scenario.get("totals") or {})
-            totals.update({k: v for k, v in doc.items() if k != "scenario_id"})
+            _stamp_keys = ("scenario_id", "run_id", "scenario_revision")
+            totals.update({k: v for k, v in doc.items() if k not in _stamp_keys})
             scenario.update({"scenario_id": doc.get("scenario_id"),
                              "items": items, "totals": totals})
             scenario.setdefault("preset", (self.mirror.get("scenario_config") or {})
@@ -273,6 +300,7 @@ async def start_ros_observer(state) -> None:
                                 (self.mirror.get("scenario_config") or {})
                                 .get("container_template"))
             self.mirror["scenario"] = scenario
+            self._record_stamp("scenario", doc)
 
         def _baseline(self, m):
             self._json_into("baseline")(m)

@@ -194,6 +194,12 @@ class WorkflowEngine:
         # strategy comparison is stamped with the revision it was computed
         # against, so a comparison from a superseded batch is never rendered.
         self.scenario_revision = 0
+        #: WHICH (revision, plan) the current approval decision refers to.
+        #: An approval is not a boolean, it is a decision about one specific
+        #: plan of one specific batch revision. Without the stamp, an approval
+        #: granted for the previous scenario silently authorises the next one.
+        self.approval_revision = 0
+        self.approval_plan_id: Optional[str] = None
         #: revision -> structured strategy-comparison dict (see build_...).
         self._strategy_comparison: Optional[Dict[str, Any]] = None
         self._container_index_offset = 0
@@ -504,10 +510,21 @@ class WorkflowEngine:
     # ------------------------------------------------------------------ #
 
     def request_approval(self) -> None:
+        """Enter the approval gate — which ALWAYS means a pending decision.
+
+        THE INVARIANT: ``WAIT_FOR_OPERATOR_APPROVAL`` and an approval state of
+        anything other than ``pending`` are contradictory. The dashboard cannot
+        render that honestly — it has to say "decision required" while offering
+        no decision to make — and the operator cannot act on it. So the gate is
+        only ever entered through here, and here always sets pending, stamped
+        with the revision and plan the decision is about.
+        """
         if self.selected is None:
             raise WorkflowError("request_approval before a plan was selected")
         self._set_stage(Stage.WAIT_FOR_OPERATOR_APPROVAL)
         self.selected.approval_state = ApprovalState.PENDING
+        self.approval_revision = self.scenario_revision
+        self.approval_plan_id = self.selected.plan_id
         self._emit(Stage.WAIT_FOR_OPERATOR_APPROVAL, "await_approval",
                    Actor.ORCHESTRATOR, Result.PENDING,
                    message="plan awaiting operator decision — no physical action "
@@ -521,6 +538,24 @@ class WorkflowEngine:
             raise WorkflowError(
                 f"approve called in stage {self.stage.value}, expected "
                 f"{Stage.WAIT_FOR_OPERATOR_APPROVAL.value}")
+        # An approval authorises ONE plan of ONE batch revision. A decision made
+        # against a plan that has since been superseded — the operator clicked
+        # while a re-plan or a scenario reset was in flight — is not a decision
+        # about what is on screen now, and must not authorise it.
+        if self.approval_plan_id and self.approval_plan_id != self.selected.plan_id:
+            raise WorkflowError(
+                f"approval targets plan {self.approval_plan_id} but the "
+                f"selected plan is now {self.selected.plan_id}; a fresh "
+                "decision is required")
+        if self.approval_revision != self.scenario_revision:
+            raise WorkflowError(
+                f"approval targets scenario revision {self.approval_revision} "
+                f"but the current revision is {self.scenario_revision}; a fresh "
+                "decision is required")
+        if self.selected.approval_state is not ApprovalState.PENDING:
+            raise WorkflowError(
+                f"approve called with the plan already "
+                f"{self.selected.approval_state.value}")
         self.selected.approval_state = ApprovalState.APPROVED
         if not auto:
             self.stats.operator_interventions += 1
@@ -533,6 +568,86 @@ class WorkflowEngine:
         self._set_stage(Stage.PICK_ITEM)
         self.cursor.reset()
         self._t_exec_start = time.monotonic()
+
+    def revoke_approval(self, reason: str,
+                        actor: Actor = Actor.ORCHESTRATOR) -> None:
+        """Withdraw execution authorisation and return to a PENDING gate.
+
+        The one way any path — critical anomaly, re-plan, scene reset, plan
+        revision — asks for renewed approval. It exists so that "we need a new
+        decision" cannot be expressed as "set the stage back and hope", which is
+        how the contradictory state (`WAIT_FOR_OPERATOR_APPROVAL` +
+        `approved`) was reachable: the stage moved and the approval did not.
+
+        Unconditional by design. An earlier version revoked only when the plan
+        was currently APPROVED, so a revocation arriving against a plan in any
+        other state left the stamp pointing at a decision nobody had made for
+        this revision.
+        """
+        if self.selected is None:
+            return
+        previous = self.selected.approval_state
+        self.selected.approval_state = ApprovalState.PENDING
+        self.approval_revision = self.scenario_revision
+        self.approval_plan_id = self.selected.plan_id
+        self._set_stage(Stage.WAIT_FOR_OPERATOR_APPROVAL)
+        self._emit(Stage.WAIT_FOR_OPERATOR_APPROVAL, "revoke_approval",
+                   actor, Result.PENDING,
+                   message=f"execution authorisation revoked: {reason}",
+                   details={"plan_id": self.selected.plan_id,
+                            "previous_approval_state": previous.value,
+                            "scenario_revision": self.scenario_revision,
+                            "reason": reason})
+
+    def resume_execution_stage(self) -> None:
+        """Leave the approval gate once the plan is authorised.
+
+        Sitting at ``WAIT_FOR_OPERATOR_APPROVAL`` with an approved plan is the
+        contradictory state itself: the dashboard has to say "decision required"
+        while every control is correctly disabled, because the decision has
+        already been made. An approved plan belongs in an execution stage even
+        if something downstream (an anomaly hold, a paused run, a physical scene
+        that is still rebuilding) immediately stops it there — those states have
+        their own honest wording.
+
+        Unlike ``approve()`` this does NOT reset the cursor: it is used to
+        resume a run whose earlier placements are physically done.
+        """
+        if self.selected is None:
+            return
+        if self.selected.approval_state is not ApprovalState.APPROVED:
+            return
+        if self.stage is not Stage.WAIT_FOR_OPERATOR_APPROVAL:
+            return
+        self._set_stage(Stage.NEXT_ITEM if self.cursor.index else Stage.PICK_ITEM)
+
+    def approval_inconsistency(self) -> str:
+        """"" when approval state is coherent, else why it is not.
+
+        Checked rather than assumed. The states below are not merely odd to look
+        at — each one means the dashboard would have to present a control whose
+        effect it cannot describe.
+        """
+        state = (self.selected.approval_state if self.selected else None)
+        if self.stage is Stage.WAIT_FOR_OPERATOR_APPROVAL:
+            if state is ApprovalState.APPROVED:
+                return ("the workflow is at the approval gate but the plan is "
+                        "already approved — there is no decision to make")
+            if self.selected is not None:
+                if self.approval_plan_id != self.selected.plan_id:
+                    return (f"the pending decision targets plan "
+                            f"{self.approval_plan_id} but the selected plan is "
+                            f"{self.selected.plan_id}")
+                if self.approval_revision != self.scenario_revision:
+                    return (f"the pending decision targets scenario revision "
+                            f"{self.approval_revision} but the current revision "
+                            f"is {self.scenario_revision}")
+        if (state is ApprovalState.APPROVED
+                and self.approval_revision != self.scenario_revision):
+            return (f"the plan is approved for scenario revision "
+                    f"{self.approval_revision} but the current revision is "
+                    f"{self.scenario_revision}")
+        return ""
 
     def reject(self, reason: str = "operator rejected the plan",
                operator: str = "operator") -> None:
@@ -957,8 +1072,13 @@ class WorkflowEngine:
         self._set_stage(Stage.REPLAN)
         self.stats.replans += 1
         self.stats.replan_causes.append(cause)
-        if self.selected and self.selected.approval_state is ApprovalState.PENDING:
+        # SUPERSEDE WHATEVER STATE IT WAS IN. Restricting this to PENDING left
+        # an APPROVED plan approved across a re-plan, so the authorisation the
+        # operator gave for the old plan survived into the new one.
+        if self.selected and self.selected.approval_state in (
+                ApprovalState.PENDING, ApprovalState.APPROVED):
             self.selected.approval_state = ApprovalState.SUPERSEDED
+            self.approval_plan_id = None
 
         executed = [p for p in (self.selected.placements if self.selected else [])
                     if p.executed]
@@ -1117,9 +1237,21 @@ class WorkflowEngine:
     })
 
     def _bump_scenario_revision(self) -> None:
-        """Advance the batch revision and discard any stale comparison."""
+        """Advance the batch revision, discarding what no longer applies to it.
+
+        An approval is a decision about ONE batch revision, so an outstanding
+        authorisation cannot survive the batch changing underneath it. Revoking
+        here rather than in each caller is what makes the rule structural: every
+        path that changes the batch — a new scenario, an injected or removed
+        item, a retired container, a segregation-rule change — goes through this
+        one function, and none of them can forget.
+        """
         self.scenario_revision += 1
         self._strategy_comparison = None
+        if (self.selected is not None
+                and self.selected.approval_state is ApprovalState.APPROVED):
+            self.revoke_approval(
+                f"the batch changed (scenario revision {self.scenario_revision})")
 
     # ------------------------------------------------------------------ #
     # Anomaly integration (EDF Topic #2 demonstration)
@@ -1175,9 +1307,16 @@ class WorkflowEngine:
             self.anomaly_ack_required = True
             result = Result.FAILED
             # Revoke execution authorisation. Completed placements stay put.
-            if self.selected and self.selected.approval_state is ApprovalState.APPROVED:
-                self.selected.approval_state = ApprovalState.PENDING
-                self._set_stage(Stage.WAIT_FOR_OPERATOR_APPROVAL)
+            #
+            # Unconditional, and it used to be conditional on the plan being
+            # APPROVED. That guard is what let the gate be entered without the
+            # approval being withdrawn: any state other than APPROVED fell
+            # through with the stamp untouched, and acknowledging the anomaly
+            # then left "at the approval gate, already approved" — a decision
+            # the operator is asked for and cannot give.
+            self.revoke_approval(
+                f"critical anomaly {event.anomaly_class.value}",
+                actor=Actor.EVENT_INJECTOR)
             message = (f"anomaly {event.anomaly_class.value} (critical) — execution "
                        "HELD, authorisation revoked, operator decision required")
 
@@ -1360,6 +1499,12 @@ class WorkflowEngine:
             "selection_reason": self.selection_reason,
             "approval_state": (self.selected.approval_state.value
                                if self.selected else "pending"),
+            # WHICH decision, about WHICH batch. A consumer that merges an
+            # approval state with a plan from a different revision is merging
+            # two different runs; these are what let it notice.
+            "approval_revision": self.approval_revision,
+            "approval_plan_id": self.approval_plan_id,
+            "approval_inconsistency": self.approval_inconsistency(),
             "detected": self.detected,
             "dynamic_events": [e.to_dict() for e in self.dynamic_events],
             "stats": self.stats.to_dict(),

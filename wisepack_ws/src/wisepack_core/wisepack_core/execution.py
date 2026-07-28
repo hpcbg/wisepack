@@ -158,6 +158,11 @@ ISAAC_STATE_STAGE: Dict[IsaacState, Optional[Stage]] = {
     # workflow stage: the plan may still be awaiting approval when Isaac comes
     # up, and advancing the stage there would show a pick before authorisation.
     IsaacState.READY: None,
+    # The explicit spelling of the same simulator-level fact. It exists so code
+    # and wording cannot blur "the simulator is up" with "the scene in front of
+    # the robot is the one this plan was written against" — only SCENE_READY
+    # means the second, and only the second authorises a pick.
+    IsaacState.SIMULATOR_READY: None,
 
     # The scene-reset lifecycle is about the SIMULATOR, not about an item, so
     # like READY none of it moves the workflow stage. The orchestrator gates

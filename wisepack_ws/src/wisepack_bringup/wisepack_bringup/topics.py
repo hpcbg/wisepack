@@ -86,6 +86,48 @@ PLAN_SUMMARY = "/wisepack/plan/summary"                # String: compact JSON di
 # result. Stamped with the scenario revision it was computed against.
 PLAN_STRATEGY_COMPARISON = "/wisepack/plan/strategy_comparison"  # String: JSON
 
+# --- run correlation (which run a FIWARE projection describes) ----------------
+# Orion-LD holds CURRENT STATE, not a log: an attribute keeps its last value
+# across scenario changes, process restarts and whole runs. Reading it back gives
+# no way to tell a value written seconds ago from one written by the previous
+# run — and a KPI attribute from `isaac_cylinders_smoke` rendered beside a
+# `mixed_pipes_dense` Digital Twin is what that looks like on screen.
+#
+# One correlation topic per FIWARE entity that carries current state, each
+# mapped to that entity's `runCorrelation` attribute. Payload:
+# `wisepack_core.correlation.RunCorrelation`.
+#
+# PUBLISHED AFTER the values they stamp — see correlation.py. A reader polling
+# mid-update then sees the OLD stamp with some new values and withholds the
+# entity, rather than the NEW stamp with some old values and trusting them.
+#
+# Latched, because a projection's identity must be readable by a consumer that
+# attaches long after the run started.
+CORRELATION_SYSTEM = "/wisepack/correlation/system"        # String: JSON
+CORRELATION_SCENARIO = "/wisepack/correlation/scenario"    # String: JSON
+CORRELATION_PLAN = "/wisepack/correlation/plan"            # String: JSON
+CORRELATION_KPI = "/wisepack/correlation/kpi"              # String: JSON
+CORRELATION_ROBOT = "/wisepack/correlation/robot"          # String: JSON
+CORRELATION_ACTIONS = "/wisepack/correlation/actions"      # String: JSON
+CORRELATION_ANOMALY = "/wisepack/correlation/anomaly"      # String: JSON
+CORRELATION_INVENTORY = "/wisepack/correlation/inventory"  # String: JSON
+CORRELATION_CUTTING = "/wisepack/correlation/cutting"      # String: JSON
+
+#: short entity name -> correlation topic. The dashboard and the orchestrator
+#: both iterate this, so an entity cannot gain a projection without gaining a
+#: stamp.
+CORRELATION_TOPICS = {
+    "system": CORRELATION_SYSTEM,
+    "scenario": CORRELATION_SCENARIO,
+    "plan": CORRELATION_PLAN,
+    "kpi": CORRELATION_KPI,
+    "robot": CORRELATION_ROBOT,
+    "actions": CORRELATION_ACTIONS,
+    "anomaly": CORRELATION_ANOMALY,
+    "inventory": CORRELATION_INVENTORY,
+    "cutting": CORRELATION_CUTTING,
+}
+
 # --- operator (FIWARE/dashboard -> orchestrator) ------------------------------
 OPERATOR_APPROVAL = "/wisepack/operator/approval"      # String: APPROVE | REJECT
 OPERATOR_COMMAND = "/wisepack/operator/command"        # String: JSON {command, args}
@@ -230,6 +272,8 @@ def all_topics() -> dict:
     lets a test assert the two agree.
     """
     return {
+        # Which run each FIWARE projection describes — one per stamped entity.
+        **{topic: "std_msgs/String" for topic in CORRELATION_TOPICS.values()},
         SCENARIO_CONFIG: "std_msgs/String",
         SCENARIO_STATE: "std_msgs/String",
         WASTE_ITEMS: "std_msgs/String",

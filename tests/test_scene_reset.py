@@ -151,7 +151,16 @@ def test_scene_ready_requires_an_exact_revision_match():
                              "wisepack_orchestration", "isaac_bridge.py"))
     assert "self.scene_revision == self.required_revision" in src, \
         "a >= comparison would let an older SCENE_READY authorise a newer scenario"
-    assert "ignoring SCENE_READY for revision" in src
+    # The acknowledgement is checked field by field and REJECTED by name; the
+    # rejection sets a mismatch the gate reads, so an unmatched SCENE_READY can
+    # never fall through to opening it.
+    handler = src[src.index("def _on_reset_state"):]
+    handler = handler[:handler.index("\n    def ", 10)]
+    assert "rejecting SCENE_READY" in handler
+    assert handler.index("self.scene_mismatch =") < handler.index(
+        "self.scene_revision = self.required_revision")
+    assert "not self.scene_mismatch" in src, \
+        "a rejected acknowledgement must keep the gate closed"
 
 
 def test_a_new_scenario_requests_a_physical_rebuild():

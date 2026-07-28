@@ -402,6 +402,20 @@ class WisepackIsaacApp:
             self._reset_scene(command)
             return
 
+        if command.command is IsaacCommandType.SYNC_SCENE:
+            # VERIFY OR BUILD, and acknowledge either way. A correct scene is
+            # not destroyed for the sake of ceremony — rebuilding four cylinders
+            # that are already exactly where the plan expects them costs seconds
+            # of settling and corrects nothing. But an acknowledgement is ALWAYS
+            # published and always freshly correlated to THIS run: the
+            # orchestrator must never infer scene readiness from the process
+            # being up, from objects being visible, or from an acknowledgement
+            # issued for a previous run.
+            #
+            # Not run-gated, for the same reason as a reset.
+            self._sync_scene(command)
+            return
+
         reason = self.bridge.gate.reject_reason(
             command.run_id, command.sequence_index, command.attempt)
         if reason:
@@ -645,6 +659,8 @@ class WisepackIsaacApp:
             self.bridge.publish(
                 IsaacState.SCENE_READY, command.run_id,
                 scenario_revision=revision,
+                scene=self._scene_acknowledgement(
+                    command, verified_without_rebuild=False),
                 message=f"scene rebuilt for {self.scenario.scenario_id} "
                         f"({len(self.scene.items)} items)",
                 detail=summary)
@@ -657,6 +673,112 @@ class WisepackIsaacApp:
             self.bridge.publish(
                 IsaacState.RESET_FAILED, command.run_id,
                 scenario_revision=revision,
+                message=f"{type(exc).__name__}: {exc}")
+
+    def _scene_acknowledgement(self, command: IsaacCommand, *,
+                               verified_without_rebuild: bool):
+        """Describe the world that actually exists, for THIS run.
+
+        Everything in it is measured or derived from the scene as built, never
+        echoed back from the command. Echoing the request would make the
+        acknowledgement a tautology — the orchestrator would be checking its own
+        numbers against themselves — and the whole point is to detect the case
+        where the simulator's world and the plan's world disagree.
+        """
+        from wisepack_core.isaac_contract import SceneAcknowledgement  # noqa: PLC0415
+        from wisepack_core.isaac_transform import scene_fingerprint    # noqa: PLC0415
+
+        return SceneAcknowledgement(
+            run_id=command.run_id,
+            scenario_id=self.scenario.scenario_id,
+            scenario_revision=command.scenario_revision,
+            preset=self.config.preset,
+            seed=int(self.config.seed),
+            scene_fingerprint=scene_fingerprint(self.scenario, self.layout),
+            object_ids=sorted(self.scene.items),
+            object_count=len(self.scene.items),
+            robot_home_verified=self._robot_is_home(),
+            container_empty_verified=not [i for i in self.scene.items
+                                          if self._is_in_container(i)],
+            verified_without_rebuild=verified_without_rebuild)
+
+    def _robot_is_home(self) -> bool:
+        """MEASURED, not assumed: read the joints and compare to the ready pose."""
+        import numpy as _np                              # noqa: PLC0415
+        try:
+            dof = self.robot.get_dof_positions().numpy()[0]
+        except Exception:                                # noqa: BLE001
+            return False
+        home = _np.array([0.012, -0.568, 0.0, -2.811, 0.0, 3.037, 0.741])
+        return bool(_np.max(_np.abs(dof[:7] - home)) < 0.35)
+
+    def _scene_matches(self, command: IsaacCommand) -> str:
+        """"" when the CURRENT scene already serves this request, else why not."""
+        from wisepack_core.isaac_transform import scene_fingerprint    # noqa: PLC0415
+
+        preset = command.preset or self.config.preset
+        seed = int(command.seed or self.config.seed)
+        if preset != self.config.preset:
+            return f"built for preset {self.config.preset}, asked for {preset}"
+        if seed != int(self.config.seed):
+            return f"built for seed {self.config.seed}, asked for {seed}"
+        if self.scenario is None:
+            return "no scenario has been built"
+        wanted = build_scenario(preset, seed=seed)
+        if scene_fingerprint(wanted, self.layout) != scene_fingerprint(
+                self.scenario, self.layout):
+            return "the built scene does not match the requested scenario"
+        if len(self.scene.items) != len(wanted.items):
+            return (f"{len(self.scene.items)} object(s) in the scene, "
+                    f"{len(wanted.items)} in the scenario")
+        placed = [i for i in self.scene.items if self._is_in_container(i)]
+        if placed:
+            # A scene holding items from a previous run is NOT reusable, however
+            # well its fingerprint matches — the fingerprint describes the
+            # scenario, and these objects have since been moved.
+            return f"{len(placed)} object(s) are already in the container"
+        if not self._robot_is_home():
+            return "the robot is not at its home pose"
+        return ""
+
+    def _sync_scene(self, command: IsaacCommand) -> None:
+        """Verify the existing scene for this run, or rebuild it, then acknowledge.
+
+        The initial handshake. It exists because "Isaac built a scene from the
+        right preset at startup" is not the same claim as "the world in front of
+        the robot is the world THIS run planned against", and only the second
+        may authorise a pick.
+        """
+        reason = self._scene_matches(command)
+        if reason:
+            print(f"{LOG_APP} SYNC_SCENE -> rebuilding: {reason}")
+            self._reset_scene(command)
+            return
+
+        print(f"{LOG_APP} SYNC_SCENE -> existing scene verified for revision "
+              f"{command.scenario_revision}; not rebuilding")
+        try:
+            # Verified, not merely inspected: the same usability proof a rebuild
+            # has to pass. A scene that looks right but whose articulation view
+            # is dead would otherwise be acknowledged as ready.
+            self._verify_scene_usable()
+            self.bridge.gate.adopt(command.run_id)
+            self._scene_revision = command.scenario_revision
+            acknowledgement = self._scene_acknowledgement(
+                command, verified_without_rebuild=True)
+            self.bridge.publish(
+                IsaacState.SCENE_READY, command.run_id,
+                scenario_revision=command.scenario_revision,
+                scene=acknowledgement,
+                message=f"existing scene verified for "
+                        f"{self.scenario.scenario_id} "
+                        f"({len(self.scene.items)} items)",
+                detail={"verified_without_rebuild": True})
+        except Exception as exc:                        # noqa: BLE001
+            carb.log_error(f"{LOG_APP} scene verification failed: {exc!r}")
+            self.bridge.publish(
+                IsaacState.RESET_FAILED, command.run_id,
+                scenario_revision=command.scenario_revision,
                 message=f"{type(exc).__name__}: {exc}")
 
     def _verify_scene_usable(self) -> None:

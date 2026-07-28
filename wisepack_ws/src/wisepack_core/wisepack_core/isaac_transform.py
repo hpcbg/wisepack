@@ -470,6 +470,72 @@ def check_containment(actual: Pose, container_inner: Vec3,
         detail="; ".join(reasons))
 
 
+def scene_fingerprint(scenario, layout: SceneLayout = DEFAULT_LAYOUT) -> str:
+    """A deterministic digest of the PHYSICAL scene a scenario implies.
+
+    Computed on BOTH sides from the same function, so "the simulator built what
+    this run planned" becomes a string comparison instead of an inference. The
+    orchestrator computes it from the scenario it planned; Isaac computes it from
+    the scenario it built; SCENE_READY carries Isaac's.
+
+    WHAT IT COVERS, and why each part is load-bearing:
+
+      * preset and seed — the generator inputs. Same preset, different seed is a
+        different set of objects wearing the same names.
+      * object ids — which items exist.
+      * dimensions — an id can survive a regeneration while the geometry under
+        it changes, and the plan is written against the geometry.
+      * initial source poses — WHERE the arm will reach for each item. Two scenes
+        with identical ids and dimensions but a different pick row are different
+        worlds to a robot.
+      * the container specification — where things are put, and how much fits.
+
+    What it deliberately does NOT cover: anything that legitimately differs
+    between two correct builds of the same scenario (timestamps, prim paths,
+    material names, camera placement). A fingerprint that changes when nothing
+    physical changed would reject correct scenes, which is worse than useless —
+    it would train an operator to ignore the check.
+
+    Rounded to micrometres before hashing: floating-point recomputation of the
+    same pose can differ in the last bits, and a digest that flips on that would
+    be non-deterministic in exactly the way this exists to prevent.
+    """
+    import hashlib                                        # noqa: PLC0415
+    import json as _json                                  # noqa: PLC0415
+
+    def _round(value: float) -> float:
+        return round(float(value), 6)
+
+    parts: Dict[str, object] = {
+        "preset": getattr(scenario, "preset", ""),
+        "seed": int(getattr(scenario, "seed", 0) or 0),
+        "layout": [_round(layout.table_top_z_m), _round(layout.pick_row_x_m),
+                   [_round(v) for v in layout.container_outer_xy_m]],
+        "items": [],
+        "container": None,
+    }
+    for index, item in enumerate(getattr(scenario, "items", []) or []):
+        pose = table_pose_for_index(index, item, layout)
+        position, orientation = pose_to_world(pose, layout)
+        parts["items"].append({
+            "id": item.item_id,
+            "length_mm": _round(item.length_mm),
+            "outer_diameter_mm": _round(item.outer_diameter_mm),
+            "inner_diameter_mm": _round(getattr(item, "inner_diameter_mm", 0.0) or 0.0),
+            "position_m": [_round(v) for v in position],
+            "orientation": [_round(v) for v in orientation],
+        })
+    template = getattr(scenario, "container_template", None)
+    if template is not None:
+        inner = template.inner_size
+        parts["container"] = {
+            "inner_mm": [_round(inner.x), _round(inner.y), _round(inner.z)],
+            "max_payload_kg": _round(getattr(template, "max_payload_kg", 0.0) or 0.0),
+        }
+    blob = _json.dumps(parts, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(blob.encode("utf-8")).hexdigest()
+
+
 def container_inner_size(container: Optional[Container]) -> Vec3:
     return container.inner_size if container else Vec3(0, 0, 0)
 

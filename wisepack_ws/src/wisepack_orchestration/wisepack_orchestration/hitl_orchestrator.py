@@ -50,6 +50,7 @@ from wisepack_core.events import Actor, DynamicEvent, DynamicEventType, Stage
 from wisepack_core.execution import ExecutionBackend, parse_backend
 from wisepack_core.packing import OptimizerConfig
 from wisepack_core.anomaly import AnomalyEvent
+from wisepack_core.correlation import RunCorrelation
 from wisepack_core.workflow import (
     AnomalyHold, ApprovalRequired, RobotSimConfig, WorkflowConfig, WorkflowEngine,
     WorkflowError,
@@ -76,9 +77,19 @@ class _EngineBehaviour(py_trees.behaviour.Behaviour):
 class GenerateOrLoadScenario(_EngineBehaviour):
     def update(self):
         if self.engine.scenario is not None:
+            # Even on the no-op path: the simulator may have come up after the
+            # scenario existed, and the handshake is idempotent per
+            # (run_id, revision).
+            self.owner.sync_physical_scene()
             return py_trees.common.Status.SUCCESS
         self.engine.generate_or_load_scenario()
         self.owner.publish_scenario()
+        # THE SCENE HANDSHAKE STARTS HERE, not after approval. The scenario and
+        # the run_id are established at this point, which is everything the
+        # request needs to be correlated — and doing it here means the operator
+        # is asked to decide only once the world in front of the robot has been
+        # acknowledged for this exact run.
+        self.owner.sync_physical_scene()
         return py_trees.common.Status.SUCCESS
 
 
@@ -129,14 +140,44 @@ class AwaitApproval(_EngineBehaviour):
     """
 
     def initialise(self):
-        if self.engine.stage is not Stage.WAIT_FOR_OPERATOR_APPROVAL:
-            self.engine.request_approval()
-            self.owner.publish_state()
+        """Enter the gate with a genuine pending decision, or not at all.
+
+        The old guard was "call request_approval unless the stage already says
+        WAIT_FOR_OPERATOR_APPROVAL", which trusted the stage to imply the
+        approval state. It does not: any path that moved the stage back without
+        withdrawing the approval left the tree sitting at the gate on an
+        already-approved plan, and the dashboard asking for a decision that has
+        no effect. The condition is now the approval state itself.
+        """
+        engine = self.engine
+        if engine.selected is None:
+            return
+        at_gate = engine.stage is Stage.WAIT_FOR_OPERATOR_APPROVAL
+        pending_here = (
+            engine.selected.approval_state is ApprovalState.PENDING
+            and engine.approval_plan_id == engine.selected.plan_id
+            and engine.approval_revision == engine.scenario_revision)
+        if at_gate and pending_here:
+            return                      # already a real, current decision
+        if at_gate and engine.selected.approval_state is ApprovalState.APPROVED:
+            # Approved with no hold: this is not a decision point, it is
+            # execution. Leave the stage alone and let update() advance.
+            return
+        engine.request_approval()
+        self.owner.publish_plans()      # the approval state changed, not just the stage
+        self.owner.publish_state()
 
     def update(self):
         state = (self.engine.selected.approval_state.value
                  if self.engine.selected else "pending")
         if state == "approved":
+            # Do not linger at the gate displaying "decision required" for an
+            # already-authorised plan. Advancing the stage here means the very
+            # next published state is an executing one even if the anomaly gate
+            # downstream immediately holds it.
+            if self.engine.stage is Stage.WAIT_FOR_OPERATOR_APPROVAL:
+                self.engine.resume_execution_stage()
+                self.owner.publish_state()
             return py_trees.common.Status.SUCCESS
         if state == "rejected":
             # reject() already queued a re-plan; go round again.
@@ -340,6 +381,13 @@ class HitLOrchestrator(Node):
             "pick_success_pct": pub(T.KPI_PICK_SUCCESS_PCT, Float32),
             "end_to_end_success_pct": pub(T.KPI_END_TO_END_SUCCESS_PCT, Float32),
         }
+        # WHICH RUN each FIWARE projection describes. One per entity that
+        # carries current state; published AFTER that entity's values, never
+        # before — see wisepack_core/correlation.py for why the direction is the
+        # whole design.
+        self.p_correlation = {name: pub(topic, String)
+                              for name, topic in T.CORRELATION_TOPICS.items()}
+        self._correlation_sequence = 0
 
         # -- subscriptions: the operator command path ------------------------
         # These are the ONLY inbound topics. Orion-LD writes them when a
@@ -427,6 +475,7 @@ class HitLOrchestrator(Node):
         self.p_sequence.publish(Int32(data=event.sequence))
         if event.action.startswith("dynamic_event"):
             self.p_dynamic.publish(String(data=json.dumps(event.details)))
+        self.publish_correlation("actions")
         # Surface the decision-relevant transitions on the node log too. The
         # audit trail is the topic, but a human (and validate_wisepack_e2e.sh)
         # reads the console, and a re-plan that is invisible there looks like a
@@ -458,22 +507,102 @@ class HitLOrchestrator(Node):
             except Exception as exc:                    # noqa: BLE001
                 self.get_logger().warn(f"post-replan publish failed: {exc}")
 
+    def _run_correlation(self) -> RunCorrelation:
+        """The identity of the run this process is currently executing."""
+        engine = self.engine
+        selected = engine.selected
+        self._correlation_sequence += 1
+        return RunCorrelation(
+            run_id=engine.run_id,
+            scenario_id=(engine.scenario.scenario_id if engine.scenario else None),
+            scenario_revision=engine.scenario_revision,
+            plan_id=(selected.plan_id if selected else None),
+            # A plan's revision IS the batch revision it was optimized against:
+            # every re-plan bumps the batch, and a plan is never re-issued for a
+            # different one. Carrying it separately keeps the facet meaningful
+            # for a consumer that has the plan but not the scenario.
+            plan_revision=(engine.scenario_revision if selected else None),
+            approval_revision=engine.approval_revision,
+            sequence=self._correlation_sequence)
+
+    #: WHICH facets each projection actually makes a claim about.
+    #:
+    #: A facet a projection has no relationship to must NOT be stamped on it: it
+    #: would go stale whenever that unrelated thing advanced, and the entity
+    #: would be withheld while its contents were perfectly current. Measured
+    #: exactly that way — the scenario entity carried `approval_revision: 0`
+    #: because it is published before the approval gate is entered, so the
+    #: moment `request_approval()` set the revision to 1 the whole scenario
+    #: projection was judged stale and withheld.
+    #:
+    #: run_id, scenario_id and scenario_revision are on EVERYTHING: they are the
+    #: facets that distinguish one run from another, which is the whole point.
+    _CORRELATION_FACETS = {
+        # The plan digest is the only projection that describes an approval.
+        "plan": ("plan_id", "plan_revision", "approval_revision"),
+        # Stage reflects where the workflow is, approval included.
+        "system": ("approval_revision",),
+        # KPIs are computed FROM the plans, so they carry the plan identity —
+        # but not the approval, which does not change a single KPI value.
+        "kpi": ("plan_id", "plan_revision"),
+    }
+
+    def publish_correlation(self, *names: str) -> None:
+        """Stamp the named FIWARE projections with the current run identity.
+
+        CALL THIS AFTER PUBLISHING THE VALUES, not before. A consumer polling
+        between the values and the stamp then sees the OLD stamp beside some new
+        values and withholds the entity — safe. The other order shows the NEW
+        stamp beside some OLD values and trusts them, which is the mixed-run
+        dashboard this exists to prevent.
+        """
+        correlation = self._run_correlation()
+        for name in (names or tuple(self.p_correlation)):
+            publisher = self.p_correlation.get(name)
+            if publisher is None:
+                continue
+            allowed = self._CORRELATION_FACETS.get(name, ())
+            doc = correlation.to_dict()
+            for facet in ("plan_id", "plan_revision", "approval_revision"):
+                if facet not in allowed:
+                    doc[facet] = None
+            publisher.publish(String(data=json.dumps(doc, separators=(",", ":"))))
+
+    def _stamp(self, doc: Dict[str, Any]) -> Dict[str, Any]:
+        """Tag a document with the run and revision it describes.
+
+        EVERY topic the dashboard merges into one view carries this. The topics
+        are latched and arrive independently, so without a stamp a consumer
+        cannot tell a fresh scenario paired with a stale plan from a coherent
+        pair — and it renders the mixture as though it were one run. Observed
+        exactly that way: scenario ``mixed_pipes_dense-s42`` shown next to
+        ``plan-optimized-isaac_cylinders_smoke-s42``, a plan for a different
+        batch entirely.
+        """
+        engine = self.engine
+        doc["run_id"] = engine.run_id
+        doc["scenario_revision"] = engine.scenario_revision
+        doc["scenario_id"] = (engine.scenario.scenario_id
+                              if engine.scenario else None)
+        return doc
+
     def publish_scenario(self) -> None:
         scenario = self.engine.scenario
         if scenario is None:
             return
-        self.p_scenario_cfg.publish(String(data=json.dumps({
+        self.p_scenario_cfg.publish(String(data=json.dumps(self._stamp({
             "preset": scenario.preset, "seed": scenario.seed,
-            "scenario_id": scenario.scenario_id,
             "container_template": scenario.container_template.to_dict()
-            if scenario.container_template else None})))
-        self.p_scenario_state.publish(String(data=json.dumps(
-            {"scenario_id": scenario.scenario_id, **scenario.to_dict()["totals"]})))
+            if scenario.container_template else None}))))
+        self.p_scenario_state.publish(String(data=json.dumps(self._stamp(
+            {**scenario.to_dict()["totals"]}))))
         self.p_items.publish(String(data=json.dumps(
             [i.to_dict() for i in scenario.items])))
+        self.publish_correlation("scenario")
 
     def publish_detection(self) -> None:
         self.p_detected.publish(Int32(data=len(self.engine.detected)))
+        self.publish_correlation("scenario")
 
     def publish_plans(self) -> None:
         """Publish the COMPLETE plans, plus a compact digest for FIWARE.
@@ -490,17 +619,21 @@ class HitLOrchestrator(Node):
             self.p_optimized.publish(
                 String(data=json.dumps(engine.optimized.to_dict(), default=str)))
         if engine.selected:
-            self.p_selected.publish(
-                String(data=json.dumps(engine.selected.to_dict(), default=str)))
+            self.p_selected.publish(String(data=json.dumps(
+                self._stamp(engine.selected.to_dict()), default=str)))
         # ~1 kB digest: this is what the FIWARE bridge maps.
-        self.p_plan_summary.publish(String(data=json.dumps({
+        self.p_plan_summary.publish(String(data=json.dumps(self._stamp({
             "baseline": engine.baseline.summary() if engine.baseline else None,
             "optimized": engine.optimized.summary() if engine.optimized else None,
             "selected": engine.selected.summary() if engine.selected else None,
             "selected_plan_id": engine.selected.plan_id if engine.selected else None,
             "selection_reason": engine.selection_reason,
-            "scenario_revision": engine.scenario_revision,
-        }, default=str)))
+            "approval_revision": engine.approval_revision,
+            "approval_plan_id": engine.approval_plan_id,
+            "approval_state": (engine.selected.approval_state.value
+                               if engine.selected else "pending"),
+        }), default=str)))
+        self.publish_correlation("plan")
         self.publish_kpis()
 
     def _publish_heartbeat(self) -> None:
@@ -529,11 +662,13 @@ class HitLOrchestrator(Node):
             # dashboard change.
             backend["visualization"] = self.isaac.visualization
         self.p_backend.publish(String(data=json.dumps(backend, default=str)))
+        self.publish_correlation("system")
 
     def publish_execution(self) -> None:
         engine = self.engine
         self.p_item.publish(String(data=engine.current_item_id or ""))
         self.p_container.publish(String(data=engine.current_container_id or ""))
+        self.publish_correlation("robot")
         self.publish_state()
         self.publish_kpis()
 
@@ -565,8 +700,23 @@ class HitLOrchestrator(Node):
             # that as a measured zero. It is simply absent until it exists.
             if value is not None:
                 self.p_kpi[topic_key].publish(Float32(data=float(value)))
+        # The KPI attributes are bare scalars in NGSI-LD — `containersBaseline:
+        # 1` says nothing about which scenario produced it, and Orion-LD keeps
+        # it until something overwrites it. This stamp is the only thing that
+        # makes a KPI card attributable to a run.
+        self.publish_correlation("kpi")
 
     # -- inbound ----------------------------------------------------------- #
+
+    def sync_physical_scene(self) -> None:
+        """Ask the physical backend to verify or build the scene for this run.
+
+        No-op for the simulated backend, which has no physical scene, and
+        idempotent per (run_id, revision) for Isaac.
+        """
+        if self.isaac is None:
+            return
+        self.isaac._sync_scene_if_needed(self.engine)
 
     def _scene_refusal(self) -> str:
         """Why physical authorisation must be refused right now, or ""."""
@@ -875,6 +1025,7 @@ class HitLOrchestrator(Node):
     def _publish_anomaly_state(self) -> None:
         self.p_anomaly_state.publish(
             String(data=json.dumps(self.engine.anomaly_snapshot(), default=str)))
+        self.publish_correlation("anomaly")
 
     # -- whole-process (cutting / inventory / logistics) ------------------- #
 
@@ -950,6 +1101,7 @@ class HitLOrchestrator(Node):
         if active is not None:
             self.p_log_task_state.publish(String(data=json.dumps(
                 active.to_dict(), default=str)))
+        self.publish_correlation("cutting", "inventory")
 
     def _compare_strategies(self, args: Dict[str, Any]) -> None:
         """Run + validate every strategy and publish a structured comparison.
@@ -1041,20 +1193,28 @@ class HitLOrchestrator(Node):
         # before the old engine goes out of scope; the bridge re-opens on its
         # next tick when it notices the run_id changed.
         if self.isaac is not None:
+            # Stop the arm FIRST, before the old engine goes out of scope.
             self.isaac.abort_run(previous_engine,
                                  "operator reset — starting a new run")
             self.isaac.run_open = False
-            # A NEW SOFTWARE SCENARIO IS NOT A PHYSICAL RESET. Ask the backend
-            # to rebuild, and gate approval and every pick on SCENE_READY for
-            # this exact revision. Without it the previous run's cylinders are
-            # still lying in the container while the new plan assumes they are
-            # back on the table, and the arm is sent after objects that are not
-            # there.
-            self.isaac.request_scene_reset(self.engine,
-                                           self.engine.scenario_revision)
 
         # Drive straight to the approval gate — never past it.
+        #
+        # THE SCENARIO IS BUILT BEFORE THE REBUILD IS REQUESTED, and it used to
+        # be the other way round. `generate_or_load_scenario()` bumps the batch
+        # revision and creates the item set, so a request issued before it was
+        # stamped with the PREVIOUS revision and carried no fingerprint or
+        # object count — it asked the simulator to rebuild for a scenario that
+        # did not exist yet, and then measured the answer against a different
+        # one.
         self.engine.generate_or_load_scenario()
+        if self.isaac is not None:
+            # A NEW SOFTWARE SCENARIO IS NOT A PHYSICAL RESET. Ask the backend
+            # to rebuild — unconditionally here, because objects from the
+            # previous run really are lying in the container — and gate approval
+            # and every pick on a SCENE_READY correlated with this exact run.
+            self.isaac.request_scene_reset(self.engine,
+                                           self.engine.scenario_revision)
         self.engine.scan_and_detect()
         self.engine.generate_plans()
         self.engine.digital_twin_validate()

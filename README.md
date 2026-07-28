@@ -545,6 +545,60 @@ density with a boundary or segregation violation:
 | `retrievability` | items reachable without unstacking | more containers — the trade-off is shown, not hidden |
 | `segregation` | each waste group consolidated | fewer mixed-group boxes, possibly more boxes |
 
+### The approval invariant
+
+An approval is not a boolean. It is a decision about **one plan of one batch
+revision**, and the workflow enforces that rather than assuming it:
+
+* `WAIT_FOR_OPERATOR_APPROVAL` always means `approval_state = pending`. The gate
+  is reachable from exactly two functions — `request_approval()` and
+  `revoke_approval()` — and both set the approval state as well as the stage. A
+  test counts the call sites so a third one cannot be added quietly.
+* An **approved plan with no active hold advances to execution**. It never sits
+  at the gate, because the dashboard would then have to say "decision required"
+  while correctly disabling every control — a decision the operator is asked for
+  and cannot give.
+* Anything that needs renewed authorisation — a critical anomaly, a re-plan, a
+  scenario reset, any change to the batch — calls `revoke_approval()`, which
+  **withdraws the approval, re-stamps it to the current revision and plan, and
+  only then enters the gate**, in that order. Revocation is unconditional: an
+  earlier version revoked only an `approved` plan, and every other state fell
+  through with the stamp pointing at a decision nobody had made.
+* `approve()` refuses a decision aimed at a superseded revision or a different
+  plan, so a click that lands while a re-plan is in flight cannot authorise the
+  replacement.
+
+`WorkflowEngine.approval_inconsistency()` states the invariant in one place and
+returns the reason it is violated; the dashboard shows that reason instead of
+operator controls.
+
+### One run, or no controls
+
+The orchestrator's topics are latched and independent, so the dashboard's mirror
+is always a mixture of whatever each publisher last said. After a reset the
+scenario topic can carry the new run while the plan topic still carries the old
+one — observed as scenario `mixed_pipes_dense-s42` rendered beside plan
+`plan-optimized-isaac_cylinders_smoke-s42`, a plan for a different batch.
+
+Every document the dashboard merges is therefore stamped with `run_id`,
+`scenario_id` and `scenario_revision`, and the snapshot compares them:
+
+| checked | across |
+|---|---|
+| `run_id`, `scenario_revision` | the scenario, the selected plan, the plan summary |
+| `selected_plan_id` | the plan summary vs the published plan |
+| `approval_plan_id`, `approval_revision` | the pending decision vs the selected plan |
+
+When they disagree the dashboard reports a degraded diagnostic — *"Inconsistent
+state — controls withheld: …"* — and withholds Approve, Reject and Alternative
+until the orchestrator republishes a consistent set. It does **not** guess which
+half is current, and it does not render the mixture. Components published by an
+older orchestrator carry no stamp; those are treated as unknown rather than
+conflicting, so a rolling upgrade does not disable the controls.
+
+The Diagnostics page shows the canonical control state beside the displayed one,
+which is what makes a FIWARE echo lag distinguishable from a real contradiction.
+
 ### Scenario C — a late-arriving waste component
 
 ![A late waste component triggers re-planning and renewed approval](images/generated/hitl-dynamic-replan.gif)

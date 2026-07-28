@@ -183,6 +183,51 @@
           "entityId": "urn:ngsi-ld:WISEPACKKPI:current",
           "attribute": "endToEndSuccessPct"
         },
+        "rt/wisepack/correlation/system": {
+          "entityType": "WISEPACKSystem",
+          "entityId": "urn:ngsi-ld:WISEPACKSystem:main",
+          "attribute": "runCorrelation"
+        },
+        "rt/wisepack/correlation/scenario": {
+          "entityType": "WISEPACKScenario",
+          "entityId": "urn:ngsi-ld:WISEPACKScenario:current",
+          "attribute": "runCorrelation"
+        },
+        "rt/wisepack/correlation/plan": {
+          "entityType": "WISEPACKPackingPlan",
+          "entityId": "urn:ngsi-ld:WISEPACKPackingPlan:current",
+          "attribute": "runCorrelation"
+        },
+        "rt/wisepack/correlation/kpi": {
+          "entityType": "WISEPACKKPI",
+          "entityId": "urn:ngsi-ld:WISEPACKKPI:current",
+          "attribute": "runCorrelation"
+        },
+        "rt/wisepack/correlation/robot": {
+          "entityType": "WISEPACKRobot",
+          "entityId": "urn:ngsi-ld:WISEPACKRobot:arm-01",
+          "attribute": "runCorrelation"
+        },
+        "rt/wisepack/correlation/actions": {
+          "entityType": "WISEPACKActionStream",
+          "entityId": "urn:ngsi-ld:WISEPACKActionStream:main",
+          "attribute": "runCorrelation"
+        },
+        "rt/wisepack/correlation/anomaly": {
+          "entityType": "WISEPACKAnomaly",
+          "entityId": "urn:ngsi-ld:WISEPACKAnomaly:main",
+          "attribute": "runCorrelation"
+        },
+        "rt/wisepack/correlation/inventory": {
+          "entityType": "WISEPACKInventory",
+          "entityId": "urn:ngsi-ld:WISEPACKInventory:main",
+          "attribute": "runCorrelation"
+        },
+        "rt/wisepack/correlation/cutting": {
+          "entityType": "WISEPACKCutting",
+          "entityId": "urn:ngsi-ld:WISEPACKCutting:main",
+          "attribute": "runCorrelation"
+        },
         "rt/wisepack/operator/approval": {
           "entityType": "WISEPACKSystem",
           "entityId": "urn:ngsi-ld:WISEPACKSystem:main",

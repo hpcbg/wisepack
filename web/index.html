@@ -81,6 +81,9 @@
   .conn::before{content:'';display:inline-block;width:7px;height:7px;border-radius:50%;
     margin-right:6px;vertical-align:1px;background:var(--mut)}
   .conn.on::before{background:var(--ok)} .conn.off::before{background:var(--bad)}
+  /* reachable, but still holding another run's projections */
+  .conn.warn::before{background:var(--warn)}
+  .badge.conn.warn{color:var(--warn);border-color:var(--warn)}
 
   .wrap{display:grid;grid-template-columns:minmax(0,1.35fr) minmax(0,1fr);gap:12px;padding:12px}
   @media (max-width:1150px){ .wrap{grid-template-columns:1fr} }
@@ -657,10 +660,19 @@ function renderHeader(s) {
   }
 
   const f = $("#b-fiware");
-  const conn = s.fiware && s.fiware.connected;
-  f.textContent = "FIWARE " + (conn === true ? "connected" : conn === false ? "unreachable" : "n/a");
-  f.className = "badge conn " + (conn === true ? "on" : conn === false ? "off" : "");
-  f.title = (s.fiware && s.fiware.error) || "";
+  const fw = s.fiware || {};
+  const conn = fw.connected;
+  // REACHABLE IS NOT CURRENT. Orion-LD keeps every attribute's last value
+  // across scenario changes and whole runs, so "connected" alone was being read
+  // as "these values describe this run". A broker that answers but still holds
+  // the previous run's projections gets its own wording.
+  const stale = conn === true && (fw.sync_status === "stale" || fw.sync_status === "partial");
+  f.textContent = "FIWARE " + (stale ? "syncing"
+    : conn === true ? "connected" : conn === false ? "unreachable" : "n/a");
+  f.className = "badge conn " + (stale ? "warn" : conn === true ? "on" : conn === false ? "off" : "");
+  f.title = stale
+    ? (fw.sync_detail || "FIWARE reachable — awaiting current-run synchronization")
+    : (fw.error || "");
 
   const sc = $("#b-scenario");
   if (sc) sc.textContent = (s.scenario && s.scenario.scenario_id)
@@ -675,7 +687,26 @@ function renderHeader(s) {
   const box = $("#approval-warn");
   box.innerHTML = "";
   const ctlEarly = s.control || {};
-  if (ctlEarly.stage === "WAIT_FOR_OPERATOR_APPROVAL" && ctlEarly.block_reason) {
+  const ctlApproved = ctlEarly.approval_state === "approved";
+  if (ctlEarly.consistent === false) {
+    // The components on screen describe different runs. Say that, and say it
+    // instead of operator controls — a decision made against a mixture is a
+    // decision about nothing.
+    box.append(el("div", { class: "warnbox bad" },
+      "Inconsistent state — controls withheld: " + (ctlEarly.inconsistency || "")));
+  } else if (ctlApproved) {
+    // NEVER "Decision required" for an approved plan. There is no decision to
+    // make, and pairing that sentence with a correctly-disabled Approve button
+    // is the contradiction this branch exists to remove. What the operator
+    // needs to know is why an authorised plan is not moving.
+    box.append(el("div", { class: "warnbox" },
+      ctlEarly.anomaly_hold
+        ? "Plan approved. Execution is HELD by an anomaly — acknowledge it to resume."
+        : ctlEarly.scene_ready === false
+          ? "Plan approved. Waiting for the physical scene: " +
+            (ctlEarly.scene_reason || "the scene is not ready for this scenario") + "."
+          : "Plan approved. No further decision is required."));
+  } else if (ctlEarly.stage === "WAIT_FOR_OPERATOR_APPROVAL" && ctlEarly.block_reason) {
     // NEVER say "awaiting your decision" while every decision control is dead
     // without saying why. The reason comes from the canonical control state,
     // so it is the actual blocker and not a guess.
@@ -687,6 +718,18 @@ function renderHeader(s) {
   } else if (stage === "DEGRADED") {
     box.append(el("div", { class: "warnbox" },
       "DEGRADED — the system is held. " + (s.degraded_reason || "")));
+  }
+  const fwSync = s.fiware || {};
+  if (fwSync.connected === true &&
+      (fwSync.sync_status === "stale" || fwSync.sync_status === "partial")) {
+    // Stated, not implied. The alternative — showing the previous run's values
+    // with no marking — is what produced KPI cards from one scenario beside a
+    // Digital Twin from another.
+    box.append(el("div", { class: "warnbox" },
+      "FIWARE reachable — awaiting current-run synchronization. " +
+      (fwSync.sync_detail || "") +
+      " Values that belong to an earlier run are withheld; panels with a ROS " +
+      "source keep showing live ROS values."));
   }
   // OPERATOR CONTROLS ARE ENABLED FROM CANONICAL ROS/DDS STATE, never from the
   // FIWARE readback. In FIWARE mode `stage` above is deliberately the value

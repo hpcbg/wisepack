@@ -64,14 +64,19 @@ from wisepack_core.execution import (
 )
 from wisepack_core.isaac_contract import (
     ContractError, IsaacCommand, IsaacCommandType, IsaacFeedback, IsaacState,
-    RunGate,
+    RunGate, SceneAcknowledgement,
 )
 from wisepack_core.isaac_transform import (
     DEFAULT_LAYOUT, SceneLayout, dimensions_for, placement_pose,
-    table_pose_for_index,
+    scene_fingerprint, table_pose_for_index,
 )
 
 LOG = "[isaac-bridge]"
+
+#: Feedback about the SCENE rather than about an item or a run's execution.
+#: Correlated by its own fields, not by the run gate — see `_on_feedback`.
+_SCENE_LIFECYCLE = (IsaacState.RESET_REQUESTED, IsaacState.RESETTING,
+                    IsaacState.SCENE_READY, IsaacState.RESET_FAILED)
 
 #: Isaac physical state -> the audit-trail action name it is recorded under.
 #: These names are what a FIWARE consumer sees in the NGSI-LD action stream, so
@@ -143,6 +148,16 @@ class IsaacExecutionBridge:
         self.reset_failed_reason: str = ""
         self._reset_requested_at: float = 0.0
         self.reset_timeout_s: float = 180.0
+        #: WHAT was asked for and WHAT came back, kept apart so a mismatch can be
+        #: described instead of merely reported as "not ready".
+        self.requested_fingerprint: str = ""
+        self.requested_object_count: int = 0
+        self.acknowledged: Optional[SceneAcknowledgement] = None
+        self.scene_mismatch: str = ""
+        #: True once the scene handshake has been sent for the current run. The
+        #: handshake used to happen only on an explicit reset, so a first run sat
+        #: behind a gate nothing was ever going to open.
+        self.scene_requested_for_run: str = ""
         #: The backend-neutral visualization descriptor the simulator reported
         #: with READY. Passed through verbatim — the orchestrator does not know
         #: what a WebRTC port is and must not learn.
@@ -172,7 +187,34 @@ class IsaacExecutionBridge:
             "scene_ready": self.scene_ready,
             "reset_in_progress": self.reset_in_progress,
             "reset_failed_reason": self.reset_failed_reason,
+            # TWO READINESS LEVELS, never collapsed. `simulator_ready` is the
+            # process, its ROS bridge and the physics app; `scene_ready` is one
+            # exact run's world, verified. Only the second authorises a pick.
+            "ros_bridge_ready": self.simulator_ready,
+            "scene_status": self.scene_status,
+            "scene_mismatch": self.scene_mismatch,
+            "requested_fingerprint": self.requested_fingerprint,
+            "acknowledged_fingerprint": (self.acknowledged.scene_fingerprint
+                                         if self.acknowledged else ""),
+            "expected_object_count": self.requested_object_count,
+            "actual_object_count": (self.acknowledged.object_count
+                                    if self.acknowledged else None),
+            "acknowledged_scene": (self.acknowledged.to_dict()
+                                   if self.acknowledged else None),
         }
+
+    @property
+    def scene_status(self) -> str:
+        """building | ready | mismatch | failed | awaiting-acknowledgement."""
+        if self.reset_failed_reason:
+            return "failed"
+        if self.scene_mismatch:
+            return "mismatch"
+        if self.reset_in_progress:
+            return "building"
+        if self.scene_ready:
+            return "ready"
+        return "awaiting-acknowledgement"
 
     @property
     def scene_ready(self) -> bool:
@@ -184,6 +226,7 @@ class IsaacExecutionBridge:
         """
         return (not self.reset_in_progress
                 and not self.reset_failed_reason
+                and not self.scene_mismatch
                 and self.scene_revision == self.required_revision)
 
     def scene_block_reason(self) -> str:
@@ -192,40 +235,106 @@ class IsaacExecutionBridge:
             return f"the simulator could not rebuild the scene: {self.reset_failed_reason}"
         if self.reset_in_progress:
             return "the simulator is rebuilding the physical scene"
+        if self.scene_mismatch:
+            return f"the simulator's scene does not match this run: {self.scene_mismatch}"
         if self.scene_revision != self.required_revision:
-            return ("the physical scene has not been rebuilt for this scenario "
-                    "yet — the previous run's objects may still be in the "
-                    "container")
+            if self.simulator_ready:
+                # ACCURACY MATTERS HERE. Claiming the scene "has not been
+                # rebuilt" while the operator is looking at a correct-looking
+                # Panda, four cylinders and an empty container reads as a bug in
+                # the dashboard. What is actually missing is the correlated
+                # acknowledgement for THIS run.
+                return ("Isaac is ready, but the scene acknowledgement for the "
+                        "current run has not been received")
+            return ("the physical scene has not been built and acknowledged for "
+                    "this scenario yet — the previous run's objects may still "
+                    "be in the container")
         return ""
 
     def request_scene_reset(self, engine, revision: int) -> None:
-        """Ask the backend to rebuild its scene for `revision`, and gate on it.
+        """Ask the backend to REBUILD its scene for `revision`, and gate on it.
 
         Called whenever a NEW scenario is generated. Generating a new software
         scenario is NOT sufficient to reset a physical backend, and treating it
         as sufficient is what let the arm be sent after objects that were
         already sitting in the container.
         """
+        self._request_scene(engine, revision, rebuild=True)
+
+    def request_scene_sync(self, engine, revision: Optional[int] = None) -> None:
+        """Ask the backend to VERIFY OR BUILD its scene for the current run.
+
+        Sent on EVERY run, including the first one — which is the fix for a real
+        deadlock. The initial scene used to be trusted on the grounds that the
+        launcher passed Isaac the same (preset, seed) the run was planned from,
+        and that trust was applied inside `open_run()`. But `open_run()` runs
+        inside the execution loop, which only runs after approval, and approval
+        waits for the scene gate. So on a first `isaac-fiware` launch Isaac was
+        up with a correct four-cylinder scene, the dashboard said the scene had
+        not been rebuilt, and Approve stayed disabled with no way out but
+        "Reset run & generate".
+
+        Unlike a reset this permits Isaac to answer "already correct" after
+        verifying, rather than destroying and recreating a scene that matches.
+        It must still send a fresh SCENE_READY correlated with THIS run: an
+        acknowledgement from the previous run is not evidence about this one.
+        """
+        if revision is None:
+            revision = int(getattr(engine, "scenario_revision", 0))
+        self._request_scene(engine, revision, rebuild=False)
+
+    def _sync_scene_if_needed(self, engine) -> None:
+        """Request a scene acknowledgement for this run, exactly once.
+
+        Idempotent per (run_id, revision): a repeated READY, a re-published
+        latched sample or a second tick must not restart the handshake and reset
+        its timeout clock forever.
+        """
+        if not self.simulator_ready or engine.scenario is None:
+            return
+        revision = int(getattr(engine, "scenario_revision", 0))
+        if (self.scene_requested_for_run == engine.run_id
+                and self.required_revision == revision):
+            return
+        if self.scene_ready and self.scene_revision == revision:
+            return
+        self.request_scene_sync(engine, revision)
+
+    def _request_scene(self, engine, revision: int, *, rebuild: bool) -> None:
+        scenario = engine.scenario
         self.required_revision = int(revision)
         self.reset_in_progress = True
         self.reset_failed_reason = ""
+        self.scene_mismatch = ""
+        self.acknowledged = None
         self._reset_requested_at = time.monotonic()
         self._in_flight = None
         self._in_flight_command = None
-        scenario = engine.scenario
+        self.scene_requested_for_run = engine.run_id
+        # Computed from the scenario THIS run planned against, by the same
+        # function Isaac will use on the scene it actually has. That turns
+        # "is the world the right one?" into a string comparison.
+        self.requested_fingerprint = (scene_fingerprint(scenario, self.layout)
+                                      if scenario is not None else "")
+        self.requested_object_count = len(scenario.items) if scenario else 0
+        command = (IsaacCommandType.RESET_SCENE if rebuild
+                   else IsaacCommandType.SYNC_SCENE)
         self._publish(IsaacCommand(
-            command=IsaacCommandType.RESET_SCENE,
+            command=command,
             run_id=engine.run_id,
             preset=scenario.preset if scenario else engine.config.preset,
             seed=int(scenario.seed if scenario else engine.config.seed),
-            total_items=len(scenario.items) if scenario else 0,
+            total_items=self.requested_object_count,
             scenario_revision=self.required_revision))
         engine.note_physical_progress(
-            None, "isaac_scene_reset_requested", None, None,
-            f"physical scene rebuild requested for scenario revision "
-            f"{self.required_revision}",
+            None, ("isaac_scene_reset_requested" if rebuild
+                   else "isaac_scene_sync_requested"), None, None,
+            (f"physical scene {'rebuild' if rebuild else 'verification'} "
+             f"requested for scenario revision {self.required_revision}"),
             details={"scenario_revision": self.required_revision,
-                     "preset": scenario.preset if scenario else ""})
+                     "preset": scenario.preset if scenario else "",
+                     "scene_fingerprint": self.requested_fingerprint,
+                     "expected_object_count": self.requested_object_count})
 
     # ------------------------------------------------------------------ #
     # Outbound
@@ -256,15 +365,17 @@ class IsaacExecutionBridge:
         self._in_flight_command = None
         self._run_opened_at = time.monotonic()
         self.results = []
-        # THE INITIAL SCENE IS TRUSTED, and only the initial one. Isaac builds
-        # its scene at startup from the (preset, seed) the launcher passed —
-        # the same pair this run was planned from — and warns loudly if they
-        # disagree. Every LATER scenario needs an explicit rebuild, which is
-        # what request_scene_reset gates.
-        if self.scene_revision < 0:
-            self.required_revision = int(getattr(engine, "scenario_revision", 0))
-            self.scene_revision = self.required_revision
-
+        # THE INITIAL SCENE IS NOT TRUSTED, and used to be.
+        #
+        # The old shortcut set `scene_revision = required_revision` here on the
+        # first run, reasoning that the launcher gave Isaac the same (preset,
+        # seed) the run was planned from. Two things were wrong with it. Built
+        # from the right preset is not built FOR THIS RUN — nothing tied the
+        # scene to a run_id or a revision. And this code path runs inside the
+        # execution loop, which is only reached after approval, while approval
+        # itself waits on the scene gate: on a first launch the gate could never
+        # open. The handshake is now requested from the readiness path instead,
+        # where it happens before the operator is asked to decide.
         scenario = engine.scenario
         self._publish(IsaacCommand(
             command=IsaacCommandType.RUN_BEGIN,
@@ -502,11 +613,31 @@ class IsaacExecutionBridge:
         self.node.get_logger().info(
             f"{LOG} <- {feedback.state.value} "
             f"{feedback.item_id or '-'} run={feedback.run_id}")
-        reason = self.gate.reject_reason(feedback.run_id, -1)
-        if reason:
-            self.node.get_logger().warn(
-                f"{LOG} ignoring {feedback.state.value} — {reason}")
-            return
+
+        # THE RUN GATE APPLIES TO EXECUTION, NOT TO LIFECYCLE.
+        #
+        # It used to apply to everything, and its first rule is "no run has been
+        # opened yet (RUN_BEGIN not received)". A run is opened from the
+        # execution loop, which runs after approval — so on a first launch the
+        # simulator's READY was discarded, `simulator_ready` never became True,
+        # the scene handshake never started, and approval waited on a gate that
+        # nothing could open. The operator saw a correct scene, a disabled
+        # Approve button, and no way forward except a reset.
+        #
+        # Readiness and the scene lifecycle are not claims about an item, and
+        # they carry their own correlation: a run_id, a scenario revision and a
+        # full scene acknowledgement, every field of which is checked in
+        # `_on_reset_state`. They are therefore admitted before a run exists and
+        # validated on their own terms.
+        lifecycle = (feedback.state in (IsaacState.READY,
+                                        IsaacState.SIMULATOR_READY)
+                     or feedback.state in _SCENE_LIFECYCLE)
+        if not lifecycle:
+            reason = self.gate.reject_reason(feedback.run_id, -1)
+            if reason:
+                self.node.get_logger().warn(
+                    f"{LOG} ignoring {feedback.state.value} — {reason}")
+                return
 
         try:
             self._apply(engine, feedback)
@@ -521,8 +652,13 @@ class IsaacExecutionBridge:
         state = feedback.state
         self._last_state = state
 
-        if state is IsaacState.READY:
-            # Refreshed on every READY, not only the first: a simulator that
+        if state in (IsaacState.READY, IsaacState.SIMULATOR_READY):
+            # SIMULATOR-LEVEL READINESS ONLY. The process is up, its ROS bridge
+            # is up and the physics application is running. It says nothing
+            # about which run the scene corresponds to, and it authorises
+            # nothing — that is what the scene handshake below is for.
+            #
+            # Refreshed on every report, not only the first: a simulator that
             # restarts with streaming newly enabled must be able to correct a
             # previously-published "unavailable".
             self.visualization = feedback.detail.get("visualization")
@@ -530,12 +666,22 @@ class IsaacExecutionBridge:
             if not self.simulator_ready:
                 self.simulator_ready = True
                 self.node.get_logger().info(
-                    f"{LOG} Isaac Sim reported READY for run {feedback.run_id}")
+                    f"{LOG} Isaac Sim reported {state.value} for run "
+                    f"{feedback.run_id} — simulator up; scene not yet "
+                    "acknowledged for this run")
                 engine.note_physical_progress(
-                    None, _PROGRESS_ACTION[state], None, None,
-                    "Isaac Sim scene built; physical execution may begin",
+                    None, _PROGRESS_ACTION[IsaacState.READY], None, None,
+                    "Isaac Sim process and ROS bridge ready — the scene is not "
+                    "yet acknowledged for this run",
                     details={**feedback.detail,
                              "backend": ExecutionBackend.ISAAC.value})
+            # THE INITIAL HANDSHAKE. Ask for the scene as soon as the simulator
+            # can answer, and do it here rather than in the execution loop: the
+            # loop only runs after approval, and approval waits for the scene.
+            # Requesting it from the readiness path is what breaks that
+            # deadlock, and it makes the first run take exactly the same
+            # correlated path as a reset.
+            self._sync_scene_if_needed(engine)
             return
 
         # NOTE the receiver: these are properties of the FEEDBACK MESSAGE, not of
@@ -544,8 +690,7 @@ class IsaacExecutionBridge:
         # non-READY report fail to apply — the orchestrator saw the simulator
         # come up and then heard nothing more, and eventually timed the item out
         # while the arm had in fact completed it. Measured end to end.
-        if state in (IsaacState.RESET_REQUESTED, IsaacState.RESETTING,
-                     IsaacState.SCENE_READY, IsaacState.RESET_FAILED):
+        if state in _SCENE_LIFECYCLE:
             self._on_reset_state(engine, feedback)
             return
 
@@ -572,25 +717,67 @@ class IsaacExecutionBridge:
         """Track the scene-rebuild lifecycle and open the gate on SCENE_READY."""
         state = feedback.state
         if state is IsaacState.SCENE_READY:
-            if feedback.scenario_revision != self.required_revision:
-                # A SCENE_READY for a DIFFERENT revision must not open the gate.
+            # ACCEPTED ONLY WHEN EVERY CORRELATION FIELD MATCHES. A SCENE_READY
+            # is a claim about one exact run's world, and the ways it can be
+            # wrong are not interchangeable: an old revision, another run's id, a
+            # different preset or seed, the right ids with different geometry, a
+            # missing object, an unverified home pose. Each is named rather than
+            # collapsed into "not ready", because "not ready" is not actionable
+            # and the operator can see a scene sitting right there.
+            scenario = engine.scenario
+            reasons = []
+            acknowledgement = feedback.scene
+            if acknowledgement is None:
+                # An older simulator that answers with no acknowledgement can
+                # still be correlated on the revision it carries — but nothing
+                # beyond that is verified, and it is recorded as such.
+                if feedback.scenario_revision != self.required_revision:
+                    reasons.append(
+                        f"acknowledged scenario revision "
+                        f"{feedback.scenario_revision} but this run is at "
+                        f"{self.required_revision}")
+            else:
+                reasons = acknowledgement.mismatches(
+                    run_id=engine.run_id,
+                    scenario_id=(scenario.scenario_id if scenario else ""),
+                    revision=self.required_revision,
+                    preset=(scenario.preset if scenario else ""),
+                    seed=int(scenario.seed) if scenario else 0,
+                    fingerprint=self.requested_fingerprint,
+                    object_count=self.requested_object_count)
+            if reasons:
+                self.reset_in_progress = False
+                self.scene_mismatch = "; ".join(reasons)
+                self.acknowledged = acknowledgement
                 self.node.get_logger().warn(
-                    f"{LOG} ignoring SCENE_READY for revision "
-                    f"{feedback.scenario_revision}; this run needs "
-                    f"{self.required_revision}")
+                    f"{LOG} rejecting SCENE_READY: {self.scene_mismatch}")
+                engine.note_physical_progress(
+                    None, "isaac_scene_rejected", None, None,
+                    f"scene acknowledgement rejected: {self.scene_mismatch}",
+                    details={"scenario_revision": feedback.scenario_revision,
+                             "required_revision": self.required_revision,
+                             "reasons": reasons})
+                self.node.publish_execution()
                 return
-            self.scene_revision = feedback.scenario_revision
+            self.scene_revision = self.required_revision
+            self.acknowledged = acknowledgement
+            self.scene_mismatch = ""
             self.reset_in_progress = False
             self.reset_failed_reason = ""
-            self.gate.adopt(engine.run_id)     # a rebuilt scene is a fresh run
+            self.gate.adopt(engine.run_id)     # a verified scene is a fresh run
+            verified_only = bool(acknowledgement
+                                 and acknowledgement.verified_without_rebuild)
             self.node.get_logger().info(
-                f"{LOG} scene rebuilt for revision {self.scene_revision}")
+                f"{LOG} scene {'verified' if verified_only else 'rebuilt'} for "
+                f"revision {self.scene_revision}")
             engine.note_physical_progress(
                 None, "isaac_scene_ready", None, None,
-                f"physical scene rebuilt for scenario revision "
-                f"{self.scene_revision}",
+                (f"physical scene {'verified' if verified_only else 'rebuilt'} "
+                 f"for scenario revision {self.scene_revision}"),
                 details={**feedback.detail,
-                         "scenario_revision": self.scene_revision})
+                         "scenario_revision": self.scene_revision,
+                         "scene": (acknowledgement.to_dict()
+                                   if acknowledgement else None)})
         elif state is IsaacState.RESET_FAILED:
             self.reset_in_progress = False
             self.reset_failed_reason = feedback.message or "reset failed"

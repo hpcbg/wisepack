@@ -235,6 +235,12 @@ def qos_for(topic: str) -> QoSProfile:
     if topic in (T.OPERATOR_APPROVAL, T.OPERATOR_COMMAND,
                  T.CUTTING_APPROVAL, T.INVENTORY_REQUEST):
         return command_qos()
+    if topic in T.CORRELATION_TOPICS.values():
+        # State, and latched: which run a projection describes must be readable
+        # by a consumer that attached long after the run started. A correlation
+        # that arrives only on the next change would leave every entity
+        # unverifiable — and therefore withheld — until something moved.
+        return state_qos()
     if topic == T.ISAAC_COMMAND:
         # A physical instruction must not be lost, and Isaac Sim takes ~30 s to
         # boot — far longer than the orchestrator takes to publish RUN_BEGIN. So

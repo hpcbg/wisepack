@@ -29,6 +29,8 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional
 
+from wisepack_core.correlation import RunCorrelation, describe_mismatch
+
 # --------------------------------------------------------------------------- #
 # Schema
 # --------------------------------------------------------------------------- #
@@ -155,6 +157,22 @@ class DashboardSnapshot:
     #: (the simulated backend), so it can never block anything there.
     control_scene_ready: Optional[bool] = None
     control_scene_reason: str = ""
+    #: The identity every component on screen must agree on. Populated from the
+    #: per-topic stamps; "" means they agree.
+    control_inconsistency: str = ""
+    control_identity: Dict[str, Any] = field(default_factory=dict)
+    control_approval_revision: Optional[int] = None
+    control_approval_plan_id: Optional[str] = None
+    #: FIWARE run-correlation verdict. `fiware_sync_status` is one of
+    #: synchronized | partial | stale | unknown | disconnected.
+    fiware_sync_status: str = "unknown"
+    fiware_sync_detail: str = ""
+    fiware_run_id: Optional[str] = None
+    fiware_scenario_revision: Optional[int] = None
+    fiware_stage: Optional[str] = None
+    #: Every field NOT applied because its entity described another run.
+    #: Each entry: {entity, field, reason}. Diagnostics renders this verbatim.
+    rejected_stale_fields: List[Dict[str, Any]] = field(default_factory=list)
     execution_backend_known: bool = False
     isaac: Optional[Dict[str, Any]] = None
     isaac_results: List[Dict[str, Any]] = field(default_factory=list)
@@ -200,6 +218,11 @@ class DashboardSnapshot:
         decision" while every decision control is dead, with no reason given, is
         the specific failure this exists to prevent.
         """
+        # FIRST, because everything below reads fields that would then be
+        # describing different runs. Controls whose effect cannot be stated are
+        # not offered at all.
+        if self.control_inconsistency:
+            return self.control_inconsistency
         if self.control_anomaly_hold:
             return ("an anomaly is holding execution — acknowledge it before "
                     "authorising anything")
@@ -241,9 +264,15 @@ class DashboardSnapshot:
             "anomaly_ack_required": self.control_anomaly_ack_required,
             "scene_ready": self.control_scene_ready,
             "scene_reason": self.control_scene_reason,
+            "consistent": not self.control_inconsistency,
+            "inconsistency": self.control_inconsistency,
+            "identity": dict(self.control_identity),
+            "approval_revision": self.control_approval_revision,
+            "approval_plan_id": self.control_approval_plan_id,
             # Same revision guard for the two other plan-scoped decisions.
             "can_reject": self.can_approve,
-            "can_alternative": (not self.control_finished
+            "can_alternative": (not self.control_inconsistency
+                                and not self.control_finished
                                 and bool(self.control_plan_id)),
             "source": "ros",
         }
@@ -335,7 +364,16 @@ class DashboardSnapshot:
             "dynamic_events": self.dynamic_events,
             "notice": self.notice,
             "fiware": {"connected": self.fiware_connected,
-                       "error": self.fiware_error},
+                       "error": self.fiware_error,
+                       # Reachable is NOT the same as current. Collapsing the
+                       # two is what let a stale broker's values be shown as
+                       # though they described the running scenario.
+                       "sync_status": self.fiware_sync_status,
+                       "sync_detail": self.fiware_sync_detail,
+                       "run_id": self.fiware_run_id,
+                       "scenario_revision": self.fiware_scenario_revision,
+                       "stage": self.fiware_stage,
+                       "rejected_stale_fields": list(self.rejected_stale_fields)},
         }
 
     def to_strategies(self) -> Dict[str, Any]:
@@ -409,7 +447,7 @@ class DashboardSnapshot:
         the Simulator View from ever rendering an empty box or a permanent
         spinner: every path ends in a named state with wording attached.
         """
-        from wisepack_core.visualization import (                   # noqa: PLC0415
+        from wisepack_core.visualization import (               # noqa: PLC0415
             VisualizationDescriptor, unavailable,
         )
         backend = self.execution_backend
@@ -568,6 +606,16 @@ class SimSnapshotProvider(DashboardSnapshotProvider):
             snap.control_finished = engine.finished
             snap.control_anomaly_hold = bool(engine.anomaly_hold)
             snap.control_anomaly_ack_required = bool(engine.anomaly_ack_required)
+            # Sim mode reads ONE object, so components cannot come from
+            # different runs — but the approval invariant is still checked
+            # rather than assumed, and reported the same way.
+            snap.control_approval_revision = engine.approval_revision
+            snap.control_approval_plan_id = engine.approval_plan_id
+            snap.control_inconsistency = engine.approval_inconsistency()
+            snap.control_identity = {"run_id": engine.run_id,
+                                     "scenario_revision": engine.scenario_revision}
+            if snap.control_inconsistency:
+                snap.degraded_reason = snap.control_inconsistency
             snap.selection_reason = engine.selection_reason
 
             # sim mode drives the engine in THIS process, and it always uses the
@@ -585,6 +633,84 @@ class SimSnapshotProvider(DashboardSnapshotProvider):
                 snap.kpis = {k: m.to_dict() for k, m in report.metrics.items()}
                 snap.target_assessment = report.assess_targets()
         return snap
+
+
+#: Which mirror components carry an identity stamp, and what to call them when
+#: they disagree. Ordered so the message names the most operator-meaningful
+#: component first.
+_STAMPED_COMPONENTS = (
+    ("scenario", "the scenario"),
+    ("selected", "the selected plan"),
+    ("plan_summary", "the plan summary"),
+)
+
+
+def _identity_conflict(mirror: Dict[str, Any]) -> "tuple[str, Dict[str, Any]]":
+    """Return (reason, identity) — reason "" when every component agrees.
+
+    THE FAILURE THIS PREVENTS. The orchestrator's topics are latched and
+    independent, so the mirror is always a mixture of whatever each publisher
+    last said. After a reset or a re-plan, the scenario topic can carry the new
+    run while the plan topic still carries the old one, and a consumer that just
+    reads both fields renders a coherent-looking page describing two different
+    runs. Observed: scenario ``mixed_pipes_dense-s42`` beside plan
+    ``plan-optimized-isaac_cylinders_smoke-s42``.
+
+    The response is to REPORT the disagreement, not to guess which half is
+    current and not to hide it. Operator controls are withheld until the
+    components agree again, which they do on the next full publish.
+    """
+    stamps = mirror.get("stamps") or {}
+    seen: Dict[str, Any] = {}
+    identity: Dict[str, Any] = {}
+    for key, label in _STAMPED_COMPONENTS:
+        stamp = stamps.get(key)
+        if not isinstance(stamp, dict):
+            continue
+        # A component that has never been stamped is an OLDER publisher, not a
+        # conflicting one; treating "unknown" as a mismatch would block every
+        # control during a rolling upgrade.
+        for facet in ("run_id", "scenario_revision"):
+            value = stamp.get(facet)
+            if value is None:
+                continue
+            identity.setdefault(facet, value)
+            previous = seen.setdefault(facet, (value, label))
+            if previous[0] != value:
+                return (
+                    f"{previous[1]} and {label} describe different runs "
+                    f"({facet} {previous[0]!r} vs {value!r}) — the dashboard is "
+                    "showing a mixture and will not offer controls until the "
+                    "orchestrator republishes a consistent set",
+                    identity,
+                )
+
+    # The plan the summary names and the plan actually published must be one
+    # plan. They are produced by the same call but travel on separate topics.
+    summary = mirror.get("plan_summary") or {}
+    selected = mirror.get("selected") or {}
+    summary_plan = summary.get("selected_plan_id")
+    selected_plan = selected.get("plan_id")
+    if summary_plan and selected_plan and summary_plan != selected_plan:
+        return (f"the plan summary names {summary_plan} but the published plan "
+                f"is {selected_plan} — the dashboard is showing a mixture and "
+                "will not offer controls until they agree", identity)
+
+    # An approval decision is about one plan of one revision. A stamp pointing
+    # anywhere else means the decision on screen is not about what is on screen.
+    approval_plan = summary.get("approval_plan_id")
+    if approval_plan and selected_plan and approval_plan != selected_plan:
+        return (f"the pending decision is about plan {approval_plan} but the "
+                f"selected plan is {selected_plan} — a fresh decision is "
+                "required", identity)
+    approval_rev = summary.get("approval_revision")
+    current_rev = identity.get("scenario_revision")
+    if (approval_rev is not None and current_rev is not None
+            and int(approval_rev) != int(current_rev)):
+        return (f"the pending decision is about scenario revision "
+                f"{approval_rev} but the current revision is {current_rev} — a "
+                "fresh decision is required", identity)
+    return "", identity
 
 
 class RosSnapshotProvider(DashboardSnapshotProvider):
@@ -689,11 +815,27 @@ class RosSnapshotProvider(DashboardSnapshotProvider):
                 snap.control_scene_ready = bool(isaac.get("scene_ready"))
                 snap.control_scene_reason = str(isaac.get("reset_failed_reason") or "")
                 if not snap.control_scene_ready and not snap.control_scene_reason:
-                    snap.control_scene_reason = (
-                        "the physical scene is being rebuilt for this scenario"
-                        if isaac.get("reset_in_progress")
-                        else "the physical scene has not been rebuilt for this "
-                             "scenario yet")
+                    # ACCURACY OVER BREVITY. "has not been rebuilt" was being
+                    # shown while the operator looked at a correct Panda, four
+                    # cylinders and an empty container — which reads as a broken
+                    # dashboard. What is actually missing in that case is the
+                    # acknowledgement correlated to THIS run, and saying so is
+                    # both true and actionable.
+                    if isaac.get("scene_mismatch"):
+                        snap.control_scene_reason = (
+                            "the simulator's scene does not match this run: "
+                            + str(isaac["scene_mismatch"]))
+                    elif isaac.get("reset_in_progress"):
+                        snap.control_scene_reason = (
+                            "the physical scene is being built and verified for "
+                            "this scenario")
+                    elif isaac.get("ros_bridge_ready"):
+                        snap.control_scene_reason = (
+                            "Isaac is ready, but the scene acknowledgement for "
+                            "the current run has not been received")
+                    else:
+                        snap.control_scene_reason = (
+                            "the simulator has not reported ready yet")
         snap.isaac_results = list(mirror.get("isaac_results") or [])
 
         summary = mirror.get("plan_summary") or {}
@@ -719,6 +861,15 @@ class RosSnapshotProvider(DashboardSnapshotProvider):
         snap.control_anomaly_hold = bool(anomaly.get("hold", False))
         snap.control_anomaly_ack_required = bool(anomaly.get("ack_required", False))
 
+        # CROSS-COMPONENT IDENTITY. Everything above was read from independent
+        # latched topics; this is where the snapshot refuses to present them as
+        # one run unless they say they are one run.
+        snap.control_approval_revision = summary.get("approval_revision")
+        snap.control_approval_plan_id = summary.get("approval_plan_id")
+        snap.control_inconsistency, snap.control_identity = _identity_conflict(mirror)
+        if snap.control_inconsistency:
+            snap.degraded_reason = snap.control_inconsistency
+
         # WATCHDOG. DDS-level liveliness is unusable in this deployment (see
         # qos.watchdog_subscribe_qos), so a stalled heartbeat counter is what
         # tells us the orchestrator is gone. Reporting DEGRADED here is the
@@ -743,13 +894,42 @@ class RosSnapshotProvider(DashboardSnapshotProvider):
 
 
 class FiwareSnapshotProvider(RosSnapshotProvider):
-    """Auditable state and KPIs from Orion-LD; geometry and events from ROS.
+    """Auditable state and KPIs from Orion-LD — but only for the CURRENT run.
 
     The split is stated rather than glossed. Orion-LD holds the audit-relevant
     values — stage, readiness, KPI attributes, the plan digest, the latest action
     and its sequence — because those are what crossing DDS into NGSI-LD proves.
     It does NOT hold 40 placement coordinates (see bridge_config.yaml), so the
     Digital Twin still renders from ROS, and the panel says so.
+
+    WHAT CHANGED, AND WHY IT HAD TO
+    -------------------------------
+    Orion-LD holds CURRENT STATE, not a log. Every attribute keeps its last value
+    until something overwrites it — across scenario changes, restarts and whole
+    runs. This provider used to apply whatever it read:
+
+        if system.get("stage"): snap.stage = system["stage"]
+        merged.update(_kpis_from_fiware(kpi))
+
+    With `mixed_pipes_dense` running (3 baseline containers, 2 optimized) and
+    `isaac_cylinders_smoke` KPI attributes still sitting in the broker, that
+    produced a dashboard whose Digital Twin came from one run and whose KPI cards
+    came from another — and a `stage` attribute left at
+    WAIT_FOR_OPERATOR_APPROVAL rewound the workflow on screen seconds after the
+    operator had approved it.
+
+    Neither symptom is detectable from the transport: an HTTP 200 says the broker
+    answered, and an entity existing says something wrote it once. So every
+    entity now carries a `runCorrelation` stamp, and NOTHING is applied from an
+    entity whose stamp does not match the run the canonical ROS/DDS state says is
+    active. Rejected values are recorded rather than dropped silently, because an
+    operator looking at a "synchronizing" panel deserves to know what was held
+    back and why.
+
+    CANONICAL STATE IS NEVER OVERWRITTEN. `control_*` — what enables Approve,
+    Reject, Resume and Step — is computed in `_base()` from ROS/DDS and is not
+    touched here at all, for matched or unmatched entities alike. FIWARE
+    confirms; it does not command.
     """
 
     mode = "fiware"
@@ -757,6 +937,72 @@ class FiwareSnapshotProvider(RosSnapshotProvider):
     def __init__(self, state, reader: Callable[[], Dict[str, Any]]):
         super().__init__(state)
         self._read = reader
+        #: entity -> highest correlation sequence applied. NGSI-LD gives no
+        #: ordering guarantee, and a delayed DDS sample can land after a newer
+        #: one; without this, an old value would be re-applied on top of a new
+        #: one and the panel would flicker backwards.
+        self._seen_sequence: Dict[str, int] = {}
+
+    # -- correlation --------------------------------------------------------- #
+
+    def _active_run(self, snap: DashboardSnapshot) -> RunCorrelation:
+        """The run the CANONICAL ROS/DDS state says is executing.
+
+        This is the reference every FIWARE entity is compared against. It comes
+        from the mirror, never from FIWARE — otherwise a stale broker would get
+        to define what "current" means, which is the whole failure.
+        """
+        return RunCorrelation(
+            run_id=snap.run_id,
+            scenario_id=(snap.scenario or {}).get("scenario_id"),
+            scenario_revision=snap.scenario_revision,
+            plan_id=snap.control_plan_id or snap.selected_plan_id,
+            plan_revision=snap.scenario_revision,
+            approval_revision=snap.control_approval_revision)
+
+    def _accept(self, name: str, entity: Dict[str, Any],
+                active: RunCorrelation,
+                rejected: List[Dict[str, Any]]) -> bool:
+        """May this entity's values be applied to the current run's view?
+
+        Four distinguishable answers, and they are NOT collapsed:
+
+          * no entity            -> nothing to apply, nothing to report;
+          * no stamp at all      -> UNKNOWN. An orchestrator that predates the
+            correlation contract is not a conflicting one, so the values are
+            applied and the entity is reported as unverified. Treating unknown
+            as stale would blank every panel during a rolling upgrade;
+          * stamp disagrees      -> STALE. Withheld, and every field it would
+            have set is recorded;
+          * sequence went back   -> OUT OF ORDER. Withheld: re-applying an older
+            sample on top of a newer one is how a panel flickers backwards.
+        """
+        if not entity:
+            return False
+        correlation = RunCorrelation.from_dict(entity.get("runCorrelation"))
+        if correlation is None or correlation.is_unstamped:
+            return True                     # unknown, not wrong — see docstring
+
+        seen = self._seen_sequence.get(name, 0)
+        if correlation.sequence and correlation.sequence < seen:
+            rejected.append({
+                "entity": name, "field": "*",
+                "reason": (f"out-of-order update: sequence "
+                           f"{correlation.sequence} arrived after {seen}")})
+            return False
+
+        mismatches = correlation.mismatches(active)
+        if mismatches:
+            rejected.append({
+                "entity": name, "field": "*",
+                "reason": f"describes another run — {describe_mismatch(mismatches)}"})
+            return False
+
+        if correlation.sequence:
+            self._seen_sequence[name] = correlation.sequence
+        return True
+
+    # -- snapshot ------------------------------------------------------------ #
 
     def snapshot(self) -> DashboardSnapshot:
         snap = self._base()
@@ -766,26 +1012,67 @@ class FiwareSnapshotProvider(RosSnapshotProvider):
         except Exception as exc:                        # noqa: BLE001
             snap.fiware_connected = False
             snap.fiware_error = f"Orion-LD read failed: {exc}"
+            snap.fiware_sync_status = "disconnected"
+            snap.fiware_sync_detail = str(exc)
             return snap
 
         if not entities:
             snap.fiware_connected = False
+            snap.fiware_sync_status = "disconnected"
+            snap.fiware_sync_detail = "no entities returned by Orion-LD"
             return snap
         snap.fiware_connected = True
 
-        system = entities.get("system", {})
-        kpi = entities.get("kpi", {})
-        scenario = entities.get("scenario", {})
-        plan = entities.get("plan", {})
-        actions = entities.get("actions", {})
-        robot = entities.get("robot", {})
+        active = self._active_run(snap)
+        rejected: List[Dict[str, Any]] = []
+        accepted: List[str] = []
+        offered: List[str] = []
 
-        # -- state: authoritative from FIWARE when present ------------------ #
+        def usable(name: str) -> Dict[str, Any]:
+            """The entity if it describes the active run, else {}."""
+            entity = entities.get(name) or {}
+            if not entity:
+                return {}
+            offered.append(name)
+            if self._accept(name, entity, active, rejected):
+                accepted.append(name)
+                return entity
+            return {}
+
+        system = usable("system")
+        kpi = usable("kpi")
+        scenario = usable("scenario")
+        plan = usable("plan")
+        actions = usable("actions")
+        robot = usable("robot")
+
+        # What the broker BELIEVES, recorded for diagnostics whether or not it
+        # was applied. "FIWARE says X, we are running Y" is exactly the sentence
+        # an operator needs, and it cannot be written without keeping both.
+        raw_system = entities.get("system") or {}
+        raw_correlation = RunCorrelation.from_dict(raw_system.get("runCorrelation"))
+        if raw_correlation is not None:
+            snap.fiware_run_id = raw_correlation.run_id
+            snap.fiware_scenario_revision = raw_correlation.scenario_revision
+        snap.fiware_stage = (str(raw_system["stage"])
+                             if raw_system.get("stage") else None)
+
+        # -- state: CONFIRMS the canonical stage, never rewinds it ----------- #
+        #
+        # The display stage is the Orion-LD echo, deliberately: it is the audit
+        # proof that the workflow crossed into NGSI-LD, and the `source: FIWARE
+        # + ROS` badge says so. But it is applied only when the entity describes
+        # THIS run. A stale WAIT_FOR_OPERATOR_APPROVAL used to reappear on screen
+        # seconds after approval; operator controls were already immune (they
+        # read control_* from ROS), but the page said "waiting for approval"
+        # while the arm was moving.
         if system.get("stage"):
             snap.stage = str(system["stage"])
             snap.finished = snap.stage in ("COMPLETE", "DEGRADED")
             snap.robot_state = _robot_state_for(snap.stage)
             snap.panel_sources["state"] = "fiware"
+        elif snap.fiware_stage:
+            snap.panel_sources["state"] = "ros (FIWARE stage is for another run)"
         if system.get("readiness") is not None:
             snap.readiness = bool(system["readiness"])
         if robot.get("progressPct") is not None:
@@ -816,7 +1103,14 @@ class FiwareSnapshotProvider(RosSnapshotProvider):
         if isinstance(plan.get("status"), dict):
             snap.plan_status = plan["status"]
 
-        # -- KPIs: authoritative from FIWARE -------------------------------- #
+        # -- KPIs ------------------------------------------------------------ #
+        #
+        # The tightest case of the whole problem: KPI attributes are bare scalars
+        # (`containersBaseline: 1`) that say nothing about which scenario
+        # produced them, so a stale entity is indistinguishable from a fresh one
+        # by inspection. When it is withheld the ROS-derived KPIs computed in
+        # _base() remain — a legitimate source for this panel — and the panel is
+        # labelled accordingly rather than blanked.
         fiware_kpis = _kpis_from_fiware(kpi)
         if fiware_kpis:
             merged = dict(snap.kpis)
@@ -824,6 +1118,11 @@ class FiwareSnapshotProvider(RosSnapshotProvider):
             snap.kpis = merged
             snap.target_assessment = _targets_from_kpis(snap.kpis)
             snap.panel_sources["kpis"] = "fiware"
+        elif entities.get("kpi") and "kpi" not in accepted:
+            snap.panel_sources["kpis"] = "ros (FIWARE KPIs are for another run)"
+            for key in _kpis_from_fiware(entities.get("kpi") or {}):
+                rejected.append({"entity": "kpi", "field": key,
+                                 "reason": "KPI belongs to another run"})
 
         # -- action trail ---------------------------------------------------- #
         if actions.get("sequence") is not None:
@@ -834,7 +1133,34 @@ class FiwareSnapshotProvider(RosSnapshotProvider):
             # latest action FIWARE holds, and label the panel accordingly.
             snap.events = [latest]
             snap.panel_sources["events"] = "fiware"
+
+        snap.rejected_stale_fields = rejected
+        snap.fiware_sync_status, snap.fiware_sync_detail = _sync_status(
+            offered, accepted, rejected, active)
         return snap
+
+
+def _sync_status(offered: List[str], accepted: List[str],
+                 rejected: List[Dict[str, Any]],
+                 active: RunCorrelation) -> "tuple[str, str]":
+    """Classify how well the broker's view matches the run actually executing.
+
+    Reported as a state with its own wording rather than folded into
+    "connected", because reachable-and-stale is the case that used to be
+    displayed as though it were reachable-and-current.
+    """
+    if not offered:
+        return "unknown", "no current-state entities returned by Orion-LD"
+    if not rejected:
+        return "synchronized", f"all {len(offered)} entities describe {active.describe()}"
+    stale = sorted({r["entity"] for r in rejected})
+    if not accepted:
+        return "stale", (
+            "FIWARE reachable — awaiting current-run synchronization; "
+            f"{', '.join(stale)} still describe an earlier run")
+    return "partial", (
+        f"FIWARE reachable — awaiting current-run synchronization for "
+        f"{', '.join(stale)}; {len(accepted)} of {len(offered)} entities are current")
 
 
 # --------------------------------------------------------------------------- #

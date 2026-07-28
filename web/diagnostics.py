@@ -208,7 +208,70 @@ def build(snap, mode: str, mirror: Optional[Dict[str, Any]],
         "sequence_gap_free": analytics.get("sequence_ok"),
         "panel_sources": snap.panel_sources,
         "anomaly_hold": (snap.anomaly or {}).get("hold") if snap.anomaly else False,
+        # CANONICAL control state, beside the display values above. In FIWARE
+        # mode `stage` and `approval_state` are the Orion-LD echo — the audit
+        # proof, and deliberately lagged — while these are what the controls are
+        # actually enabled from. Reading one row of this page and seeing
+        # "WAIT_FOR_OPERATOR_APPROVAL / approved" was the report that started
+        # this; showing both makes a lag distinguishable from a contradiction.
+        "control_stage": snap.control_stage,
+        "control_approval_state": snap.control_approval_state,
+        "control_plan_id": snap.control_plan_id,
+        "approval_revision": snap.control_approval_revision,
+        "approval_plan_id": snap.control_approval_plan_id,
+        "state_consistent": not snap.control_inconsistency,
+        "inconsistency": snap.control_inconsistency or "—",
     }
+
+    # -- ROS/FIWARE run correlation ---------------------------------------- #
+    #
+    # Reachable is not current. Orion-LD keeps every attribute's last value
+    # across scenario changes and whole runs, so "connected" says nothing about
+    # whether what it returned describes the run on screen. These rows are what
+    # make a bridge lag distinguishable from a stale projection — and they were
+    # the only way to see, rather than infer, that KPI cards reading 1/1 came
+    # from a previous isaac_cylinders_smoke run.
+    correlation = {
+        "canonical_run_id": snap.run_id,
+        "fiware_run_id": snap.fiware_run_id,
+        "canonical_scenario_revision": snap.scenario_revision,
+        "fiware_scenario_revision": snap.fiware_scenario_revision,
+        "canonical_stage": snap.control_stage,
+        "fiware_stage": snap.fiware_stage,
+        "fiware_sync_status": snap.fiware_sync_status,
+        "fiware_sync_detail": snap.fiware_sync_detail or "—",
+        "rejected_stale_fields": (
+            ", ".join(f"{r['entity']}.{r['field']}"
+                      for r in snap.rejected_stale_fields) or "none"),
+    }
+    overview.update(correlation)
+
+    # -- physical scene readiness ------------------------------------------ #
+    #
+    # TWO LEVELS, reported separately and never collapsed. "Isaac is up" and
+    # "the world in front of the robot is the one this run planned against" are
+    # different claims; only the second authorises a pick, and only showing both
+    # makes the difference visible when a correct-looking scene is nonetheless
+    # unacknowledged.
+    isaac = snap.isaac or {}
+    if isaac:
+        overview.update({
+            "simulator_process": ("ready" if isaac.get("simulator_ready")
+                                  else "not ready"),
+            "ros_bridge": ("ready" if isaac.get("ros_bridge_ready")
+                           else "not ready"),
+            "requested_scene_revision": isaac.get("required_revision"),
+            "acknowledged_scene_revision": isaac.get("scene_revision"),
+            "expected_object_count": isaac.get("expected_object_count"),
+            "actual_object_count": isaac.get("actual_object_count"),
+            # Truncated for readability; a digest is compared, not read.
+            "expected_fingerprint": str(isaac.get("requested_fingerprint") or "")[:16] or "—",
+            "acknowledged_fingerprint": str(
+                isaac.get("acknowledged_fingerprint") or "")[:16] or "—",
+            "scene_status": isaac.get("scene_status", "unknown"),
+            "scene_mismatch": isaac.get("scene_mismatch") or "—",
+            "simulator_version": isaac.get("simulator_version") or "—",
+        })
 
     # -- component status (6.2) — allowlisted ------------------------------ #
     rt = _runtime_status()

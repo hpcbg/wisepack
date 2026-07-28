@@ -58,7 +58,7 @@ import json
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 #: Bump the MINOR part for backwards-compatible additions (a new optional
 #: field), the MAJOR part when a consumer written against the old version would
@@ -106,6 +106,21 @@ class IsaacCommandType(str, Enum):
     #: Stop whatever is in progress and fail the current item. Used when the
     #: operator rejects, pauses into a re-plan, or the orchestrator goes away.
     RUN_ABORT = "RUN_ABORT"
+    #: VERIFY OR BUILD the scene for one exact run and scenario revision, then
+    #: acknowledge it. Sent on EVERY run, not only after a reset.
+    #:
+    #: The bug this closes: the initial scene used to be trusted because the
+    #: launcher passed Isaac the same (preset, seed) the run was planned from.
+    #: But "built from the right preset" is not "built for THIS run", and the
+    #: trust was applied inside `open_run`, which only executes after approval —
+    #: while approval itself waits for the scene. Isaac sat there with a correct
+    #: four-cylinder scene on screen, the dashboard said the scene had not been
+    #: rebuilt, and Approve stayed disabled with no way forward but a reset.
+    #:
+    #: Distinct from RESET_SCENE: this one is allowed to answer "already
+    #: correct" after verifying, without destroying and recreating a scene that
+    #: matches. RESET_SCENE always rebuilds.
+    SYNC_SCENE = "SYNC_SCENE"
     #: REBUILD THE PHYSICAL SCENE for a new scenario, and do not report ready
     #: until it is genuinely rebuilt.
     #:
@@ -127,7 +142,14 @@ class IsaacState(str, Enum):
     vocabulary; this enum adds physical resolution underneath it.
     """
 
-    READY = "READY"                                # simulator up, scene built
+    #: SIMULATOR-level readiness: the Isaac process, its ROS bridge and the
+    #: physics application are up. It says NOTHING about which run the scene
+    #: corresponds to, and on its own it never authorises physical execution —
+    #: see SCENE_READY. Kept spelled ``READY`` on the wire for compatibility.
+    READY = "READY"
+    #: Explicit synonym of READY, for code and UI that must not blur the two
+    #: readiness levels. Accepted inbound; the simulator may publish either.
+    SIMULATOR_READY = "SIMULATOR_READY"
     #: Scene-reset lifecycle. SCENE_READY is the ONLY thing that re-authorises
     #: physical execution after a new scenario is generated, and it carries the
     #: scenario revision it rebuilt for, so it cannot satisfy a later one.
@@ -429,6 +451,122 @@ class IsaacCommand:
 
 
 @dataclass
+class SceneAcknowledgement:
+    """WHAT Isaac actually built, and for WHICH run — the SCENE_READY payload.
+
+    "The simulator is up" and "the world in front of the robot is the world this
+    plan was written against" are different claims, and only the second one may
+    authorise a pick. Everything here exists so the orchestrator can check the
+    second claim instead of inferring it:
+
+      * ``run_id`` / ``scenario_id`` / ``scenario_revision`` — WHICH run. An
+        acknowledgement from the previous run is not evidence about this one, and
+        without these the only way to tell them apart is timing.
+      * ``preset`` / ``seed`` — the generator inputs. Right preset, wrong seed is
+        a different set of objects with the same names.
+      * ``scene_fingerprint`` — a deterministic digest over preset, seed, object
+        ids, dimensions, initial source poses and the container specification.
+        The ids and the count can match while the geometry does not; this is what
+        catches that.
+      * ``object_ids`` / ``object_count`` — what is actually in the scene, so a
+        mismatch names the missing objects rather than just failing.
+      * ``robot_home_verified`` / ``container_empty_verified`` — the two physical
+        preconditions for a first pick, MEASURED by the simulator rather than
+        assumed by the orchestrator.
+
+    Deliberately NOT inferable from: the process being up, a camera stream
+    existing, four objects being visible, or an older SCENE_READY.
+    """
+
+    run_id: str = ""
+    scenario_id: str = ""
+    scenario_revision: int = 0
+    preset: str = ""
+    seed: int = 0
+    scene_fingerprint: str = ""
+    object_ids: List[str] = field(default_factory=list)
+    object_count: int = 0
+    robot_home_verified: bool = False
+    container_empty_verified: bool = False
+    #: True when the existing scene was verified as already correct rather than
+    #: destroyed and rebuilt. A correct scene is not rebuilt for the sake of it.
+    verified_without_rebuild: bool = False
+    timestamp: str = field(default_factory=utc_now_iso)
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "run_id": self.run_id,
+            "scenario_id": self.scenario_id,
+            "scenario_revision": int(self.scenario_revision),
+            "preset": self.preset,
+            "seed": int(self.seed),
+            "scene_fingerprint": self.scene_fingerprint,
+            "object_ids": list(self.object_ids),
+            "object_count": int(self.object_count),
+            "robot_home_verified": bool(self.robot_home_verified),
+            "container_empty_verified": bool(self.container_empty_verified),
+            "verified_without_rebuild": bool(self.verified_without_rebuild),
+            "timestamp": self.timestamp,
+        }
+
+    @staticmethod
+    def from_dict(doc: Any) -> Optional["SceneAcknowledgement"]:
+        if not isinstance(doc, dict):
+            return None
+        return SceneAcknowledgement(
+            run_id=str(doc.get("run_id", "")),
+            scenario_id=str(doc.get("scenario_id", "")),
+            scenario_revision=int(doc.get("scenario_revision", 0) or 0),
+            preset=str(doc.get("preset", "")),
+            seed=int(doc.get("seed", 0) or 0),
+            scene_fingerprint=str(doc.get("scene_fingerprint", "")),
+            object_ids=[str(i) for i in (doc.get("object_ids") or [])],
+            object_count=int(doc.get("object_count", 0) or 0),
+            robot_home_verified=bool(doc.get("robot_home_verified", False)),
+            container_empty_verified=bool(doc.get("container_empty_verified", False)),
+            verified_without_rebuild=bool(doc.get("verified_without_rebuild", False)),
+            timestamp=str(doc.get("timestamp", "")),
+        )
+
+    def mismatches(self, *, run_id: str, scenario_id: str, revision: int,
+                   preset: str, seed: int, fingerprint: str,
+                   object_count: int) -> List[str]:
+        """Every reason this acknowledgement does not describe the given run.
+
+        Returns sentences an operator can act on, not booleans. "scene not
+        ready" is not actionable; "acknowledged fingerprint 4f2a… but this run
+        expects 9b71…" is.
+        """
+        out: List[str] = []
+        if run_id and self.run_id and self.run_id != run_id:
+            out.append(f"acknowledged run {self.run_id} but this run is {run_id}")
+        if scenario_id and self.scenario_id and self.scenario_id != scenario_id:
+            out.append(f"acknowledged scenario {self.scenario_id} but this run "
+                       f"is {scenario_id}")
+        if self.scenario_revision != revision:
+            out.append(f"acknowledged scenario revision {self.scenario_revision} "
+                       f"but this run is at {revision}")
+        if preset and self.preset and self.preset != preset:
+            out.append(f"acknowledged preset {self.preset} but this run planned "
+                       f"{preset}")
+        if self.seed and seed and self.seed != seed:
+            out.append(f"acknowledged seed {self.seed} but this run planned {seed}")
+        if fingerprint and self.scene_fingerprint \
+                and self.scene_fingerprint != fingerprint:
+            out.append(f"acknowledged scene fingerprint "
+                       f"{self.scene_fingerprint[:12]} but this run expects "
+                       f"{fingerprint[:12]}")
+        if object_count and self.object_count != object_count:
+            out.append(f"acknowledged {self.object_count} object(s) but this run "
+                       f"has {object_count}")
+        if not self.robot_home_verified:
+            out.append("the simulator did not verify that the robot is home")
+        if not self.container_empty_verified:
+            out.append("the simulator did not verify that the container is empty")
+        return out
+
+
+@dataclass
 class IsaacFeedback:
     """One physical-execution report from Isaac Sim.
 
@@ -453,6 +591,10 @@ class IsaacFeedback:
     #: scene now corresponds to. The orchestrator refuses to authorise
     #: execution until this matches the ACTIVE revision exactly.
     scenario_revision: int = 0
+    #: SCENE ACKNOWLEDGEMENT, present on SCENE_READY. Everything needed to
+    #: decide whether the world Isaac built is the world this run planned
+    #: against — see SceneAcknowledgement for why each field is here.
+    scene: Optional["SceneAcknowledgement"] = None
     message: str = ""
     #: Free-form measurements: settle time, residual velocities, containment
     #: checks. Kept small — it rides in one std_msgs/String on DDS.
@@ -491,6 +633,7 @@ class IsaacFeedback:
             "position_error_mm": (None if self.position_error_mm is None
                                   else round(float(self.position_error_mm), 2)),
             "message": self.message,
+            "scene": self.scene.to_dict() if self.scene else None,
             "detail": dict(self.detail),
         }
 
@@ -519,6 +662,7 @@ class IsaacFeedback:
             position_error_mm=None if error is None else float(error),
             container_id=doc.get("container_id"),
             scenario_revision=int(doc.get("scenario_revision", 0)),
+            scene=SceneAcknowledgement.from_dict(doc.get("scene")),
             message=str(doc.get("message", "")),
             detail=dict(doc.get("detail", {}) or {}),
             timestamp=str(doc.get("timestamp", utc_now_iso())),

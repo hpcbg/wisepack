@@ -320,6 +320,84 @@ ros_to_fiware:
     fiware_entity_type: "WISEPACKKPI"
     fiware_attribute: "endToEndSuccessPct"
 
+  # ---- run correlation ---------------------------------------------------- #
+  # WHICH RUN each projection above describes.
+  #
+  # Orion-LD holds CURRENT STATE, not a log: every attribute keeps its last
+  # value across scenario changes, restarts and whole runs. `containersBaseline:
+  # 1` written by isaac_cylinders_smoke is still there while mixed_pipes_dense
+  # (3 baseline, 2 optimized) is running, and a consumer reading it back has no
+  # way to tell. Neither an HTTP 200 nor the entity existing says anything about
+  # freshness — so freshness travels IN the data.
+  #
+  # The orchestrator publishes each of these AFTER that entity's values. A
+  # consumer polling mid-update then sees the OLD stamp with some new values and
+  # withholds the entity; the opposite order would show the NEW stamp with some
+  # OLD values and trust them. See wisepack_core/correlation.py.
+
+  - ros_topic: "/wisepack/correlation/system"
+    ros_msg_type: "std_msgs/String"
+    fiware_entity: "WISEPACKSystem:main"
+    fiware_entity_type: "WISEPACKSystem"
+    fiware_attribute: "runCorrelation"
+    ros_field: "data"
+
+  - ros_topic: "/wisepack/correlation/scenario"
+    ros_msg_type: "std_msgs/String"
+    fiware_entity: "WISEPACKScenario:current"
+    fiware_entity_type: "WISEPACKScenario"
+    fiware_attribute: "runCorrelation"
+    ros_field: "data"
+
+  - ros_topic: "/wisepack/correlation/plan"
+    ros_msg_type: "std_msgs/String"
+    fiware_entity: "WISEPACKPackingPlan:current"
+    fiware_entity_type: "WISEPACKPackingPlan"
+    fiware_attribute: "runCorrelation"
+    ros_field: "data"
+
+  - ros_topic: "/wisepack/correlation/kpi"
+    ros_msg_type: "std_msgs/String"
+    fiware_entity: "WISEPACKKPI:current"
+    fiware_entity_type: "WISEPACKKPI"
+    fiware_attribute: "runCorrelation"
+    ros_field: "data"
+
+  - ros_topic: "/wisepack/correlation/robot"
+    ros_msg_type: "std_msgs/String"
+    fiware_entity: "WISEPACKRobot:arm-01"
+    fiware_entity_type: "WISEPACKRobot"
+    fiware_attribute: "runCorrelation"
+    ros_field: "data"
+
+  - ros_topic: "/wisepack/correlation/actions"
+    ros_msg_type: "std_msgs/String"
+    fiware_entity: "WISEPACKActionStream:main"
+    fiware_entity_type: "WISEPACKActionStream"
+    fiware_attribute: "runCorrelation"
+    ros_field: "data"
+
+  - ros_topic: "/wisepack/correlation/anomaly"
+    ros_msg_type: "std_msgs/String"
+    fiware_entity: "WISEPACKAnomaly:main"
+    fiware_entity_type: "WISEPACKAnomaly"
+    fiware_attribute: "runCorrelation"
+    ros_field: "data"
+
+  - ros_topic: "/wisepack/correlation/inventory"
+    ros_msg_type: "std_msgs/String"
+    fiware_entity: "WISEPACKInventory:main"
+    fiware_entity_type: "WISEPACKInventory"
+    fiware_attribute: "runCorrelation"
+    ros_field: "data"
+
+  - ros_topic: "/wisepack/correlation/cutting"
+    ros_msg_type: "std_msgs/String"
+    fiware_entity: "WISEPACKCutting:main"
+    fiware_entity_type: "WISEPACKCutting"
+    fiware_attribute: "runCorrelation"
+    ros_field: "data"
+
 # --------------------------------------------------------------------------- #
 # FIWARE -> ROS 2  (an operator or external HMI drives the workflow)
 # --------------------------------------------------------------------------- #
