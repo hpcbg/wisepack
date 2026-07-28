@@ -33,6 +33,9 @@ LOG="[isaac-launch]"
 # shellcheck source=scripts/lib_local_env.sh
 source "$REPO/scripts/lib_local_env.sh"
 wisepack_load_local_env "$REPO"
+# A template copied but not edited must behave exactly like an absent file, or
+# the literal "YOUR_REACHABLE_SERVER_ADDRESS" gets advertised as an endpoint.
+wisepack_clear_placeholders
 wisepack_resolve_ssh_port || true
 
 export ROS_DOMAIN_ID="${ROS_DOMAIN_ID:-0}"
@@ -164,7 +167,17 @@ ISAAC_ARGS+=("$@")
 
 # --- WebRTC livestreaming (opt-in) -----------------------------------------
 STREAMING="${WISEPACK_ISAAC_STREAMING:-0}"
+# ADVERTISED host, not the bind address. Kit listens on 0.0.0.0 whatever this
+# says; this only controls the endpoint the dashboard tells a client to dial.
+# `STREAM_HOST_EXPLICIT` records whether an operator chose it, because the
+# wording differs: an unset default means "local or forwarded", an explicit
+# value means "this is the address a remote native client should use". A native
+# client once connected through the server's reachable address while Simulator
+# View displayed 127.0.0.1, precisely because the two were not distinguished.
+STREAM_HOST_EXPLICIT=0
+[ -n "${WISEPACK_ISAAC_STREAM_HOST:-}" ] && STREAM_HOST_EXPLICIT=1
 STREAM_HOST="${WISEPACK_ISAAC_STREAM_HOST:-127.0.0.1}"
+KIT_BIND_ADDRESS="0.0.0.0"
 SIGNAL_PORT="${WISEPACK_ISAAC_SIGNAL_PORT:-49100}"
 STREAM_PORT="${WISEPACK_ISAAC_STREAM_PORT:-47998}"
 VIEWER_PORT="${WISEPACK_ISAAC_VIEWER_PORT:-0}"
@@ -198,13 +211,28 @@ if [ "$STREAMING" = "1" ]; then
 
     VIEWER_URL="${WISEPACK_ISAAC_STREAM_URL:-http://${STREAM_HOST}:$([ "$VIEWER_PORT" != "0" ] && echo "$VIEWER_PORT" || echo "$SIGNAL_PORT")}"
     export WISEPACK_ISAAC_STREAMING=1
-    export WISEPACK_ISAAC_STREAM_HOST="$STREAM_HOST"
+    # Exported ONLY when the operator set it. Exporting the resolved default
+    # would make the simulator believe loopback was a deliberate choice and
+    # suppress the "set WISEPACK_ISAAC_STREAM_HOST for a remote client" guidance
+    # exactly when it is needed.
+    if [ "$STREAM_HOST_EXPLICIT" = "1" ]; then
+        export WISEPACK_ISAAC_STREAM_HOST="$STREAM_HOST"
+    else
+        unset WISEPACK_ISAAC_STREAM_HOST
+    fi
     export WISEPACK_ISAAC_SIGNAL_PORT="$SIGNAL_PORT"
     export WISEPACK_ISAAC_STREAM_PORT="$STREAM_PORT"
     export WISEPACK_ISAAC_VIEWER_PORT="$VIEWER_PORT"
     export WISEPACK_ISAAC_STREAM_URL="$VIEWER_URL"
-    echo "$LOG streaming   : WebRTC signal ${STREAM_HOST}:${SIGNAL_PORT}, media UDP ${STREAM_PORT}"
+    echo "$LOG bind/listen : ${KIT_BIND_ADDRESS}:${SIGNAL_PORT} (Kit binds every interface)"
+    echo "$LOG advertised  : ${STREAM_HOST}$([ "$STREAM_HOST_EXPLICIT" = "1" ] && echo " (explicit)" || echo " (default — local/forwarded)")"
+    echo "$LOG signalling  : ${SIGNAL_PORT}/TCP"
+    echo "$LOG media       : ${STREAM_PORT}/UDP  (a TCP-only tunnel carries no video)"
     echo "$LOG viewer URL  : $VIEWER_URL"
+    if [ "$STREAM_HOST_EXPLICIT" != "1" ]; then
+        echo "$LOG   note      : local/forwarded endpoint. For a remote native client, set"
+        echo "$LOG               WISEPACK_ISAAC_STREAM_HOST to an address reachable by it."
+    fi
     echo "$LOG remote view : ssh -p \"\${WISEPACK_SSH_PORT}\" -L ${SIGNAL_PORT}:127.0.0.1:${SIGNAL_PORT} <user>@<this-host>"
     hint="$(wisepack_ssh_port_hint)"
     [ -n "$hint" ] && echo "$LOG   note: $hint" >&2
@@ -305,5 +333,45 @@ else
 fi
 echo "$LOG ----------------------------------------------------------------"
 
-exec "$ISAAC_ROOT/python.sh" "$REPO/simulators/isaac/wisepack_isaac.py" \
-    "${ISAAC_ARGS[@]}"
+# --- runtime working directory ----------------------------------------------
+#
+# NVIDIA's streaming stack writes trace files (NvStreamer-*.etli, ~7 MB each,
+# one per minute of streaming) into the PROCESS WORKING DIRECTORY. Launched from
+# the repository root, that is the repository root: 53 MB of binary traces
+# appeared among the source after one WebRTC session. They are NVIDIA runtime
+# artefacts, not WISEPACK files, and they do not belong there even ignored.
+#
+# So the simulator runs from a directory WISEPACK owns. Under
+# WISEPACK_RESULTS_DIR when there is one — traces are then retained beside the
+# rest of a run's evidence and can be collected for diagnostics — otherwise
+# under /tmp, where the launcher created it and the launcher removes it.
+#
+# EVERY PATH HANDED TO THE SIMULATOR IS ABSOLUTE. Changing the working directory
+# breaks relative script paths, relative asset lookups and `sys.path` entries
+# derived from the script location, and each of those fails somewhere far from
+# the cause.
+ISAAC_APP="$REPO/simulators/isaac/wisepack_isaac.py"
+RUN_ID="isaac-$(date -u +%Y%m%dT%H%M%SZ)-$$"
+RUNTIME_OWNED_BY_LAUNCHER=0
+if [ -n "${WISEPACK_RESULTS_DIR:-}" ]; then
+    RUNTIME_DIR="${WISEPACK_RESULTS_DIR%/}/runtime/nvstreamer/${RUN_ID}"
+else
+    RUNTIME_DIR="${TMPDIR:-/tmp}/wisepack-isaac-runtime/${RUN_ID}"
+    RUNTIME_OWNED_BY_LAUNCHER=1
+fi
+mkdir -p "$RUNTIME_DIR" || {
+    echo "$LOG ERROR: cannot create runtime directory $RUNTIME_DIR" >&2
+    exit 7
+}
+echo "$LOG runtime dir : $RUNTIME_DIR"
+if [ "$RUNTIME_OWNED_BY_LAUNCHER" = "1" ]; then
+    echo "$LOG               (temporary — removed on exit; set"
+    echo "$LOG                WISEPACK_RESULTS_DIR to retain traces)"
+    # ONLY the directory this invocation created, and only when it is the
+    # launcher's own temporary one. A results directory belongs to the operator
+    # and its contents are evidence.
+    trap 'rm -rf -- "$RUNTIME_DIR"' EXIT INT TERM
+fi
+cd "$RUNTIME_DIR" || exit 7
+
+exec "$ISAAC_ROOT/python.sh" "$ISAAC_APP" "${ISAAC_ARGS[@]}"

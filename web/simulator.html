@@ -199,7 +199,15 @@ function render(d){
     ["physical state", d.isaac_state || d.stage || "—"],
     ["camera", d.camera_name || "—"],
     ["stream id", d.stream_id || "—"],
-    ["endpoint", d.viewer_url || "—"],
+    // BIND vs ADVERTISED, kept apart. Kit listens on every interface; the
+    // endpoint below is only what a client is told to dial. Reporting the
+    // advertised address as though it were the listening one is why Simulator
+    // View showed http://127.0.0.1:49100 for a stream a remote native client
+    // had just connected to successfully.
+    ["native-client endpoint", d.viewer_url || "—"],
+    ["advertised address", (d.detail && d.detail.advertised_host) || "—"],
+    ["bind/listen address", (d.detail && d.detail.bind_address)
+      ? `${d.detail.bind_address} (all interfaces)` : "—"],
     ["signalling port", d.signal_port ? `${d.signal_port}/TCP` : "—"],
     ["media port", d.media_port ? `${d.media_port}/UDP` : "—"],
     ["interactive", d.interactive ? "yes" : "no"],
@@ -213,9 +221,16 @@ function render(d){
   ];
   for (const [k,v] of rows){
     conn.append(el("div",{class:"k"},k));
-    conn.append(k === "endpoint" && d.viewer_url ? el("code",{},v) : el("div",{},String(v)));
+    conn.append(k === "native-client endpoint" && d.viewer_url
+      ? el("code",{},v) : el("div",{},String(v)));
   }
-  $("#hint").textContent = d.client_hint || "";
+  // The endpoint note says what the advertised address MEANS — "local or
+  // forwarded, set WISEPACK_ISAAC_STREAM_HOST for a remote client", or the
+  // explicit address an operator chose. Shown above the client hint because it
+  // is the sentence that decides whether the endpoint is usable from here.
+  const note = (d.detail && d.detail.endpoint_note) || "";
+  $("#hint").textContent = note ? note + "\n\n" + (d.client_hint || "")
+                                : (d.client_hint || "");
 }
 
 $("#connect").onclick = () => {

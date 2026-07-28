@@ -43,14 +43,47 @@ wisepack_load_local_env() {
         case "$line" in ''|'#'*) continue ;; esac
         key="${line%%=*}"
         value="${line#*=}"
-        # Only keys this project owns, so a stray line cannot set PATH.
+        # ALLOWLIST. Only keys this project owns, so a stray or malicious line
+        # cannot set PATH, LD_PRELOAD or anything else. Note this is a parser,
+        # not a shell: the file is never sourced, so a backtick or $(...) in a
+        # value is data.
         case "$key" in
             WISEPACK_SSH_PORT)
                 # An explicit export always wins over the file.
                 [ -n "${WISEPACK_SSH_PORT:-}" ] || export WISEPACK_SSH_PORT="$value"
                 ;;
+            WISEPACK_ISAAC_STREAM_HOST)
+                # The ADVERTISED endpoint for a remote native client. Host-
+                # specific and therefore tedious to retype, but it is not a
+                # prerequisite for WebRTC: unset simply means the descriptor
+                # advertises loopback and says so.
+                [ -n "${WISEPACK_ISAAC_STREAM_HOST:-}" ] \
+                    || export WISEPACK_ISAAC_STREAM_HOST="$value"
+                ;;
         esac
     done < "$file"
+}
+
+#: Placeholders from the template. Present means "not filled in", which must be
+#: treated exactly like absent — otherwise the literal string is advertised as
+#: an endpoint and a client tries to resolve it.
+wisepack_clear_placeholders() {
+    case "${WISEPACK_ISAAC_STREAM_HOST:-}" in
+        YOUR_REACHABLE_SERVER_ADDRESS|'') unset WISEPACK_ISAAC_STREAM_HOST ;;
+    esac
+    case "${WISEPACK_SSH_PORT:-}" in
+        YOUR_SSH_PORT) unset WISEPACK_SSH_PORT ;;
+    esac
+}
+
+wisepack_stream_host_source() {
+    # Which resolution step supplied the advertised host — for the launcher's
+    # printed configuration. Never prints the value itself.
+    if [ -n "${WISEPACK_ISAAC_STREAM_HOST:-}" ]; then
+        echo "explicit (environment or config/local.env)"
+    else
+        echo "default 127.0.0.1 (local/forwarded)"
+    fi
 }
 
 wisepack_resolve_ssh_port() {

@@ -75,6 +75,18 @@ PRIMARY_STREAM_SETTING = "/exts/omni.kit.livestream.app/primaryStream"
 SPECTATOR_CAMERA = "/World/DemoCamera"
 
 
+#: WHERE KIT ACTUALLY LISTENS. Not configurable from WISEPACK, and not a
+#: default we chose: the livestream extension binds every interface, which was
+#: verified by inspection of the running process. It is stated here so nothing
+#: in the dashboard can imply that advertising 127.0.0.1 restricts access — it
+#: does not, and an operator who believes it does has a false sense of security.
+KIT_BIND_ADDRESS = "0.0.0.0"
+
+#: The advertised address when the operator sets none. Loopback, because the
+#: stream is unauthenticated.
+DEFAULT_ADVERTISED_HOST = "127.0.0.1"
+
+
 def _env_flag(name: str, default: bool = False) -> bool:
     raw = os.environ.get(name)
     if raw is None or raw.strip() == "":
@@ -97,10 +109,21 @@ class StreamingConfig:
     """Streaming tunables, all overridable, none containing a public address."""
 
     enabled: bool = False
-    #: Interface the operator will point a client at. Loopback by default: the
-    #: stream is unauthenticated, so binding it to a routable address must be a
-    #: deliberate act, never the default.
+    #: THE ADVERTISED ADDRESS — what the dashboard tells an operator to point a
+    #: client at. It is NOT the bind address, and conflating the two is a real
+    #: reporting bug: a native client connected successfully through the
+    #: server's reachable address while Simulator View displayed
+    #: http://127.0.0.1:49100, because streaming had been enabled without
+    #: setting this. Kit binds the signal port on 0.0.0.0 regardless.
+    #:
+    #: Loopback by default and deliberately so: the stream is unauthenticated,
+    #: so publishing a routable address must be an explicit act. WISEPACK never
+    #: discovers or guesses the server's public IP.
     host: str = "127.0.0.1"
+    #: Whether `host` was chosen by an operator or is the safe default. Drives
+    #: the wording — an unset default means "local or forwarded", an explicit
+    #: value means "this is the endpoint the native client should use".
+    host_explicit: bool = False
     signal_port: int = 49100          # TCP, connection negotiation
     stream_port: int = 47998          # UDP, media
     #: Where the dashboard sends an operator. Derived from host/signal_port
@@ -115,9 +138,11 @@ class StreamingConfig:
 
     @staticmethod
     def from_env() -> "StreamingConfig":
+        host = os.environ.get("WISEPACK_ISAAC_STREAM_HOST", "").strip()
         cfg = StreamingConfig(
             enabled=_env_flag("WISEPACK_ISAAC_STREAMING", False),
-            host=os.environ.get("WISEPACK_ISAAC_STREAM_HOST", "127.0.0.1"),
+            host=host or DEFAULT_ADVERTISED_HOST,
+            host_explicit=bool(host),
             signal_port=_env_int("WISEPACK_ISAAC_SIGNAL_PORT", 49100),
             stream_port=_env_int("WISEPACK_ISAAC_STREAM_PORT", 47998),
             viewer_port=_env_int("WISEPACK_ISAAC_VIEWER_PORT", 0),
@@ -152,9 +177,39 @@ class StreamingConfig:
         port = self.viewer_port or self.signal_port
         return f"http://{self.host}:{port}"
 
+    @property
+    def bind_address(self) -> str:
+        """Where Kit listens. Reported, never configured — see KIT_BIND_ADDRESS."""
+        return KIT_BIND_ADDRESS
+
+    @property
+    def is_loopback_advertised(self) -> bool:
+        return self.host in ("127.0.0.1", "localhost", "::1")
+
+    def endpoint_note(self) -> str:
+        """What the advertised address actually means for a remote client."""
+        if self.is_loopback_advertised and not self.host_explicit:
+            return ("Local/forwarded endpoint. For a remote native client, set "
+                    "WISEPACK_ISAAC_STREAM_HOST to an address reachable by that "
+                    "client.")
+        if self.is_loopback_advertised:
+            return ("Loopback endpoint, explicitly configured. Reachable only "
+                    "from this host or through a port-forward.")
+        return (f"Native-client endpoint, explicitly configured: {self.host}. "
+                "The client needs both ports — see the port list.")
+
     def to_dict(self) -> Dict[str, Any]:
         return {
-            "enabled": self.enabled, "host": self.host,
+            "enabled": self.enabled,
+            # KEPT APART ON PURPOSE. `bind_address` is where Kit actually
+            # listens; `advertised_host` is what we tell a client to dial. They
+            # are different facts and reporting one as the other is what made
+            # Simulator View show 127.0.0.1 for a stream a remote client had
+            # just connected to.
+            "bind_address": self.bind_address,
+            "advertised_host": self.host,
+            "advertised_host_explicit": self.host_explicit,
+            "endpoint_note": self.endpoint_note(),
             "signal_port": self.signal_port, "stream_port": self.stream_port,
             "viewer_port": self.viewer_port or None,
             "width": self.width, "height": self.height,
@@ -217,14 +272,24 @@ def describe(config: StreamingConfig, *,
         client_hint=(
             "Open with the NVIDIA Isaac Sim WebRTC Streaming Client — the "
             "installed Isaac Sim 6.0.1 livestream package ships no in-browser "
-            "client (an HTTP GET to the signal port returns 501). For a remote "
-            "machine, forward the port over SSH and connect to localhost:\n"
+            "client (an HTTP GET to the signal port returns 501).\n"
+            f"{config.endpoint_note()}\n"
+            f"The client needs BOTH ports: {config.signal_port}/TCP "
+            f"(signalling) and {config.stream_port}/UDP (media). A TCP-only SSH "
+            "tunnel negotiates a connection and then shows no picture.\n"
+            "To reach it from another machine without publishing an address:\n"
             f'    ssh -p "${{WISEPACK_SSH_PORT}}" '
             f"-L {config.signal_port}:127.0.0.1:{config.signal_port} "
             f"<user>@<host>\n"
-            "NOTE: Kit binds this port on ALL interfaces, so restricting access "
-            "is a firewall decision — the stream is unauthenticated."),
+            f"NOTE: Kit listens on {config.bind_address} — every interface — "
+            "whatever address is advertised here. Advertising loopback does NOT "
+            "restrict access; that is a firewall decision, and the stream is "
+            "unauthenticated."),
         detail={**(extra or {}), "stream": config.to_dict(),
+                "bind_address": config.bind_address,
+                "advertised_host": config.host,
+                "advertised_host_explicit": config.host_explicit,
+                "endpoint_note": config.endpoint_note(),
                 "required_extensions": list(REQUIRED_EXTENSIONS)},
         # Ports are surfaced separately because the operator needs BOTH: the
         # client negotiates on TCP and receives media on UDP, so an SSH TCP

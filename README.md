@@ -1449,7 +1449,21 @@ or Moonlight session — WISEPACK does not install, start or manage those. The
 launcher refuses this mode when no display exists rather than failing inside the
 renderer.
 
-**B. Headless WebRTC server**
+**B. Headless WebRTC server — local or forwarded**
+
+```bash
+WISEPACK_ISAAC_VIEW_MODE=webrtc \
+WISEPACK_ISAAC_STREAMING=1 \
+WISEPACK_ISAAC_HEADLESS=1 \
+./run_wisepack_dashboard.sh isaac
+```
+
+The dashboard advertises `http://127.0.0.1:49100` and labels it *"Local/forwarded
+endpoint. For a remote native client, set `WISEPACK_ISAAC_STREAM_HOST` to an
+address reachable by that client."* Use this when the client runs on this host or
+reaches it through a forward.
+
+**B2. Headless WebRTC server — direct remote native client**
 
 ```bash
 WISEPACK_ISAAC_VIEW_MODE=webrtc \
@@ -1459,7 +1473,10 @@ WISEPACK_ISAAC_STREAM_HOST=<reachable-server-address> \
 ./run_wisepack_dashboard.sh isaac
 ```
 
-**No Isaac window opens.** Two ports, and a client needs *both*:
+That exact address becomes the native-client endpoint in Simulator View.
+
+**No Isaac window opens in either case.** Two ports, and the native client needs
+*both*:
 
 | port | protocol | purpose |
 |---|---|---|
@@ -1470,6 +1487,37 @@ WISEPACK_ISAAC_STREAM_HOST=<reachable-server-address> \
 cannot carry it** — the media is UDP, and Isaac Sim 6.0.1 ships no in-browser
 client. Use NVIDIA's **Isaac Sim WebRTC Streaming Client** with direct or VPN
 connectivity to both ports.
+
+##### Bind address is not the advertised address
+
+`WISEPACK_ISAAC_STREAM_HOST` controls **what the dashboard tells a client to
+dial**. It is not a bind address:
+
+| | |
+|---|---|
+| **bind/listen** | `0.0.0.0:49100` — Kit binds every interface, always |
+| **advertised** | `127.0.0.1` by default, or whatever you set |
+
+Setting it opens nothing; leaving it unset closes nothing. Access control is a
+firewall or SSH-forward decision, and the stream is unauthenticated. Simulator
+View shows both rows so the distinction is visible rather than assumed — a
+native client once connected successfully through the server's reachable address
+while the page displayed `http://127.0.0.1:49100`, which is the reporting bug
+these two rows exist to prevent. WISEPACK never discovers or publishes this
+host's public IP.
+
+**B3. Host-specific values, without retyping them**
+
+```bash
+cp config/local.env.example config/local.env
+# edit the placeholders
+./run_wisepack_dashboard.sh isaac
+```
+
+`config/local.env` is **optional**, git-ignored and **unrelated to whether WebRTC
+works** — it only saves retyping host-specific values that would otherwise be
+exported inline. It is read by an allowlist parser and never sourced as shell.
+See [§ Host-specific settings](#host-specific-settings-configlocalenv).
 
 **C. GUI *and* WebRTC at the same time**
 
@@ -1555,17 +1603,45 @@ http://127.0.0.1:49100
 ssh -p "${WISEPACK_SSH_PORT}" -L 49100:127.0.0.1:49100 <user>@<host>
 ```
 
-`WISEPACK_SSH_PORT` is resolved by `scripts/lib_local_env.sh`, in order: an
-exported value, then `config/local.env`, then the server-side field of
-`$SSH_CONNECTION`, otherwise an explicit `<ssh-port>` placeholder with a
-diagnostic. **Port 22 is never assumed** — a wrong port produces a command that
-looks right and connects nowhere.
+<a id="host-specific-settings-configlocalenv"></a>
+
+##### Host-specific settings: `config/local.env`
+
+**Optional.** Nothing in it is required to run WISEPACK, and **nothing in it
+decides whether WebRTC works** — every value can be exported inline instead. It
+exists so host-specific settings do not have to be retyped on every invocation:
 
 ```bash
-cp config/local.env.example config/local.env   # then fill in this host's port
+cp config/local.env.example config/local.env
+# edit the placeholders
+./run_wisepack_dashboard.sh isaac
 ```
 
-`config/local.env` is git-ignored; only the template is tracked.
+| key | safe default when unresolved |
+|---|---|
+| `WISEPACK_SSH_PORT` | **none — 22 is never assumed** |
+| `WISEPACK_ISAAC_STREAM_HOST` | `127.0.0.1`, labelled *local/forwarded* |
+
+Every value resolves in the same order, most explicit first:
+
+1. an already-exported environment variable — an operator override always wins;
+2. `config/local.env`;
+3. a safe default, or an explicit *unresolved* diagnostic.
+
+`WISEPACK_SSH_PORT` has a fourth step before giving up: the server-side field of
+`$SSH_CONNECTION` when the launcher runs inside an SSH session. Failing that it
+becomes the literal `<ssh-port>` with a diagnostic. **Port 22 is never assumed** —
+a wrong port produces a command that looks right and connects nowhere. A template
+copied but not edited counts as unresolved, so `YOUR_SSH_PORT` and
+`YOUR_REACHABLE_SERVER_ADDRESS` never reach a command line.
+
+The file is read by an **allowlist parser** in `scripts/lib_local_env.sh` — only
+the two keys above are honoured, and it is **never sourced as shell**, so a
+backtick or `$(...)` in a value is data rather than a command.
+
+`config/local.env` is git-ignored and **never committed**; only the template is
+tracked. Real values stay out of tracked files, README examples, test fixtures,
+generated artefacts and logs.
 
 Any other remote access needs a deliberate decision: a firewall rule scoped to
 one client address, or an authenticated HTTPS reverse proxy. Do not publish these
@@ -1604,6 +1680,27 @@ transform (`wisepack_core/isaac_transform.py`), and this same descriptor to find
 a spectator stream — **without** depending on the HTML dashboard or scraping
 pixels out of the video. No XR dependency exists in `wisepack_core`, in the
 orchestration layer, or in the Isaac adapter.
+
+#### Runtime artefacts
+
+NVIDIA's streaming stack writes trace files — `NvStreamer-*.etli`, about 7 MB per
+minute of streaming — into the **process working directory**. Launched from the
+repository root that is the repository root, and one WebRTC session left 53 MB of
+binary traces among the source. They are NVIDIA runtime artefacts, not WISEPACK
+files.
+
+So the simulator runs from a directory the launcher owns:
+
+| `WISEPACK_RESULTS_DIR` | working directory | lifetime |
+|---|---|---|
+| set | `${WISEPACK_RESULTS_DIR}/runtime/nvstreamer/<run-id>/` | **retained** beside the run's other evidence |
+| unset | `${TMPDIR:-/tmp}/wisepack-isaac-runtime/<run-id>/` | removed on exit by the launcher that created it |
+
+Only the launcher's own temporary directory is removed; a results directory
+belongs to the operator and its contents are diagnostics. Every path handed to
+the simulator is absolute, so changing the working directory cannot break imports
+or asset discovery. `NvStreamer-*.etli` is also in `.gitignore` as a backstop —
+belt and braces, because an ignored 53 MB artefact is still 53 MB in the way.
 
 #### Process ownership
 

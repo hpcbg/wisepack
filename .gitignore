@@ -27,3 +27,6 @@ results/*
 # Host-specific settings (SSH port for the stream port-forward examples, etc).
 # The TEMPLATE config/local.env.example IS tracked; the filled-in file is not.
 config/local.env
+
+# NVIDIA WebRTC runtime traces
+NvStreamer-*.etli
