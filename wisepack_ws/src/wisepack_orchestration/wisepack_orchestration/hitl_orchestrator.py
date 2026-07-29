@@ -305,6 +305,11 @@ class HitLOrchestrator(Node):
                                ExecutionBackend.SIMULATED.value)
         self.declare_parameter("isaac_ready_timeout_s", 240.0)
         self.declare_parameter("isaac_item_timeout_s", 180.0)
+        # WHICH ROBOT executes, for the Isaac backend. "" means "resolve it" —
+        # see _resolve_robot for the documented precedence, which puts the
+        # WISEPACK_ISAAC_ROBOT environment override above the configured default
+        # so an automated validator cannot be overruled by a stale draft.
+        self.declare_parameter("robot", "")
 
         preset = self.get_parameter("preset").value
         seed = int(self.get_parameter("seed").value)
@@ -327,8 +332,12 @@ class HitLOrchestrator(Node):
                                   "material": "stainless_316L",
                                   "priority": 9, "dose_class": "ILW"}})]
 
+        self.robot_profile = self._resolve_robot(
+            self.get_parameter("robot").value or None)
+
         self.engine = WorkflowEngine(WorkflowConfig(
             preset=preset, seed=seed,
+            robot_id=(self.robot_profile.robot_id if self.robot_profile else ""),
             strategy=Strategy(self.get_parameter("strategy").value),
             optimizer=OptimizerConfig(seed=seed, restarts=6),
             robot=RobotSimConfig(
@@ -433,13 +442,16 @@ class HitLOrchestrator(Node):
             from .isaac_bridge import IsaacExecutionBridge      # noqa: PLC0415
             self.isaac = IsaacExecutionBridge(
                 self,
+                robot=self.robot_profile,
                 ready_timeout_s=float(
                     self.get_parameter("isaac_ready_timeout_s").value),
                 item_timeout_s=float(
                     self.get_parameter("isaac_item_timeout_s").value))
             self.get_logger().info(
-                "execution backend: ISAAC SIM — the simulated robot model is "
-                "disabled for this run; placements are executed physically")
+                f"execution backend: ISAAC SIM / "
+                f"{self.robot_profile.display_name if self.robot_profile else '?'} "
+                "— the simulated robot model is disabled for this run; "
+                "placements are executed physically")
 
         self.tree = build_tree(self)
         self.tree.setup_with_descendants()
@@ -535,6 +547,11 @@ class HitLOrchestrator(Node):
             # for a consumer that has the plan but not the scenario.
             plan_revision=(engine.scenario_revision if selected else None),
             approval_revision=engine.approval_revision,
+            # WHICH ARM. Orion-LD holds current state, so a KPI or inventory
+            # attribute written by a Panda run is still there when an xArm run
+            # starts; without this facet a reader cannot tell them apart. None
+            # on a simulated run, which makes no claim about a robot.
+            robot_id=engine.config.robot_id or None,
             sequence=self._correlation_sequence)
 
     #: WHICH facets each projection actually makes a claim about.
@@ -663,10 +680,17 @@ class HitLOrchestrator(Node):
         # authoritative rather than defaulting to "simulated" and mislabelling a
         # physical run. The payload carries the live simulator status too, so
         # "isaac selected" and "isaac actually up" stay distinguishable.
+        robot = getattr(self, "robot_profile", None)
         backend = {"backend": self.execution_backend.value,
-                   "label": self.execution_backend.label,
+                   "label": self.execution_backend.badge(
+                       robot.display_name if robot else ""),
                    "detail": self.execution_backend.detail,
-                   "physical": self.execution_backend.is_physical}
+                   "physical": self.execution_backend.is_physical,
+                   # The ACTIVE robot — the one this run is executing with, not
+                   # whatever the dashboard's draft currently says. The draft
+                   # lives in the web process and never reaches here.
+                   "robot": (robot.to_public_dict() if robot else None),
+                   "robot_id": engine.config.robot_id or None}
         if self.isaac is not None:
             backend["isaac"] = self.isaac.status()
             # Backend-neutral: the dashboard reads `visualization` without
@@ -1153,6 +1177,32 @@ class HitLOrchestrator(Node):
             f"strategy comparison {comparison['comparison_id']} published "
             f"(revision {comparison['scenario_revision']})")
 
+    def _resolve_robot(self, explicit: Optional[str] = None,
+                       draft: Optional[str] = None):
+        """WHICH ROBOT this run executes with. None for a simulated run.
+
+        Resolution order, and it is not arbitrary:
+
+            1. an explicit value (the ROS parameter, or the dashboard's draft
+               carried into a reset)
+            2. WISEPACK_ISAAC_ROBOT from the environment
+            3. the scenario draft
+            4. the configured default in config/isaac_robots.yaml
+
+        The environment sits above the draft because the override exists for
+        automation: a validator that exports it must not be overruled by
+        whatever a browser last left in the draft.
+
+        An unknown or disabled robot RAISES rather than falling back. A typo
+        that quietly selected a different arm would produce a run whose
+        artefacts, FIWARE projection and evidence all name a robot that never
+        moved. The simulated backend has no robot at all and returns None.
+        """
+        if self.execution_backend is not ExecutionBackend.ISAAC:
+            return None
+        from wisepack_core.robots import load_registry            # noqa: PLC0415
+        return load_registry().resolve(explicit=explicit, draft=draft)
+
     def _reset_run(self, args: Dict[str, Any]) -> None:
         """Build a brand-new run from the operator's scenario settings.
 
@@ -1165,6 +1215,39 @@ class HitLOrchestrator(Node):
         preset = args.get("preset", self.engine.config.preset)
         seed = int(args.get("seed", self.engine.config.seed))
         strategy = Strategy(args.get("strategy", self.engine.config.strategy.value))
+
+        # THE ROBOT CHANGES HERE AND NOWHERE ELSE. A reset is a NEW run, which
+        # is exactly the moment at which changing the arm is safe: the old run
+        # is aborted, the engine is replaced, and the physical scene is rebuilt
+        # for the new robot's workcell before anything can be approved. Editing
+        # the draft mid-run does not reach this code, which is the whole reason
+        # draft and active are separate.
+        #
+        # An unknown or disabled robot raises out of here, and the command
+        # handler reports it — the run then continues on the PREVIOUS robot
+        # rather than starting on an unvalidated one.
+        robot_profile = self._resolve_robot(
+            explicit=args.get("robot_id") or None,
+            draft=self.engine.config.robot_id or None)
+        robot_id = robot_profile.robot_id if robot_profile else ""
+        if (robot_profile is not None and self.isaac is not None
+                and robot_id != self.isaac.robot_id
+                and self.isaac.in_flight_item):
+            # NO ROBOT SWITCH WHILE AN ITEM IS IN THE AIR. A reset legitimately
+            # stops a run, but swapping the arm out from under a carried object
+            # means the weld, the item and the workcell layout all change in the
+            # same frame. Refuse and say what to do instead; the operator can
+            # abort, let the item settle, and then reset.
+            raise ValueError(
+                f"cannot switch to {robot_id} while "
+                f"{self.isaac.in_flight_item} is being carried — let the "
+                "current item finish, or abort the run first")
+        if robot_profile is not None:
+            refusal = robot_profile.preset_refusal(preset)
+            if refusal:
+                # Refused BEFORE the engine is replaced, so a bad pairing costs
+                # the operator a message rather than a working run.
+                raise ValueError(refusal)
 
         overrides: Dict[str, Any] = {}
         if preset != "curated_volume_reduction":
@@ -1187,7 +1270,7 @@ class HitLOrchestrator(Node):
                                   "priority": 9, "dose_class": "ILW"}})]
 
         self.engine = WorkflowEngine(WorkflowConfig(
-            preset=preset, seed=seed, strategy=strategy,
+            preset=preset, seed=seed, strategy=strategy, robot_id=robot_id,
             optimizer=OptimizerConfig(seed=seed, restarts=6),
             robot=RobotSimConfig(
                 pick_failure_probability=float(
@@ -1209,6 +1292,22 @@ class HitLOrchestrator(Node):
             self.isaac.abort_run(previous_engine,
                                  "operator reset — starting a new run")
             self.isaac.run_open = False
+            if robot_profile is not None and robot_id != self.isaac.robot_id:
+                # A DIFFERENT ARM MEANS A DIFFERENT WORKCELL. The bridge's
+                # layout, its scene fingerprint and every pose it converts are
+                # derived from the robot's profile, so switching robots without
+                # re-deriving them would send the new arm to the old arm's
+                # coordinates. The simulator process must also be restarted for
+                # the new robot; until it reports a matching SCENE_READY the
+                # gate stays shut, which is the correct behaviour rather than a
+                # gap.
+                self.get_logger().warn(
+                    f"robot changed {self.isaac.robot_id or '-'} -> {robot_id}; "
+                    "restart the Isaac simulator with "
+                    f"--robot {robot_id} (or WISEPACK_ISAAC_ROBOT={robot_id}). "
+                    "Approval stays disabled until it acknowledges the scene "
+                    "for the new robot.")
+                self.isaac.rebind_robot(robot_profile)
 
         # Drive straight to the approval gate — never past it.
         #
@@ -1242,8 +1341,9 @@ class HitLOrchestrator(Node):
         self.publish_plans()
         self.publish_state()
         self.get_logger().info(
-            f"reset -> preset={preset} seed={seed} strategy={strategy.value}; "
-            f"awaiting approval")
+            f"reset -> preset={preset} seed={seed} strategy={strategy.value}"
+            + (f" robot={robot_id}" if robot_id else "")
+            + "; awaiting approval")
 
     # -- artefacts --------------------------------------------------------- #
 
@@ -1261,9 +1361,19 @@ class HitLOrchestrator(Node):
             return {}
         try:
             kpis = engine.kpis(latest_latency_p50_ms(self.results_dir))
+            robot = getattr(self, "robot_profile", None)
             artifacts = write_run_artifacts(
                 engine.scenario, engine.baseline, engine.optimized,
-                engine.selected, kpis, engine.log, self.results_dir)
+                engine.selected, kpis, engine.log, self.results_dir,
+                # WHO EXECUTED, recorded in the run record itself. A results
+                # file that does not name the arm cannot be interpreted later:
+                # the placement errors of an xArm run and a Panda run are not
+                # comparable, and the two are otherwise indistinguishable.
+                extra={"execution": {
+                    "backend": self.execution_backend.value,
+                    "robot_id": engine.config.robot_id or None,
+                    "robot": robot.to_public_dict() if robot else None,
+                }})
             report = write_validation_report(
                 engine.scenario, engine.baseline, engine.optimized,
                 engine.selected, kpis, engine.log, artifacts, self.results_dir)

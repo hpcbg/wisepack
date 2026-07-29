@@ -46,6 +46,7 @@ arrives it replaces ``table_pose_for_index``, and nothing else changes.
 
 from __future__ import annotations
 
+import dataclasses
 import math
 from dataclasses import dataclass
 from typing import Dict, Optional, Sequence, Tuple
@@ -180,8 +181,25 @@ class SceneLayout:
     #: Robot reach envelope, measured from the base at (0, 0, table_top_z_m).
     #: Conservative: the nominal Panda reach is ~0.855 m and the last few
     #: centimetres are only achievable at unhelpful wrist configurations.
+    #:
+    #: THESE ARE THE PANDA'S NUMBERS and the defaults above are the Panda's
+    #: layout, because it is the arm this workcell was written for. A robot with
+    #: a different envelope does not inherit them silently — it declares the
+    #: difference in its profile's `workcell` block and `layout_for_robot`
+    #: builds its layout from that. See wisepack_core.robots.
     robot_max_reach_m: float = 0.78
     robot_min_reach_m: float = 0.20
+
+    #: The spectator camera (``/World/DemoCamera``). Part of the LAYOUT rather
+    #: than of the scene builder, so that a robot which moves the workcell also
+    #: moves the viewpoint that frames it — otherwise selecting a shorter arm
+    #: silently reframes the shot around furniture that is no longer there.
+    camera_position_m: Tuple[float, float, float] = (1.55, -1.15, 1.45)
+    camera_rotation_deg: Tuple[float, float, float] = (63.0, 0.0, 52.0)
+    #: Which robot this layout was built for. "" means the shared default.
+    #: Carried so a layout can be reported and fingerprinted without the caller
+    #: having to remember which robot it asked for.
+    robot_id: str = ""
 
     @property
     def table_frame_origin_m(self) -> Tuple[float, float, float]:
@@ -268,6 +286,42 @@ class SceneLayout:
 
 
 DEFAULT_LAYOUT = SceneLayout()
+
+
+def layout_for_robot(profile, base: SceneLayout = DEFAULT_LAYOUT) -> SceneLayout:
+    """The workcell as the given robot needs it.
+
+    THE WORKCELL MOVES FOR THE ROBOT. Dropping a shorter arm into coordinates
+    sized for a longer one does not fail loudly — differential IK converges to
+    the nearest achievable pose and the gripper opens over nothing — so a robot
+    whose envelope differs states the difference in its profile and this builds
+    the layout from it.
+
+    ``profile`` is a ``wisepack_core.robots.RobotProfile``; it is duck-typed
+    rather than imported so this module keeps no dependency on the registry, and
+    ``None`` returns the shared default unchanged. Every override the profile
+    does NOT set is inherited, so a robot that only differs in reach says only
+    that.
+
+    BOTH ENDS MUST CALL THIS WITH THE SAME PROFILE. The orchestrator converts
+    plan poses through the layout and the simulator builds the scene from it; if
+    they disagreed the arm would be sent to coordinates nobody spawned anything
+    at. That is exactly what ``scene_fingerprint`` — which hashes the layout and
+    the robot id together — exists to catch.
+    """
+    if profile is None:
+        return base
+    overrides = getattr(profile, "workcell", None)
+    changes: Dict[str, object] = {"robot_id": getattr(profile, "robot_id", "")}
+    for field_name in ("robot_max_reach_m", "robot_min_reach_m",
+                       "container_outer_xy_m", "pick_row_x_m",
+                       "pick_row_y_start_m", "pick_row_y_pitch_m",
+                       "table_top_z_m", "camera_position_m",
+                       "camera_rotation_deg"):
+        value = getattr(overrides, field_name, None) if overrides else None
+        if value is not None:
+            changes[field_name] = value
+    return dataclasses.replace(base, **changes)
 
 
 def container_slot(container_id: str) -> int:
@@ -557,7 +611,8 @@ def check_containment(actual: Pose, container_inner: Vec3,
         detail="; ".join(reasons))
 
 
-def scene_fingerprint(scenario, layout: SceneLayout = DEFAULT_LAYOUT) -> str:
+def scene_fingerprint(scenario, layout: SceneLayout = DEFAULT_LAYOUT,
+                      robot_id: Optional[str] = None) -> str:
     """A deterministic digest of the PHYSICAL scene a scenario implies.
 
     Computed on BOTH sides from the same function, so "the simulator built what
@@ -576,6 +631,14 @@ def scene_fingerprint(scenario, layout: SceneLayout = DEFAULT_LAYOUT) -> str:
         with identical ids and dimensions but a different pick row are different
         worlds to a robot.
       * the container specification — where things are put, and how much fits.
+      * THE ROBOT. A scene built for an xArm 7 is not the scene an approved
+        Panda plan was written against: the bin sits 80 mm nearer the base, the
+        reach envelope the plan was validated against is different, and the arm
+        standing in it is a different machine. Without this facet a Panda
+        SCENE_READY would satisfy an xArm run's gate — an acknowledgement about
+        one world authorising motion in another. ``robot_id`` defaults to
+        ``layout.robot_id`` so a caller that already built the layout for a
+        robot cannot forget to pass it.
 
     What it deliberately does NOT cover: anything that legitimately differs
     between two correct builds of the same scenario (timestamps, prim paths,
@@ -596,6 +659,7 @@ def scene_fingerprint(scenario, layout: SceneLayout = DEFAULT_LAYOUT) -> str:
     parts: Dict[str, object] = {
         "preset": getattr(scenario, "preset", ""),
         "seed": int(getattr(scenario, "seed", 0) or 0),
+        "robot": str(layout.robot_id if robot_id is None else robot_id),
         "layout": [_round(layout.table_top_z_m), _round(layout.pick_row_x_m),
                    [_round(v) for v in layout.container_outer_xy_m]],
         "items": [],
@@ -633,4 +697,5 @@ __all__ = [
     "axis_deviation_deg", "container_slot", "table_pose_for_index",
     "placement_pose", "dimensions_for", "pose_to_world", "world_to_pose",
     "container_frame", "check_containment", "container_inner_size",
+    "layout_for_robot", "scene_fingerprint",
 ]

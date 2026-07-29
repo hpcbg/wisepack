@@ -272,6 +272,7 @@ def build(snap, mode: str, mirror: Optional[Dict[str, Any]],
             "scene_mismatch": isaac.get("scene_mismatch") or "—",
             "simulator_version": isaac.get("simulator_version") or "—",
         })
+        overview.update(_robot_rows(snap, isaac))
 
     # -- component status (6.2) — allowlisted ------------------------------ #
     rt = _runtime_status()
@@ -394,6 +395,60 @@ def build(snap, mode: str, mirror: Optional[Dict[str, Any]],
             "or shell access are exposed. Container facts come only from an "
             "allowlisted host-generated file."),
     }
+
+
+def _robot_rows(snap, isaac: Dict[str, Any]) -> Dict[str, Any]:
+    """Everything Diagnostics reports about the SELECTED robot.
+
+    EXPECTED VERSUS DISCOVERED, side by side, because that is the pairing that
+    makes a wrong robot configuration visible. Isaac does not fail loudly when a
+    profile does not match an asset: a joint name that is not in the
+    articulation resolves to an empty index list and the command silently does
+    nothing. A row that showed only the CONFIGURED joints would render
+    identically whether or not the robot has them.
+
+    Everything here is what the simulator reported. The orchestrator forwards it
+    verbatim — it does not know what an articulation is and must not learn.
+    """
+    robot = dict(isaac.get("robot_status") or {})
+    selected = (isaac.get("robot_id") or snap.active_robot_id or "") or "—"
+    expected = robot.get("expected_arm_joints") or []
+    discovered = robot.get("discovered_arm_joints") or []
+
+    def _yn(value, unknown="unknown"):
+        return unknown if value is None else ("yes" if value else "NO")
+
+    rows: Dict[str, Any] = {
+        "configured_robots": ", ".join(robot.get("configured_robots") or []) or "—",
+        "selected_robot": selected,
+        # SELECTED and ACTIVE are different claims. "Selected" is what this run
+        # asked for; "active" is what actually stood up and validated. They
+        # differ exactly when something is wrong, which is when it matters.
+        "active_robot": robot.get("active_robot") or "—",
+        "robot_profile_revision": robot.get("robot_profile_revision") or "—",
+        "robot_registry_revision": robot.get("registry_revision") or "—",
+        "robot_asset_resolved": robot.get("asset_resolved") or "—",
+        "robot_articulation_valid": _yn(robot.get("articulation_valid")),
+        "robot_expected_arm_joints": ", ".join(expected) or "—",
+        "robot_discovered_arm_joints": ", ".join(discovered) or "—",
+        "robot_end_effector_resolved": robot.get("end_effector_resolved") or "—",
+        "robot_gripper_ready": _yn(robot.get("gripper_ready")),
+        "robot_home_verified": _yn(robot.get("home_verified")),
+        "robot_kinematics": robot.get("kinematics") or "—",
+        "robot_kinematics_ready": _yn(robot.get("kinematics_ready")),
+        # Stated, never inferred. A differential IK controller is not a motion
+        # planner, and a dashboard that leaves this to inference invites the
+        # opposite conclusion.
+        "robot_motion_planning": _yn(robot.get("motion_planning"), "no"),
+        "robot_scene_ready": _yn(isaac.get("scene_ready")),
+        "acknowledged_robot": isaac.get("acknowledged_robot") or "—",
+        "last_robot_error": (isaac.get("robot_model_error")
+                             or robot.get("last_robot_error") or "none"),
+    }
+    if expected and discovered and expected != discovered:
+        rows["robot_joint_mismatch"] = (
+            f"configured {expected} but the articulation reports {discovered}")
+    return rows
 
 
 __all__ = ["build", "COMPONENTS", "INTERFACES"]

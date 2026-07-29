@@ -68,7 +68,7 @@ from wisepack_core.isaac_contract import (
 )
 from wisepack_core.isaac_transform import (
     DEFAULT_LAYOUT, SceneLayout, dimensions_for, placement_pose,
-    scene_fingerprint, table_pose_for_index,
+    layout_for_robot, scene_fingerprint, table_pose_for_index,
 )
 
 LOG = "[isaac-bridge]"
@@ -110,9 +110,19 @@ class IsaacExecutionBridge:
     def __init__(self, node, *, layout: Optional[SceneLayout] = None,
                  ready_timeout_s: float = 240.0,
                  item_timeout_s: float = 180.0,
-                 command_resend_s: float = 5.0) -> None:
+                 command_resend_s: float = 5.0,
+                 robot=None) -> None:
         self.node = node
-        self.layout = layout or DEFAULT_LAYOUT
+        # THE ROBOT DECIDES THE WORKCELL. The layout is derived from the
+        # selected robot's profile — a shorter arm needs the bin nearer its base
+        # — and the SIMULATOR derives the same layout from the same profile. If
+        # this end used the shared default while the simulator used the robot's,
+        # every plan pose would be converted against a bin that is not where the
+        # objects are. `scene_fingerprint` hashes the robot id together with the
+        # layout precisely so that disagreement is caught before a pick, not
+        # after one.
+        self.robot = robot
+        self.layout = layout or layout_for_robot(robot)
         self.ready_timeout_s = float(ready_timeout_s)
         self.item_timeout_s = float(item_timeout_s)
         self.command_resend_s = float(command_resend_s)
@@ -163,6 +173,13 @@ class IsaacExecutionBridge:
         #: what a WebRTC port is and must not learn.
         self.visualization: Optional[Dict[str, Any]] = None
         self.simulator_version: Optional[str] = None
+        #: What the simulator reported about its robot, verbatim. The
+        #: orchestrator does not interpret it — it does not know what an
+        #: articulation is and must not learn — it forwards it to Diagnostics.
+        self.robot_status: Dict[str, Any] = {}
+        #: Non-empty once the simulator has reported ROBOT_MODEL_INVALID. While
+        #: it holds a reason nothing may be approved and nothing may be picked.
+        self.robot_model_error: str = ""
 
     # ------------------------------------------------------------------ #
     # Introspection (the dashboard diagnostics read this)
@@ -172,6 +189,17 @@ class IsaacExecutionBridge:
         return {
             "backend": ExecutionBackend.ISAAC.value,
             "run_id": self.gate.run_id,
+            # WHICH ARM this run selected, and what the simulator says it is
+            # actually running. Kept apart: they are the same until they are
+            # not, and the case where they differ is the one worth seeing.
+            "robot_id": self.robot_id,
+            "robot_display_name": (self.robot.display_name if self.robot
+                                   else ""),
+            "robot_profile_revision": (self.robot.revision if self.robot else ""),
+            "robot_status": dict(self.robot_status),
+            "acknowledged_robot": (self.acknowledged.robot_id
+                                   if self.acknowledged else ""),
+            "robot_model_error": self.robot_model_error,
             "simulator_ready": self.simulator_ready,
             "run_open": self.run_open,
             "run_finished": self.run_finished,
@@ -204,6 +232,19 @@ class IsaacExecutionBridge:
         }
 
     @property
+    def in_flight_item(self) -> Optional[str]:
+        """The item currently with the simulator, or None."""
+        return self._in_flight[0].item_id if self._in_flight else None
+
+    @property
+    def robot_id(self) -> str:
+        return getattr(self.robot, "robot_id", "") or ""
+
+    @property
+    def robot_profile_revision(self) -> str:
+        return getattr(self.robot, "revision", "") or ""
+
+    @property
     def scene_status(self) -> str:
         """building | ready | mismatch | failed | awaiting-acknowledgement."""
         if self.reset_failed_reason:
@@ -227,10 +268,17 @@ class IsaacExecutionBridge:
         return (not self.reset_in_progress
                 and not self.reset_failed_reason
                 and not self.scene_mismatch
+                # A robot whose model did not validate has an unknown
+                # relationship between what is commanded and what moves. No
+                # scene is "ready" for it.
+                and not self.robot_model_error
                 and self.scene_revision == self.required_revision)
 
     def scene_block_reason(self) -> str:
         """Why physical execution is not authorised, in the operator's words."""
+        if self.robot_model_error:
+            return (f"the simulator could not stand up the selected robot: "
+                    f"{self.robot_model_error}")
         if self.reset_failed_reason:
             return f"the simulator could not rebuild the scene: {self.reset_failed_reason}"
         if self.reset_in_progress:
@@ -250,6 +298,31 @@ class IsaacExecutionBridge:
                     "this scenario yet — the previous run's objects may still "
                     "be in the container")
         return ""
+
+    def rebind_robot(self, profile) -> None:
+        """Adopt a NEW robot, and forget everything that described the old one.
+
+        Called only from a reset, because a reset is the only moment a robot may
+        change: there is no in-flight item, the engine is being replaced and the
+        physical scene is about to be rebuilt.
+
+        The layout is re-derived rather than kept. Every pose this bridge sends
+        is converted through it, and the two arms do not share a workcell — the
+        xArm 7 works a bin 80 mm nearer its base — so carrying the old layout
+        forward would send the new arm to the old arm's coordinates with the
+        right run id, the right revision and no way to notice.
+        """
+        self.robot = profile
+        self.layout = layout_for_robot(profile)
+        # A previous robot's acknowledgement says nothing about this one.
+        self.acknowledged = None
+        self.scene_revision = -1
+        self.scene_mismatch = ""
+        self.requested_fingerprint = ""
+        self.scene_requested_for_run = ""
+        self.robot_status = {}
+        self.robot_model_error = ""
+        self.simulator_ready = False
 
     def request_scene_reset(self, engine, revision: int) -> None:
         """Ask the backend to REBUILD its scene for `revision`, and gate on it.
@@ -314,8 +387,9 @@ class IsaacExecutionBridge:
         # Computed from the scenario THIS run planned against, by the same
         # function Isaac will use on the scene it actually has. That turns
         # "is the world the right one?" into a string comparison.
-        self.requested_fingerprint = (scene_fingerprint(scenario, self.layout)
-                                      if scenario is not None else "")
+        self.requested_fingerprint = (
+            scene_fingerprint(scenario, self.layout, self.robot_id)
+            if scenario is not None else "")
         self.requested_object_count = len(scenario.items) if scenario else 0
         command = (IsaacCommandType.RESET_SCENE if rebuild
                    else IsaacCommandType.SYNC_SCENE)
@@ -324,6 +398,7 @@ class IsaacExecutionBridge:
             run_id=engine.run_id,
             preset=scenario.preset if scenario else engine.config.preset,
             seed=int(scenario.seed if scenario else engine.config.seed),
+            robot_id=self.robot_id,
             total_items=self.requested_object_count,
             scenario_revision=self.required_revision))
         engine.note_physical_progress(
@@ -333,6 +408,7 @@ class IsaacExecutionBridge:
              f"requested for scenario revision {self.required_revision}"),
             details={"scenario_revision": self.required_revision,
                      "preset": scenario.preset if scenario else "",
+                     "robot_id": self.robot_id,
                      "scene_fingerprint": self.requested_fingerprint,
                      "expected_object_count": self.requested_object_count})
 
@@ -383,6 +459,7 @@ class IsaacExecutionBridge:
             plan_id=engine.selected.plan_id if engine.selected else "",
             preset=scenario.preset if scenario else engine.config.preset,
             seed=int(scenario.seed if scenario else engine.config.seed),
+            robot_id=self.robot_id,
             total_items=len(scenario.items) if scenario else 0,
         ))
         engine.note_physical_progress(
@@ -391,6 +468,7 @@ class IsaacExecutionBridge:
             details={"preset": scenario.preset if scenario else "",
                      "seed": int(scenario.seed if scenario else 0),
                      "run_id": engine.run_id,
+                     "robot_id": self.robot_id,
                      "backend": ExecutionBackend.ISAAC.value})
 
     def abort_run(self, engine, reason: str) -> None:
@@ -398,7 +476,8 @@ class IsaacExecutionBridge:
         if not self.run_open:
             return
         self._publish(IsaacCommand(
-            command=IsaacCommandType.RUN_ABORT, run_id=self.gate.run_id))
+            command=IsaacCommandType.RUN_ABORT, run_id=self.gate.run_id,
+            robot_id=self.robot_id))
         if self._in_flight is not None:
             placement, _ = self._in_flight
             self.node.get_logger().warn(
@@ -414,7 +493,8 @@ class IsaacExecutionBridge:
         if not self.run_open or self.run_finished:
             return
         self._publish(IsaacCommand(
-            command=IsaacCommandType.RUN_END, run_id=self.gate.run_id))
+            command=IsaacCommandType.RUN_END, run_id=self.gate.run_id,
+            robot_id=self.robot_id))
         self.run_finished = True
 
     # ------------------------------------------------------------------ #
@@ -592,6 +672,7 @@ class IsaacExecutionBridge:
             seed=int(scenario.seed if scenario else 0),
             total_items=len(scenario.items) if scenario else 0,
             scenario_revision=self.required_revision,
+            robot_id=self.robot_id,
         )
 
     # ------------------------------------------------------------------ #
@@ -612,7 +693,27 @@ class IsaacExecutionBridge:
         engine = self.node.engine
         self.node.get_logger().info(
             f"{LOG} <- {feedback.state.value} "
-            f"{feedback.item_id or '-'} run={feedback.run_id}")
+            f"{feedback.item_id or '-'} run={feedback.run_id}"
+            + (f" robot={feedback.robot_id}" if feedback.robot_id else ""))
+
+        # STALE FEEDBACK FROM ANOTHER ROBOT IS DROPPED, whatever it says.
+        #
+        # Both processes share one DDS domain, and a simulator started for a
+        # previous run with a different arm may simply never have been shut
+        # down. Its READY would set `simulator_ready`, its SCENE_READY would be
+        # measured against this run's fingerprint, and its ITEM_COMPLETED would
+        # mark a placement executed that this run's robot never touched. The run
+        # gate cannot see any of that: the ids and revisions may match perfectly
+        # and still describe a different machine in a differently-arranged cell.
+        #
+        # An EMPTY robot_id is not a mismatch — an older simulator does not send
+        # one, and refusing it would break a rolling upgrade for no safety gain.
+        if (self.robot_id and feedback.robot_id
+                and feedback.robot_id != self.robot_id):
+            self.node.get_logger().warn(
+                f"{LOG} ignoring {feedback.state.value} from robot "
+                f"{feedback.robot_id!r}: this run selected {self.robot_id!r}")
+            return
 
         # THE RUN GATE APPLIES TO EXECUTION, NOT TO LIFECYCLE.
         #
@@ -630,7 +731,8 @@ class IsaacExecutionBridge:
         # `_on_reset_state`. They are therefore admitted before a run exists and
         # validated on their own terms.
         lifecycle = (feedback.state in (IsaacState.READY,
-                                        IsaacState.SIMULATOR_READY)
+                                        IsaacState.SIMULATOR_READY,
+                                        IsaacState.ROBOT_MODEL_INVALID)
                      or feedback.state in _SCENE_LIFECYCLE)
         if not lifecycle:
             reason = self.gate.reject_reason(feedback.run_id, -1)
@@ -652,6 +754,10 @@ class IsaacExecutionBridge:
         state = feedback.state
         self._last_state = state
 
+        if state is IsaacState.ROBOT_MODEL_INVALID:
+            self._on_robot_model_invalid(engine, feedback)
+            return
+
         if state in (IsaacState.READY, IsaacState.SIMULATOR_READY):
             # SIMULATOR-LEVEL READINESS ONLY. The process is up, its ROS bridge
             # is up and the physics application is running. It says nothing
@@ -663,6 +769,14 @@ class IsaacExecutionBridge:
             # previously-published "unavailable".
             self.visualization = feedback.detail.get("visualization")
             self.simulator_version = feedback.detail.get("simulator_version")
+            robot = feedback.detail.get("robot")
+            if isinstance(robot, dict):
+                self.robot_status = dict(robot)
+                # A simulator that came back healthy clears a previous model
+                # failure — otherwise a restart that fixed the configuration
+                # would leave the run held for a reason no longer true.
+                if robot.get("model_valid"):
+                    self.robot_model_error = ""
             if not self.simulator_ready:
                 self.simulator_ready = True
                 self.node.get_logger().info(
@@ -710,7 +824,48 @@ class IsaacExecutionBridge:
             feedback.item_id, feedback.container_id,
             feedback.message or f"Isaac Sim: {state.value}",
             robot_state=robot_state_for_isaac_state(state),
-            details={**feedback.detail, "isaac_state": state.value})
+            # EVERY physical action event names the arm that performed it. The
+            # audit trail outlives the run, and "the robot picked item-003" is
+            # not a usable record when two robots are selectable.
+            details={**feedback.detail, "isaac_state": state.value,
+                     "robot_id": feedback.robot_id or self.robot_id})
+        self.node.publish_execution()
+
+    def _on_robot_model_invalid(self, engine, feedback: IsaacFeedback) -> None:
+        """The simulator could not stand up its robot. HOLD — never proceed.
+
+        Distinct from RUN_FAILED because it is a configuration fault rather than
+        a physical one, and the remedy is different: nothing is retried, the
+        backend goes DEGRADED, and approval stays disabled until a simulator
+        reports a robot that validates. A partially loaded robot must never
+        reach execution.
+        """
+        self.robot_model_error = (feedback.message
+                                  or "the robot model did not validate")
+        robot = feedback.detail.get("robot")
+        if isinstance(robot, dict):
+            self.robot_status = dict(robot)
+        self.reset_in_progress = False
+        self._in_flight = None
+        self._in_flight_command = None
+        self.node.get_logger().error(
+            f"{LOG} ROBOT_MODEL_INVALID ({feedback.robot_id or '?'}): "
+            f"{self.robot_model_error}")
+        engine.note_physical_progress(
+            None, "isaac_robot_model_invalid", None, None,
+            f"the Isaac backend could not stand up "
+            f"{feedback.robot_id or 'the selected robot'}: "
+            f"{self.robot_model_error}",
+            robot_state="idle",
+            details={**feedback.detail, "robot_id": feedback.robot_id,
+                     "isaac_state": IsaacState.ROBOT_MODEL_INVALID.value})
+        if not self._degraded:
+            self._degraded = True
+            engine.enter_degraded(
+                f"Isaac Sim reported ROBOT_MODEL_INVALID for "
+                f"{feedback.robot_id or 'the selected robot'}: "
+                f"{self.robot_model_error}. Execution is HELD and approval is "
+                "disabled — a partially loaded robot is not run.")
         self.node.publish_execution()
 
     def _on_reset_state(self, engine, feedback: IsaacFeedback) -> None:
@@ -744,7 +899,9 @@ class IsaacExecutionBridge:
                     preset=(scenario.preset if scenario else ""),
                     seed=int(scenario.seed) if scenario else 0,
                     fingerprint=self.requested_fingerprint,
-                    object_count=self.requested_object_count)
+                    object_count=self.requested_object_count,
+                    robot_id=self.robot_id,
+                    robot_profile_revision=self.robot_profile_revision)
             if reasons:
                 self.reset_in_progress = False
                 self.scene_mismatch = "; ".join(reasons)
@@ -816,6 +973,7 @@ class IsaacExecutionBridge:
             "item_id": feedback.item_id,
             "sequence_index": index,
             "state": feedback.state.value,
+            "robot_id": feedback.robot_id or self.robot_id,
             "target_pose": (feedback.target_pose.to_dict()
                             if feedback.target_pose else None),
             "actual_pose": (feedback.actual_pose.to_dict()

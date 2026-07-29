@@ -6,6 +6,8 @@
 #     WISEPACK_ISAAC_HEADLESS=1 ./scripts/run_wisepack_isaac.sh
 #     ISAAC_SIM_ROOT=/opt/isaac-sim ./scripts/run_wisepack_isaac.sh
 #     ./scripts/run_wisepack_isaac.sh --self-test        # build, report READY, exit
+#     WISEPACK_ISAAC_ROBOT=xarm7 ./scripts/run_wisepack_isaac.sh
+#     ./scripts/run_wisepack_isaac.sh --list-robots      # the configured robots
 #
 # Isaac runs on the HOST in its own bundled Python. WISEPACK may run in Docker
 # with host networking; the two meet on the DDS wire, on a shared ROS_DOMAIN_ID,
@@ -41,6 +43,13 @@ wisepack_resolve_ssh_port || true
 export ROS_DOMAIN_ID="${ROS_DOMAIN_ID:-0}"
 PRESET="${WISEPACK_PRESET:-isaac_cylinders_smoke}"
 SEED="${WISEPACK_SEED:-42}"
+
+# WHICH ROBOT. Passed through, never guessed here: the registry
+# (config/isaac_robots.yaml) is the only robot list, and the simulator resolves
+# an empty value against WISEPACK_ISAAC_ROBOT and then the configured default.
+# Duplicating that precedence in shell would be a second place to keep it right.
+ROBOT="${WISEPACK_ISAAC_ROBOT:-}"
+[ -n "$ROBOT" ] && export WISEPACK_ISAAC_ROBOT="$ROBOT"
 
 # --- Isaac Sim discovery ----------------------------------------------------
 # Explicit ISAAC_SIM_ROOT wins. Otherwise search known locations NEWEST FIRST,
@@ -111,6 +120,7 @@ if [ -z "$HEADLESS" ]; then
 fi
 
 ISAAC_ARGS=(--preset "$PRESET" --seed "$SEED")
+[ -n "$ROBOT" ] && ISAAC_ARGS+=(--robot "$ROBOT")
 [ "$HEADLESS" = "1" ] && ISAAC_ARGS+=(--headless)
 ISAAC_ARGS+=("$@")
 
@@ -162,6 +172,7 @@ export WISEPACK_ISAAC_HEADLESS="$HEADLESS"
 
 # Rebuild the argument list now that the view mode has settled headlessness.
 ISAAC_ARGS=(--preset "$PRESET" --seed "$SEED")
+[ -n "$ROBOT" ] && ISAAC_ARGS+=(--robot "$ROBOT")
 [ "$HEADLESS" = "1" ] && ISAAC_ARGS+=(--headless)
 ISAAC_ARGS+=("$@")
 
@@ -250,6 +261,7 @@ fi
 
 echo "$LOG Isaac Sim   : $ISAAC_ROOT (version $ISAAC_VERSION)"
 echo "$LOG scenario    : preset=$PRESET seed=$SEED"
+echo "$LOG robot       : ${ROBOT:-<configured default from config/isaac_robots.yaml>}"
 echo "$LOG ROS_DOMAIN_ID: $ROS_DOMAIN_ID   headless=$HEADLESS"
 echo "$LOG results     : ${WISEPACK_RESULTS_DIR:-<unset>}"
 
@@ -315,6 +327,7 @@ export WISEPACK_SEED="$SEED"
 # Everything an operator needs to know to find the simulation, and nothing that
 # should not be published: no secrets and never this host's SSH port.
 echo "$LOG ----------------------------------------------------------------"
+echo "$LOG  robot         : ${ROBOT:-<configured default>}"
 echo "$LOG  view mode     : $VIEW_MODE"
 echo "$LOG  headless      : $([ "$HEADLESS" = "1" ] && echo yes || echo no)"
 echo "$LOG  DISPLAY       : ${DISPLAY:-<none>}"

@@ -1,0 +1,205 @@
+# WISEPACK — the supported Isaac Sim robots.
+#
+# THIS FILE IS THE ONLY ROBOT LIST. The launcher, the simulator, the
+# orchestrator, the web API and the test suite all read it through
+# wisepack_core.robots; there is no second list in Python, in HTML or in
+# JavaScript, and tests/test_isaac_robots.py fails the build if one appears.
+#
+# It is TRACKED and it is not host-specific. Which arm to run is a public
+# scenario choice, so it never belongs in config/local.env.
+#
+# SELECTING A ROBOT, in precedence order:
+#
+#   1. an explicit --robot on the simulator command line
+#   2. WISEPACK_ISAAC_ROBOT=xarm7   (exported; for automation and validators)
+#   3. the Scenario panel's Robot selector (the draft for the next run)
+#   4. default_robot below
+#
+# EVERY NUMBER BELOW WAS MEASURED FROM THE INSTALLED ASSET, not taken from a
+# datasheet. See README.md → "Supported robots" for how, and simulators/isaac/
+# adapters/ for the code that re-verifies each claim against the articulation it
+# actually loaded before any joint is commanded.
+
+schema: wisepack-isaac-robots/1.0
+
+# The default when nothing else selects one.
+default_robot: panda
+
+robots:
+  # ------------------------------------------------------------------------ #
+  - id: xarm7
+    display_name: UFACTORY xArm 7
+    manufacturer: UFACTORY
+    model: xArm 7
+    enabled: true
+    implementation_status: experimental
+    adapter: xarm7
+
+    # Under the Isaac Sim asset root, resolved at runtime through
+    # isaacsim.storage.native.get_assets_root_path. Nothing is copied into this
+    # repository. The list is tried in order; the loader reports every path it
+    # tried when none of them resolve.
+    asset_path_candidates:
+      - /Isaac/Robots/Ufactory/xarm7/xarm7.usd
+    # The shipped asset already selects the xarm_gripper variant, and it is
+    # named explicitly here so an asset whose default changes cannot silently
+    # produce an arm with no hand.
+    asset_variants:
+      Physics: PhysX
+      Variant_Set: xarm_gripper
+
+    root_prim_path: /World/XArm7
+    # NOT the same prim as root_prim_path, and that is the point of recording
+    # both. This asset carries PhysicsArticulationRootAPI on <root>/root_joint,
+    # so Articulation() resolves to the joint and writing a world pose there
+    # asserts on a missing xformOp. The BASE transform goes on root_prim_path;
+    # the articulation is read from here.
+    articulation_root: /World/XArm7/root_joint
+
+    arm_joint_names: [joint1, joint2, joint3, joint4, joint5, joint6, joint7]
+    # ONE driven joint. The other five carry PhysxMimicJointAPI:rotX and follow
+    # it in physics; commanding them directly is both unnecessary and a way to
+    # fight the mimic constraint.
+    gripper_joint_names: [drive_joint]
+    gripper_mimic_joint_names:
+      - left_inner_knuckle_joint
+      - right_inner_knuckle_joint
+      - right_outer_knuckle_joint
+      - left_finger_joint
+      - right_finger_joint
+
+    end_effector_link: xarm_gripper_base_link
+    end_effector_prim: /World/XArm7/gripper/xarm_gripper_base_link
+    # MEASURED from the finger meshes' world bounding box with the tool pointing
+    # down, not from the finger LINK origins. The link origins sit at the
+    # knuckles, 70 mm short of the tips, and using them put every grasp descent
+    # 70 mm high — measured as a consistent 71 mm shortfall on all four picks.
+    tool_centre_point_m: 0.162
+
+    # Radians. Found by servoing the real articulation to a top-down pose above
+    # the workcell and reading the joints back, then verified to HOLD to within
+    # 0.003 rad over 120 frames.
+    home_joint_positions: [-0.0664, -0.1864, -0.0556, 0.8175, -0.0125, 1.0164, -0.1144]
+    home_tolerance_rad: 0.35
+
+    # drive_joint, radians. 0.0 is fully open, 0.85 is the joint's upper limit.
+    # 0.84 rather than 0.85 leaves the drive off its hard stop while closing.
+    open_gripper_positions: [0.0]
+    closed_gripper_positions: [0.84]
+    grasp_yaw_offset_deg: 0.0
+
+    # Damped least squares over the articulation Jacobian, one step per physics
+    # frame. THIS IS NOT A MOTION PLANNER: no collision awareness, no
+    # trajectory, no re-planning. Named explicitly so nothing downstream can
+    # imply otherwise.
+    kinematics: differential-ik-dls
+    kinematics_options:
+      damping: 0.05
+      scale: 1.0
+
+    # UFACTORY publish 700 mm. 0.71 m is what was MEASURED to be servo-able in
+    # this workcell: the bin corner at 0.725 m failed to converge and the one at
+    # 0.711 m succeeded, so the layout is validated against the measurement
+    # rather than the datasheet.
+    nominal_reach_m: 0.71
+
+    supported_skills: [HOME, MOVE_TO_PICK, GRASP, LIFT, MOVE_TO_CONTAINER,
+                       RELEASE, SETTLE, VERIFY]
+    supported_presets: [isaac_cylinders_smoke]
+
+    # THE WORKCELL MOVES FOR THE ROBOT, not the other way round. The default
+    # layout was sized for a Panda's 0.855 m reach and puts the bin's far inner
+    # corner 0.766 m from the base at retreat height — outside this arm. Rather
+    # than let differential IK converge short and open the gripper over nothing,
+    # the bin is brought in. Measured: (0.09, 0.32) misses two corner poses,
+    # (0.09, 0.28) misses one, (0.04, 0.24) reaches all twelve with the worst
+    # corner at 0.684 m.
+    workcell:
+      robot_max_reach_m: 0.71
+      robot_min_reach_m: 0.20
+      container_outer_xy_m: [0.05, 0.26]
+      # AND THE PICK ROW MOVES WITH IT. Bringing the bin inside a 0.71 m reach
+      # puts its near corner 0.25 m from the base, and reaching there forces
+      # this arm into a folded configuration whose elbow swings out over the
+      # pick row. Measured on the first four-item run: item-001 completed, then
+      # item-002 was found 131 mm from its source pose and item-003 920 mm —
+      # swept off the table. Differential IK has no null-space control, so the
+      # elbow goes where it goes; the answer is to put the row out of its way
+      # rather than to pretend the transit is planned.
+      pick_row_x_m: 0.46
+      pick_row_y_start_m: -0.34
+      pick_row_y_pitch_m: 0.13
+      # Framing the WHOLE cell, verified from a captured frame rather than
+      # computed: at the Panda viewpoint the xArm's home pose runs out of the
+      # top of the picture, because this arm holds its elbow higher. Pulled back
+      # and raised until the base, the pick row and both bins are all in shot.
+      camera_position_m: [1.80, -1.34, 1.72]
+      camera_rotation_deg: [61.0, 0.0, 52.0]
+
+    notes: >-
+      Matches the physical hardware available to this project. The Isaac adapter
+      is a SIMULATION adapter: it drives the arm in PhysX and is not a driver for
+      a real xArm. Item poses are still ground truth and the carry still uses the
+      temporary fixed-joint grasp approximation — see README.md.
+
+  # ------------------------------------------------------------------------ #
+  - id: panda
+    display_name: Franka Emika Panda
+    manufacturer: Franka Robotics
+    model: Panda
+    enabled: true
+    implementation_status: validated
+    adapter: panda
+
+    asset_path_candidates:
+      - /Isaac/Robots/FrankaRobotics/FrankaPanda/franka.usd
+    asset_variants:
+      Gripper: AlternateFinger
+      Mesh: Performance
+
+    root_prim_path: /World/Panda
+    # For this asset the articulation root IS the referenced prim, which is why
+    # both fields are recorded rather than one being assumed to imply the other.
+    articulation_root: /World/Panda
+
+    arm_joint_names: [panda_joint1, panda_joint2, panda_joint3, panda_joint4,
+                      panda_joint5, panda_joint6, panda_joint7]
+    gripper_joint_names: [panda_finger_joint1, panda_finger_joint2]
+    gripper_mimic_joint_names: []
+
+    end_effector_link: panda_hand
+    end_effector_prim: /World/Panda/panda_hand
+    # Hand frame origin to the point between the fingertips.
+    tool_centre_point_m: 0.103
+
+    # The canonical Franka ready pose, as recorded by the shipped helper's
+    # default state.
+    home_joint_positions: [0.012, -0.568, 0.0, -2.811, 0.0, 3.037, 0.741]
+    home_tolerance_rad: 0.35
+
+    open_gripper_positions: [0.04, 0.04]
+    closed_gripper_positions: [0.0, 0.0]
+    grasp_yaw_offset_deg: 0.0
+
+    kinematics: differential-ik-dls
+    kinematics_options:
+      damping: 0.05
+      scale: 1.0
+
+    # Nominal reach is ~0.855 m; the last few centimetres are only achievable at
+    # unhelpful wrist configurations, so the layout is validated against 0.78.
+    nominal_reach_m: 0.78
+
+    supported_skills: [HOME, MOVE_TO_PICK, GRASP, LIFT, MOVE_TO_CONTAINER,
+                       RELEASE, SETTLE, VERIFY]
+    supported_presets: [isaac_cylinders_smoke]
+
+    # None. The default SceneLayout IS the Panda layout — it was written for
+    # this arm — so declaring overrides here would be two sources for one set of
+    # numbers.
+    workcell: {}
+
+    notes: >-
+      Retained as the validated simulation and regression backend. WISEPACK has
+      no physical Panda; this profile exists so that introducing a second robot
+      can be shown not to have broken the first.

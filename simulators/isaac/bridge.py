@@ -58,9 +58,16 @@ class IsaacRosBridge(Node):
     topic means a reader sees whichever wrote last.
     """
 
-    def __init__(self, on_command: Callable[[IsaacCommand], None]) -> None:
+    def __init__(self, on_command: Callable[[IsaacCommand], None],
+                 robot_id: str = "") -> None:
         super().__init__("wisepack_isaac_bridge")
         self._on_command = on_command
+        #: WHICH ROBOT this process is running. Stamped onto EVERY outbound
+        #: report so the orchestrator can reject feedback from a simulator left
+        #: over from a run with a different arm — a real possibility, because
+        #: both processes share one DDS domain and the previous one may simply
+        #: never have been shut down.
+        self.robot_id = robot_id
         self._lock = threading.Lock()
         #: Gates inbound commands. The command topic is TRANSIENT_LOCAL, so a
         #: latched EXECUTE_ITEM is redelivered every time this node
@@ -117,7 +124,7 @@ class IsaacRosBridge(Node):
             dimensions=dimensions, source_pose=source_pose,
             target_pose=target_pose, actual_pose=actual_pose,
             position_error_mm=position_error_mm, message=message,
-            detail=dict(detail or {}))
+            robot_id=self.robot_id, detail=dict(detail or {}))
         with self._lock:
             self.publisher.publish(String(data=feedback.to_json()))
         self.get_logger().info(

@@ -4,10 +4,17 @@
 #
 #     ./scripts/validate_isaac_sim.sh              # full: READY + one cylinder
 #     ./scripts/validate_isaac_sim.sh --ready-only # startup and READY only
+#     WISEPACK_ISAAC_ROBOT=panda ./scripts/validate_isaac_sim.sh
+#
+# WHICH ROBOT. Whatever `WISEPACK_ISAAC_ROBOT` selects, or the configured
+# default from config/isaac_robots.yaml. The validator does not choose one — a
+# second place that decided the robot would be a second thing to keep in step
+# with the registry — it reports the one that answered.
 #
 # WHAT IT PROVES, in order:
 #     1. Isaac Sim 6.0.1 is installed and its bundled Python starts;
-#     2. the procedural scene builds and the Panda loads;
+#     2. the procedural scene builds and the SELECTED robot loads and validates
+#        against its profile;
 #     3. the ROS 2 bridge comes up and READY reaches the wire;
 #     4. at least one cylinder is picked, carried, RELEASED and SETTLED;
 #     5. the process exits cleanly.
@@ -91,7 +98,8 @@ note_fail() { echo "$LOG FAIL: $1" >&2; FAILURES=$((FAILURES + 1)); }
 note_pass() { echo "$LOG ok: $1"; }
 
 # ---- stage 1: startup, scene, READY ----------------------------------------
-# --self-test builds the scene, loads the Panda, publishes READY and exits. It
+# --self-test builds the scene, loads and VALIDATES the selected robot,
+# publishes READY and exits. It
 # is the cheapest thing that still proves the GPU, the renderer, the asset
 # download and the ROS bridge all work.
 echo "$LOG [1/2] building the scene and waiting for READY ..."

@@ -1,4 +1,4 @@
-"""The Panda pick-and-place sequence, as an explicit state machine.
+"""The pick-and-place sequence, as an explicit state machine. ROBOT-NEUTRAL.
 
     HOME -> PRE_GRASP -> GRASP -> ATTACH -> LIFT -> PRE_PLACE
          -> PLACE_ORIENTATION -> RELEASE -> DETACH -> RETREAT
@@ -10,18 +10,26 @@ order with no re-planning, no blending and no shortcuts. That makes the whole
 sequence readable in one sitting and makes a failure attributable to a named
 state — which is worth more in a first integration than a smoother trajectory.
 
+NOTHING HERE KNOWS WHICH ARM IT IS DRIVING
+------------------------------------------
+Every robot-specific fact — the asset, the prim paths, the joint names and
+order, the home configuration, the gripper travel, the tool-centre-point offset,
+the reach envelope — reaches this file through an ``IsaacRobotAdapter`` and its
+profile. There is no branch on robot identity anywhere below, and there must not
+be one: a robot-specific condition in a state machine is how two arms become two
+state machines.
+
 CONTROLLER
 ----------
-``isaacsim.robot.experimental.manipulators.examples.franka.Franka``, the
-maintained Franka helper shipped with Isaac Sim 6.0.1. It provides damped
-least-squares differential IK over the arm Jacobian plus gripper control, and it
-loads the Panda from the Isaac asset root. Using it rather than hand-rolling IK
-means the arm model, the joint limits and the gripper joint indices come from
-NVIDIA's own definition of the robot.
+Whatever the selected robot's profile names, which today is damped least-squares
+differential IK over the articulation Jacobian for both supported arms — see
+``adapters/kinematics.py``.
 
 Differential IK is ITERATIVE: one call moves the end effector a fraction of the
 way to the goal. So every state calls it once per physics frame and watches for
-convergence, rather than commanding a pose and assuming arrival.
+convergence, rather than commanding a pose and assuming arrival. It is NOT a
+motion planner: there is no collision model and no trajectory, and the one
+clearance rule below is enforced by choosing waypoints, not by planning.
 
 THE ONE RULE THE PATH MUST NOT BREAK
 ------------------------------------
@@ -52,16 +60,8 @@ from wisepack_core.isaac_transform import (
 )
 
 from .config import LOG_ROBOT, MotionConfig
-from .grasp import GraspJoint
 from .result import PlacementOutcome, SettleMonitor, evaluate_placement
-from .scene import ROBOT_PATH, WisepackScene, item_path
-
-#: Distance from the panda_hand frame origin to the point between the fingertips,
-#: along the hand's approach axis. The Franka helper servos panda_hand, so every
-#: Cartesian goal below is a TCP goal plus this offset. Taken from the Panda
-#: hand geometry; it is the difference between grasping an item and closing the
-#: fingers 10 cm above it.
-TCP_OFFSET_M = 0.103
+from .scene import WisepackScene, item_path
 
 
 class SequenceState(str, Enum):
@@ -125,7 +125,7 @@ def down_orientation(yaw_deg: float) -> np.ndarray:
     ], dtype=float)
 
 
-class PandaSequence:
+class PlacementSequence:
     """Executes one EXECUTE_ITEM command, one physics frame at a time.
 
     Callbacks rather than return values, because a state machine advancing inside
@@ -146,8 +146,9 @@ class PandaSequence:
         self.on_state = on_state
         self.on_done = on_done
 
-        self.robot = None                              # set by attach_robot()
-        self.grasp = GraspJoint()
+        #: The IsaacRobotAdapter, set by attach_robot(). The ONLY channel
+        #: through which this sequence touches a robot.
+        self.robot = None
         self.state = SequenceState.IDLE
         self.command: Optional[IsaacCommand] = None
         self.sim_time = 0.0
@@ -178,6 +179,7 @@ class PandaSequence:
         self._released_xy = []
 
     def attach_robot(self, robot) -> None:
+        """Bind the IsaacRobotAdapter this sequence drives."""
         self.robot = robot
 
     @property
@@ -185,12 +187,36 @@ class PandaSequence:
         return self.state not in (SequenceState.IDLE, SequenceState.NEXT_ITEM,
                                   SequenceState.FAILED)
 
+    @property
+    def holding(self) -> Optional[str]:
+        """The item currently welded to the hand, or None. Adapter-owned."""
+        return None if self.robot is None else self.robot.holding
+
+    def _release(self) -> None:
+        """Drop whatever is held. Safe before a robot has been attached."""
+        if self.robot is not None:
+            self.robot.release_object()
+
+    @property
+    def tcp_offset_m(self) -> float:
+        """Fingertip standoff of the SELECTED robot. 0.0 before one is attached."""
+        return 0.0 if self.robot is None else self.robot.tool_centre_point_m
+
     # ------------------------------------------------------------------ #
     # Geometry for the current item
     # ------------------------------------------------------------------ #
 
     def _grasp_yaw(self) -> float:
-        return self.motion.grasp_yaw_offset_deg
+        """Yaw that aims the fingers ACROSS the cylinder, for THIS robot.
+
+        A property of the shipped asset's tool frame, so it comes from the robot
+        profile. The environment override in MotionConfig still wins when it is
+        set to something other than its default, because correcting a finger
+        axis at the point of use must not require editing a config file.
+        """
+        if self.motion.grasp_yaw_offset_deg:
+            return self.motion.grasp_yaw_offset_deg
+        return 0.0 if self.robot is None else self.robot.grasp_yaw_offset_deg
 
     def _place_yaw(self) -> Tuple[float, bool]:
         """(yaw degrees, axis_was_approximated) for the planned target axis.
@@ -272,7 +298,7 @@ class PandaSequence:
         self.command = command
         self._axis_approximated = False
         self._failure = ""
-        self.grasp.detach()
+        self._release()
         self._release_pose = None
         self._release_offset_mm = 0.0
         inner = command.container_inner_mm or {}
@@ -300,7 +326,7 @@ class PandaSequence:
             return
         print(f"{LOG_ROBOT} aborting {self.command.item_id if self.command else '-'}"
               f": {reason}")
-        self.grasp.detach()
+        self._release()
         if self.robot is not None:
             self.robot.open_gripper()
         self.state = SequenceState.IDLE
@@ -319,7 +345,7 @@ class PandaSequence:
         item = self.command.item_id if self.command else "-"
         self._failure = f"{self.state.value}: {reason}"
         print(f"{LOG_ROBOT} FAILED {item} in {self.state.value}: {reason}")
-        self.grasp.detach()
+        self._release()
         if self.robot is not None:
             self.robot.open_gripper()
         outcome = PlacementOutcome(
@@ -341,20 +367,23 @@ class PandaSequence:
     def _servo(self, tcp_position: np.ndarray, yaw_deg: float) -> bool:
         """Drive the end effector one IK step towards a TCP goal. True if reached.
 
-        ``tcp_position`` is where the fingertips should be; the Franka helper
-        servos the panda_hand frame, so the goal is offset upwards by the
-        hand-to-fingertip distance. Getting this wrong is not subtle in its
-        effect but is very easy to miss in code — hence one helper, used by every
-        state.
+        ``tcp_position`` is where the FINGERTIPS should be. Every adapter servos
+        its end-effector LINK, so the goal is offset along the approach axis by
+        that robot's tool-centre-point distance — 0.103 m for the Panda's hand
+        frame, 0.162 m for the xArm gripper's base link. Getting it wrong is not
+        subtle in its effect and is very easy to miss in code: a 70 mm error put
+        every grasp descent that far above the object, on every item. Hence one
+        helper, used by every state, reading one number from the profile.
         """
         assert self.robot is not None
-        goal = np.array(tcp_position, dtype=float) + np.array([0.0, 0.0, TCP_OFFSET_M])
+        goal = (np.array(tcp_position, dtype=float)
+                + np.array([0.0, 0.0, self.robot.tool_centre_point_m]))
         orientation = down_orientation(yaw_deg)
         self._goal_position, self._goal_orientation = goal, orientation
-        self.robot.set_end_effector_pose(position=goal, orientation=orientation)
+        self.robot.command_tcp_pose(position=goal, orientation=orientation)
 
-        _, current, _ = self.robot.get_current_state()
-        error = float(np.linalg.norm(np.asarray(current[0], dtype=float) - goal))
+        current, _ = self.robot.get_tcp_pose()
+        error = float(np.linalg.norm(np.asarray(current, dtype=float) - goal))
         if error <= self.motion.goal_tolerance:
             self._dwell += 1
         else:
@@ -414,8 +443,7 @@ class PandaSequence:
             # distinguish an unreachable goal from an item that has rolled away
             # from the pose the plan was built against, and those need opposite
             # fixes.
-            _, current, _ = self.robot.get_current_state()
-            reached = np.asarray(current[0], dtype=float)
+            reached = np.asarray(self.robot.get_tcp_pose()[0], dtype=float)
             commanded = self._source_world()
             self._fail(
                 f"could not reach the pre-grasp pose within "
@@ -451,12 +479,10 @@ class PandaSequence:
         if item_pose is None:
             self._fail("the item disappeared before it could be attached")
             return
-        hand_position, hand_orientation = self.robot.end_effector_link.get_world_poses()
-        self.grasp.attach(
-            hand_path=f"{ROBOT_PATH}/panda_hand",
+        # The adapter owns the weld because the frame the item is welded to is a
+        # robot-specific prim, and this file must not know one arm's link names.
+        self.robot.attach_object(
             item_path=item_path(item), item_id=item,
-            hand_position=np.asarray(hand_position.numpy()[0], dtype=float),
-            hand_orientation=np.asarray(hand_orientation.numpy()[0], dtype=float),
             item_position=item_pose[0], item_orientation=item_pose[1])
         self._enter(SequenceState.LIFT)
 
@@ -542,7 +568,12 @@ class PandaSequence:
         the container, nudged towards the plan, or corrected: it falls, hits
         whatever is below it, rolls, and stops where it stops.
         """
-        self.grasp.detach()
+        self.robot.release_object()
+        # WAKE IT. A body that has been rigidly held may be asleep, and PhysX
+        # does not wake it just because the constraint holding it was deleted.
+        # See scene.wake_item — without this the item hangs where it was let go
+        # and reports itself settled there.
+        self.scene.wake_item(self.command.item_id or "")
         self._settle = SettleMonitor(
             linear_threshold=self.motion.linear_velocity_threshold,
             angular_threshold=self.motion.angular_velocity_threshold,
@@ -628,4 +659,4 @@ class PandaSequence:
         self.state = SequenceState.IDLE
 
 
-__all__ = ["PandaSequence", "SequenceState", "down_orientation", "TCP_OFFSET_M"]
+__all__ = ["PlacementSequence", "SequenceState", "down_orientation"]

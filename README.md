@@ -83,16 +83,25 @@ never to a gate with nothing to decide.*
 
 ![Isaac Sim 6.0.1: the Panda approaches a cylinder, grasps, lifts, moves above the container, releases, and PhysX resolves the settling](images/generated/isaac-pick-drop.gif)
 
-*Physics-based execution in Isaac Sim 6.0.1, not a physical robot: the Panda
-picks a procedurally generated cylinder, releases it above the container and **PhysX resolves the final
-settling** - the item is never teleported to its planned pose. Rendered from the
-scene's fixed DemoCamera.*
+*Physics-based execution in Isaac Sim 6.0.1, not a physical robot: the arm picks
+a procedurally generated cylinder, releases it above the container and **PhysX
+resolves the final settling** - the item is never teleported to its planned pose.
+Rendered from the scene's fixed DemoCamera.*
+
+*These recordings were captured with the **Franka Emika Panda** backend and have
+not been re-recorded for the xArm 7; they are labelled with the robot that is
+actually in them rather than relabelled to match the current default. Which arm
+executes is a run-time selection — see
+[Supported robots](#supported-robots).*
 
 *Two honest limitations. **Ground-truth object poses are used in the current
 Isaac integration; camera-based perception is planned for the next iteration.**
 And the settled pose is where physics puts it, not a reproduction of the target:
-the latest four-item run measured a **mean final-position error after release and
-settling of about 35 mm** (see [§15](#15-isaac-sim-physical-execution)).*
+the latest four-item **Panda** run measured a **mean final-position error after
+release and settling of about 35 mm** (see
+[§15](#15-isaac-sim-physical-execution)). The xArm 7's per-item errors are
+comparable; its four-item runs are not yet reliable for a different reason —
+see [Measured xArm 7 behaviour](#measured-xarm-7-behaviour-and-what-is-not-yet-solid).*
 
 ```bash
 WISEPACK_ISAAC_VIEW_MODE=desktop \
@@ -307,7 +316,7 @@ so the table below says which level produced it.
 | DDS to FIWARE latency | **MEASURED** | When the benchmark has been run; `not measured` otherwise | production network conditions |
 | Perception | **SIMULATED** | Ground-truth scenario poses stand in for detection | camera, RGB-D, detector, pose estimation |
 | Robot, default backend | **SIMULATED - LOGICAL** | Deterministic workflow advance, geometric placement per the accepted plan, seeded grasp failures and workflow events | mass, inertia, gravity, kinematics, contacts, friction, collision response, settling |
-| Robot, Isaac backend | **PHYSICS-BASED SIMULATION** | Articulated Franka Emika Panda, rigid bodies, mass, gravity, collision geometry, contacts, friction and settling in PhysX. Cylinders are carried and released, never teleported, and the measured settled pose is reported back | real hardware, safety functions, calibration, perception |
+| Robot, Isaac backend | **PHYSICS-BASED SIMULATION** | A selected articulated manipulator — UFACTORY xArm 7 or Franka Emika Panda — with rigid bodies, mass, gravity, collision geometry, contacts, friction and settling in PhysX. Cylinders are carried and released, never teleported, and the measured settled pose is reported back | real hardware, safety functions, calibration, perception |
 | Pick / end-to-end success rate, logical backend | **SIMULATED LOGICAL OUTCOME** | The configured failure probability, nothing else | any physical cause of failure |
 | Placement error, Isaac backend | **MEASURED IN PHYSICS SIMULATION** | Distance from the planned pose to the pose PhysX settled the object at | how a real gripper, real friction and a real cell would differ |
 | Dose class | **SIMULATED METADATA** | A label carried through the workflow | any radiation model; there is none in this repository |
@@ -406,7 +415,7 @@ Mission-Task-Skill, in the four layers the proposal describes.
  HITL            py_trees orchestrator .. the approval gate
                  Operator ............... approve / reject / alternative
                  Robot simulator ........ SIMULATED, the default backend
-                 Isaac Sim backend ...... OPTIONAL: Panda + PhysX, real release
+                 Isaac Sim backend ...... OPTIONAL: xArm 7 / Panda + PhysX, real release
                                           and settling (see §15)
  MIDDLEWARE      ROS 2 / DDS ............ Vulcanexus Fast DDS
  ANALYTICS       Orion-LD ............... NGSI-LD audit trail
@@ -466,7 +475,7 @@ WISEPACK_ISAAC_STREAMING=1 ./run_wisepack_dashboard.sh isaac   # then /simulator
 
 Then open <http://127.0.0.1:8080>.
 
-The `isaac` modes execute the approved placements with a Franka Panda in NVIDIA
+The `isaac` modes execute the approved placements with the selected robot in NVIDIA
 Isaac Sim 6.0.1 on the host instead of with the simulated robot model. Execution
 backend and dashboard data source are **different axes** - see
 [§15](#15-isaac-sim-physical-execution). `sim` is unchanged: still no ROS, no
@@ -621,7 +630,7 @@ covered in [§13d](#13d-whole-process-optimization-cut-aware); nine presets tota
 
 A seventh preset, `isaac_cylinders_smoke`, is **absent from this table on
 purpose**. It is the physical smoke scenario for the Isaac backend - four
-bench-scale pipe segments sized for a Franka gripper, not for a packing contest -
+bench-scale pipe segments sized for a bench-scale parallel gripper, not for a packing contest -
 and it is kept entirely separate so it cannot affect the measured
 baseline-versus-optimized result above. See
 [§15](#15-isaac-sim-physical-execution).
@@ -1381,8 +1390,8 @@ the simulator-specific code lives entirely in the Isaac adapter.
 ```
 WISEPACK planning and approval
     -> common execution contract
-        -> Isaac adapter today
-        -> real Panda adapter in a future deployment
+        -> Isaac adapter today (xArm 7 or Panda, selected at run time)
+        -> real xArm 7 adapter in a future deployment
 ```
 
 The impact of that shape is practical: planning, operator approval, FIWARE
@@ -1408,8 +1417,8 @@ extended is the **hardware adapter and the safety layer**.
 ### The backend itself
 
 An **optional execution backend** that performs the approved placements with a
-Franka Emika Panda in **NVIDIA Isaac Sim 6.0.1**, instead of resolving them with
-the built-in logical robot model.
+**selected manipulator** in **NVIDIA Isaac Sim 6.0.1**, instead of resolving them
+with the built-in logical robot model.
 
 ```bash
 ./run_wisepack_dashboard.sh isaac              # live stack + dashboard + physics
@@ -1419,6 +1428,192 @@ WISEPACK_ISAAC_HEADLESS=1 ./run_wisepack_dashboard.sh isaac    # over SSH
 ./run_wisepack_demo.sh --isaac-sim --no-fiware
 ./scripts/validate_isaac_sim.sh                # the physical smoke test on its own
 ```
+
+### Supported robots
+
+Which arm executes is a **configuration choice**, not a code change.
+`config/isaac_robots.yaml` is the single tracked definition of every supported
+robot; the launcher, the simulator, the orchestrator, the web API and the test
+suite all read it through `wisepack_core.robots`. There is no second robot list
+in Python, in HTML or in JavaScript, and `tests/test_isaac_robots.py` fails the
+build if one appears.
+
+| Robot | Status | DOF | Reach | Gripper | Why it is here |
+|---|---|---|---|---|---|
+| **UFACTORY xArm 7** | `experimental` | 7 + gripper | 0.71 m usable | UFACTORY parallel, one driven joint + five PhysX mimic joints | **The preferred robot.** It matches the physical hardware available to this project, so what is exercised in simulation is the arm a real deployment would use |
+| **Franka Emika Panda** | `validated` — and the **current default** | 7 + 2 fingers | 0.78 m usable | two independently driven fingers | The **regression backend**. WISEPACK has no physical Panda; this profile exists so that adding a second robot can be *shown* not to have broken the first, and it still completes 4/4 items |
+
+**Preferred is not the same as default, and the difference is deliberate.** The
+plan was to make the xArm 7 the default once its complete smoke run passed. It
+does not yet: a four-item run completes 3/4, for the reason set out in
+[Measured xArm 7 behaviour](#measured-xarm-7-behaviour-and-what-is-not-yet-solid).
+So `default_robot` in `config/isaac_robots.yaml` is still `panda` and the xArm
+profile is marked `experimental`. Promoting it on the strength of a
+single-item run would put the label ahead of the measurement. Select it
+explicitly — `WISEPACK_ISAAC_ROBOT=xarm7`, or the dashboard's Robot selector —
+and change one line in the registry when the four-item run passes.
+
+Both are loaded from NVIDIA's asset server at runtime
+(`/Isaac/Robots/Ufactory/xarm7/xarm7.usd`,
+`/Isaac/Robots/FrankaRobotics/FrankaPanda/franka.usd`). Nothing is committed to
+this repository.
+
+Every number in a robot profile was **measured from the installed asset**, not
+taken from a datasheet — the joint names and their order, the joint limits, the
+end-effector link, the home configuration, and in particular the
+**tool-centre-point**: for the xArm gripper the finger *link origins* sit at the
+knuckles, 70 mm short of the fingertips, and using them put every one of the four
+grasp descents exactly that far above the object. The value in the file is the
+fingertip standoff read from the finger meshes' world bounding box.
+
+The adapter re-checks every claim against the articulation it actually loaded
+before a single joint is commanded, because **Isaac does not fail loudly when a
+robot configuration is wrong for an asset**: a joint name that is not in the
+articulation resolves to an empty index list and the command silently does
+nothing, and a wrong end-effector link yields a Jacobian for a different body, so
+the arm converges confidently to the wrong pose. Both read as physics problems.
+A mismatch therefore produces `ROBOT_MODEL_INVALID`, a **DEGRADED** backend and a
+**disabled approval button** — never a best-effort run.
+
+### Selecting a robot
+
+Resolution order, highest first:
+
+1. an explicit `--robot <id>` on the simulator command line;
+2. `WISEPACK_ISAAC_ROBOT` exported in the environment (for automation);
+3. the dashboard's **Robot** selector — the draft for the *next* run;
+4. `default_robot` in `config/isaac_robots.yaml`.
+
+The environment sits above the draft on purpose: the override exists for
+automated validation, and a validator that exports it must not be overruled by
+whatever a browser last left in the draft. An unknown or disabled id **raises**
+rather than falling through to the next source — a typo that quietly selected
+another arm would produce a run whose artefacts name a robot that never moved.
+
+```bash
+WISEPACK_ISAAC_ROBOT=xarm7 \
+WISEPACK_ISAAC_VIEW_MODE=desktop \
+WISEPACK_ISAAC_HEADLESS=0 \
+./run_wisepack_dashboard.sh isaac
+
+WISEPACK_ISAAC_ROBOT=panda \
+WISEPACK_ISAAC_VIEW_MODE=desktop \
+WISEPACK_ISAAC_HEADLESS=0 \
+./run_wisepack_dashboard.sh isaac
+```
+
+```bash
+./scripts/run_wisepack_isaac.sh --list-robots        # what is configured
+./scripts/run_wisepack_isaac.sh --robot xarm7 --self-test
+WISEPACK_ISAAC_ROBOT=panda ./scripts/validate_isaac_sim.sh
+```
+
+The robot is **not** stored in `config/local.env`. That file describes *this
+host* and is untracked; which arm to run is a public scenario choice.
+
+### The Robot selector in the dashboard
+
+The Scenario panel carries a **Robot** dropdown whose options come from
+`GET /api/config/robots`, not from markup. It publishes a public-safe subset of
+each profile — identity, capability and status — and never asset URLs, prim
+paths or joint names.
+
+* Shown as a live selector in `isaac` and `isaac-fiware`. In the logical modes it
+  becomes a fixed **"Execution source: Logical workflow simulator"** line, because
+  offering a choice between two arms neither of which will move is worse than
+  offering none.
+* It edits a **draft for the next run**. Changing it never touches a running
+  scene; only *"Reset run & generate"* carries it into a run, and the
+  confirmation says so explicitly when the robot is about to change.
+* Dashboard polling can never revert a selection — the same rule the preset
+  dropdown follows.
+* When a run is active it shows **`Running now: <robot>`** and
+  **`Next: <robot>`** side by side, so the two are always distinguishable.
+* An incompatible robot/preset pair is refused **with the reason naming the
+  robot**, before the button is pressed.
+* Robot switching is refused outright while an item is being carried.
+
+The active robot also appears in the header badge
+(`execution: ISAAC SIM / XARM 7`), in the Simulator View, in Diagnostics, in the
+scene acknowledgement, in the run-correlation stamp that FIWARE projections
+carry, and in the generated run artefacts.
+
+### What the first xArm 7 iteration does and does not do
+
+The xArm 7 executes the **same skill sequence** as the Panda — `HOME`,
+`MOVE_TO_PICK`, `GRASP`, `LIFT`, `MOVE_TO_CONTAINER`, `RELEASE`, `SETTLE`,
+`VERIFY` — under the same safety rules: no motion before operator approval, no
+pick before an exact current-run `SCENE_READY`, stale commands and feedback
+rejected by run id and revision, pre-pick object sanity checks, bounded reset and
+homing, and a safe hold on any model or controller failure.
+
+It carries the **same two stated limitations** as the Panda backend, unchanged:
+
+* **item poses are still ground truth.** No camera, no detector, no pose
+  estimator. Perception integration is a separate development step and was
+  deliberately not bundled with the robot migration;
+* **the grasp is still the temporary fixed joint.** The carry is idealised; the
+  release and everything after it are real PhysX.
+
+Two things are **specific to this arm** and are configuration, not code:
+
+* **the workcell moved for it.** The default layout was sized for a Panda's reach
+  and puts the bin's far inner corner 0.766 m from the base at retreat height —
+  outside a 0.71 m arm. Measured by servoing the real articulation to all four
+  inner corners at three heights: at the Panda bin position two of the twelve
+  poses fail to converge, and the empirical boundary sits between 0.711 m
+  (reached) and 0.725 m (missed). So the bin moved 60 mm nearer the base, the
+  pick row moved with it, the pick pitch widened from 110 mm to 130 mm because
+  this gripper is physically wider when open, and the spectator camera was
+  re-aimed from a captured frame. Both ends of the contract derive the layout
+  from the same profile, and `robot_id` is hashed into the scene fingerprint, so
+  the two cannot silently disagree about where anything is;
+* **its gripper has one driven joint.** `drive_joint`; the other five follow
+  through `PhysxMimicJointAPI` and are never commanded.
+
+### Measured xArm 7 behaviour, and what is not yet solid
+
+Measured on `isaac_cylinders_smoke`, seed 42, Isaac Sim 6.0.1, CPU physics.
+
+| | xArm 7 | Panda |
+|---|---|---|
+| `scripts/validate_isaac_sim.sh` | **PASSED** | **PASSED** |
+| one-item final-position error | 18 / 24 / 27 mm | 11 / 13 mm |
+| four-item run | **3 of 4** completed | **4 of 4** completed |
+| four-item errors | 18, 172, — , 9 mm | 11, 157, 58, 54 mm |
+| scene-reset validation (`--reset-test`) | **PASS** — container cleared, 4/4 respawned at source, home to 0.001 rad, grasp released, first item of the new run completed | unchanged |
+
+A **single-item** pick-and-place is reliable and its accuracy is comparable to
+the Panda's.
+
+A **four-item** run is not yet reliable. The recurring failure is not the pick,
+the carry or the release — it is the arm **disturbing a neighbouring source
+object** while working the row, after which the pre-pick sanity check correctly
+refuses that item ("`is 108 mm from its expected source pose (limit 80 mm)`")
+rather than reaching for something that is no longer where the plan says. The
+refusal is the safety gate doing its job; the disturbance is the defect.
+
+The cause is structural, not a tuning value: **differential IK has no collision
+awareness and no null-space control**. A 0.71 m arm mounted on the table has to
+fold considerably to work a bin 0.3–0.6 m away, and the elbow and wrist end up
+in whatever configuration the servo drifts into — which is the same space above
+the table where the remaining cylinders sit. Widening the pick pitch from 110 mm
+to 150 mm and moving the row away from the bin took a four-item run from 1/4 to
+3/4; the remaining failure is the item nearest the bin, on the transit path.
+
+**This is not fixed by moving coordinates further.** It is what a motion planner
+is for, and this iteration does not have one — see the roadmap. Nothing in the
+code claims otherwise: `RobotProfile.is_motion_planner` is `False`, the
+diagnostics row says `no motion planning`, and the registry refuses a profile
+that names a controller no adapter provides.
+
+**`ISAAC SIM / XARM 7` is a simulation result.** The Isaac xArm adapter drives a
+simulated articulation in PhysX. It is *not* a driver for a physical xArm, shares
+no code with one, and nothing it produces may be described as a real-robot
+result. A hardware adapter would implement the same `IsaacRobotAdapter`-shaped
+contract against the UFACTORY SDK and would have entirely different failure
+modes — which is exactly why the contract is a separate interface rather than
+something inside the Isaac state machine.
 
 ### Two different concepts, never conflated
 
@@ -1446,7 +1641,7 @@ the two code paths is reachable.
             |
      ROS 2 / DDS bridge              /wisepack/isaac/command   (std_msgs/String)
             |
-     Isaac Sim 6.0.1                 Panda + PhysX, procedural scene
+     Isaac Sim 6.0.1                 selected robot + PhysX, procedural scene
      pick → carry → orient → RELEASE → gravity settles the item
             |
      execution feedback              /wisepack/isaac/feedback  (std_msgs/String)
@@ -1475,7 +1670,8 @@ automatically and says so. `WISEPACK_ISAAC_HEADLESS=1` forces it.
 Extension point: `wisepack_core.isaac_transform.table_pose_for_index`.
 
 **Temporary fixed-joint grasp.** When the gripper closes, the item is welded to
-`panda_hand` with a USD fixed joint, removed the instant the gripper opens. The
+the selected robot's end-effector link with a USD fixed joint, removed the
+instant the gripper opens. The
 **carry is therefore idealised**: the item cannot slip or rotate in the fingers.
 A real parallel-jaw grasp of a smooth steel pipe is exactly where friction
 modelling matters most, and this iteration does not model it.
@@ -1641,7 +1837,7 @@ So a new scenario is a **command**, not a redraw:
 operator: "Reset run & generate"
   orchestrator ──RESET_SCENE(scenario_revision=N)──▶ Isaac
   Isaac        ──RESETTING───────────────────────────▶
-               stop the arm · release the grasp joint · home the Panda
+               stop the arm · release the grasp joint · home the robot
                stop the timeline · delete every item · rebuild from (preset,seed)
                play · re-home · zero velocities · settle · PROVE it is usable
   Isaac        ──SCENE_READY(scenario_revision=N)────▶
@@ -1657,7 +1853,7 @@ pose readable, and the item is not already sitting in the destination container.
 
 **The stage is mutated only while the timeline is stopped.** This is the
 load-bearing detail. Deleting a rigid body while physics is playing invalidates
-the PhysX *tensor simulation view* for the whole stage - the Franka articulation
+the PhysX *tensor simulation view* for the whole stage - the arm's articulation
 included - and the first live attempt did exactly that: items rebuilt correctly,
 `SCENE_READY` published, and the very next read of the arm's joints raised
 `Simulation view object is invalidated`. A scene that reports ready while the
@@ -1682,7 +1878,7 @@ rebuilt world. Latest run:
 | item placed in the container before the reset | 1 |
 | container cleared by the reset | yes |
 | source objects respawned at their source poses | 4 / 4 |
-| Panda returned home | max joint error 0.001 rad |
+| Robot returned home | max joint error 0.001 rad, against the selected robot's own home configuration and tolerance |
 | grasp joint released | released |
 | first item of the *new* run executed | completed, settled in the container |
 
@@ -1718,7 +1914,7 @@ rejected before a robot moves.
   environment leaked in. Use the launcher rather than calling `python.sh` from a
   shell that has sourced ROS.
 * **No display.** `WISEPACK_ISAAC_HEADLESS=1`.
-* **`Could not find assets root folder`.** The Panda is fetched from NVIDIA's
+* **`Could not find assets root folder`.** The robot asset is fetched from NVIDIA's
   asset server at runtime; the machine needs outbound HTTPS or a local Nucleus
   root.
 
@@ -1888,7 +2084,7 @@ follows the package's own
 used.
 
 The streamed viewport is pinned to a **fixed spectator camera** framing the
-table, the Panda, the pick row and the container together - not the default
+table, the selected robot, the pick row and the container together - not the default
 development viewport, which on a fresh stage points away from the workcell.
 
 **No in-browser client ships with Isaac Sim 6.0.1** (verified by inspection: no
@@ -1989,7 +2185,7 @@ The dashboard consumes one descriptor -
 and `message`. It contains **no simulator concept**: no extension name, no kit
 setting, no USD path. Isaac-specific discovery lives in
 `simulators/isaac/streaming.py` and nothing else crosses that boundary, so a real
-Panda cell exposing `webrtc`, `rtsp`, `mjpeg` or `none` needs no dashboard change.
+robot cell exposing `webrtc`, `rtsp`, `mjpeg` or `none` needs no dashboard change.
 
 **XR is deliberately not implemented here, and deliberately not blocked.** Three
 concerns are kept apart - robot execution, state telemetry, and rendered
@@ -2136,7 +2332,7 @@ Stated plainly, because a demonstrator that hides its edges is not evidence.
    coin flip. The Isaac backend is different: it runs contact physics and
    reports measured outcomes, but it is still a simulator and not hardware. The
    **optional Isaac Sim backend** ([§15](#15-isaac-sim-physical-execution)) does
-   move a real Panda against real PhysX contacts, but within its own stated
+   move a real arm against real PhysX contacts, but within its own stated
    limits: no perception, a temporary fixed-joint grasp during the carry, and a
    small 4-cylinder scenario rather than the packing benchmark. Its measured
    placement error against the plan is reported, never hidden. Still no MoveIt2
@@ -2179,12 +2375,13 @@ Stated plainly, because a demonstrator that hides its edges is not evidence.
 |---|---|---|
 | 1 | Replace `perception_sim.detect()` with YOLOv12-OBB + SAM2 + FPFH/ICP on real RGB-D | O1, KPI1, MS2 |
 | 2 | Exact geometry for the five approximated classes (convex decomposition or voxel masks) instead of bounding boxes | O3, KPI4 |
-| 3 | **Add the real Panda execution backend** using the same ROS 2 execution contract, with hardware drivers, calibrated robot/camera/tool/facility frames, safety integration and hardware-aware motion planning. **Retain Isaac as the pre-deployment and regression-testing environment.** There are now two simulator levels - the lightweight logical simulator and the Isaac physics simulator - and the hardware backend is a **sibling of Isaac, not a replacement for all simulation** | O2, KPI2/KPI3, MS4 |
-| 4 | Improve **clearance-aware release planning** to further reduce the measured mean final-position error after PhysX settling, currently about **35 mm** in the four-item smoke run (down from about 48 mm, see [§15](#15-isaac-sim-physical-execution)). Then replace the temporary fixed-joint grasp approximation with a friction/contact grasp, and replace ground-truth poses with perception | MS4 |
-| 5 | Calibrate the baseline against real EDF/CEA site practice so KPI4 is measured against reality, not a textbook packer | KPI4, MS6 |
-| 6 | QuantumLeap + CrateDB + Grafana on the existing NGSI-LD entities for true historical retention | O5, MS5 |
-| 7 | Re-attach HARMONY's Vosk voice and MediaPipe gesture modules to the same operator attributes | O4 |
-| 8 | Replace the simulated external cutting skill with a validated physical cutting backend and site-specific safety integration | O3 |
+| 3 | **Add the real xArm 7 execution backend** using the same ROS 2 execution contract, with hardware drivers, calibrated robot/camera/tool/facility frames, safety integration and hardware-aware motion planning. **Retain Isaac as the pre-deployment and regression-testing environment.** There are now two simulator levels - the lightweight logical simulator and the Isaac physics simulator - and the hardware backend is a **sibling of Isaac, not a replacement for all simulation** | O2, KPI2/KPI3, MS4 |
+| 4 | Add **collision-aware motion planning** to the Isaac execution backend. This is the structural gap the xArm 7 migration exposed: differential IK has no collision model and no null-space control, so a shorter arm working a bench-scale cell folds into the space its own remaining source objects occupy and disturbs them. Moving coordinates further apart took a four-item xArm run from 1/4 to 3/4 and cannot take it further — see [Measured xArm 7 behaviour](#measured-xarm-7-behaviour-and-what-is-not-yet-solid) | O2, MS4 |
+| 5 | Improve **clearance-aware release planning** to further reduce the measured mean final-position error after PhysX settling, currently about **35 mm** in the four-item Panda smoke run (down from about 48 mm, see [§15](#15-isaac-sim-physical-execution)). Then replace the temporary fixed-joint grasp approximation with a friction/contact grasp, and replace ground-truth poses with perception | MS4 |
+| 6 | Calibrate the baseline against real EDF/CEA site practice so KPI4 is measured against reality, not a textbook packer | KPI4, MS6 |
+| 7 | QuantumLeap + CrateDB + Grafana on the existing NGSI-LD entities for true historical retention | O5, MS5 |
+| 8 | Re-attach HARMONY's Vosk voice and MediaPipe gesture modules to the same operator attributes | O4 |
+| 9 | Replace the simulated external cutting skill with a validated physical cutting backend and site-specific safety integration | O3 |
 | 9 | Replace the simulated container logistics with a real mobile-robot fleet (SLAM/Nav2) driving the same transport-task contract | O2 |
 
 **Longer-term research opportunities, separate from the TRL6 demonstration.**

@@ -12,8 +12,13 @@ non-Isaac-CI requirement forbids.
     bridge    ROS 2 transport                      — rclpy only
     scene     procedural table / bin / cylinders   — Isaac
     grasp     the temporary fixed joint            — Isaac
-    robot     the Panda state machine              — Isaac
+    robot     the ROBOT-NEUTRAL placement sequence — Isaac
+    adapters/ one manipulator behind one contract  — Isaac
     wisepack_isaac  assembly and the main loop     — Isaac (entry point)
+
+WHICH ROBOT is a configuration choice, not a code change: every supported arm is
+described in ``config/isaac_robots.yaml`` and reached through
+``wisepack_core.robots``. Nothing outside ``adapters/`` names one.
 
 See README.md in this directory for the limitations of this iteration, which are
 stated first there rather than buried.

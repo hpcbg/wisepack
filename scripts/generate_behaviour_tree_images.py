@@ -111,7 +111,7 @@ def full_tree() -> Tuple[List, List[Tuple[str, str, str]]]:
         ("BE_SIM", "Simulated robot model",
          "seeded outcomes, no physics", "backend"),
         ("BE_ISAAC", "Isaac Sim 6.0.1",
-         "Panda + PhysX, deterministic state machine", "backend"),
+         "selected robot + PhysX, deterministic state machine", "backend"),
         ("BE_REAL", "Real robot cell",
          "same contract — NOT implemented", "planned"),
         # --- two readiness levels, never collapsed -------------------------

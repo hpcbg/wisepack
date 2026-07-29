@@ -157,6 +157,17 @@ class IsaacState(str, Enum):
     RESETTING = "RESETTING"
     SCENE_READY = "SCENE_READY"
     RESET_FAILED = "RESET_FAILED"
+    #: THE ROBOT MODEL DID NOT VALIDATE. The configured asset is missing, a
+    #: required prim is absent, the configured joints do not match the loaded
+    #: articulation, the end effector could not be resolved, or the selected
+    #: robot does not support the active preset.
+    #:
+    #: A separate state from RUN_FAILED because it is not a failure OF a run —
+    #: it happens before any run may open, it is a configuration fault rather
+    #: than a physical one, and the response is different: the backend goes
+    #: DEGRADED and approval is disabled rather than an item being retried. A
+    #: partially loaded robot must never reach execution.
+    ROBOT_MODEL_INVALID = "ROBOT_MODEL_INVALID"
     MOVING_TO_PICK = "MOVING_TO_PICK"
     GRASPING = "GRASPING"
     LIFTING = "LIFTING"
@@ -364,6 +375,13 @@ class IsaacCommand:
     #: orchestrator whenever a new scenario is generated, so a SCENE_READY for
     #: revision 1 can never authorise execution of revision 2.
     scenario_revision: int = 0
+    #: WHICH ROBOT this run is for. Carried on every command, not only on the
+    #: scene handshake: the simulator refuses a command addressed to a robot it
+    #: is not running rather than executing it with whatever arm it happens to
+    #: have loaded. Empty means "the sender did not say", which an older
+    #: orchestrator may legitimately do and which is therefore not treated as a
+    #: mismatch — see the receiver in simulators/isaac/wisepack_isaac.py.
+    robot_id: str = ""
     timestamp: str = field(default_factory=utc_now_iso)
     schema_version: str = SCHEMA_VERSION
 
@@ -403,6 +421,7 @@ class IsaacCommand:
             "seed": int(self.seed),
             "total_items": int(self.total_items),
             "scenario_revision": int(self.scenario_revision),
+            "robot_id": self.robot_id,
         }
 
     def to_json(self) -> str:
@@ -433,6 +452,7 @@ class IsaacCommand:
             plan_id=str(doc.get("plan_id", "")),
             total_items=int(doc.get("total_items", 0)),
             scenario_revision=int(doc.get("scenario_revision", 0)),
+            robot_id=str(doc.get("robot_id", "") or ""),
             timestamp=str(doc.get("timestamp", utc_now_iso())),
             schema_version=str(doc["schema_version"]),
         )
@@ -473,6 +493,15 @@ class SceneAcknowledgement:
       * ``robot_home_verified`` / ``container_empty_verified`` — the two physical
         preconditions for a first pick, MEASURED by the simulator rather than
         assumed by the orchestrator.
+      * ``robot_id`` / ``robot_profile_revision`` — WHICH ARM is standing in
+        that world, and under which configuration. An acknowledgement from a
+        Panda cannot authorise an xArm run and vice versa: the two have
+        different envelopes, different bin positions and different tool frames,
+        so a plan validated for one is not a plan the other may execute. The
+        revision is carried as well as the id because "the right robot" and
+        "the right robot, configured the same way" are different claims — an
+        edited home pose or tool-centre-point is a different machine as far as
+        a validated plan is concerned.
 
     Deliberately NOT inferable from: the process being up, a camera stream
     existing, four objects being visible, or an older SCENE_READY.
@@ -483,6 +512,8 @@ class SceneAcknowledgement:
     scenario_revision: int = 0
     preset: str = ""
     seed: int = 0
+    robot_id: str = ""
+    robot_profile_revision: str = ""
     scene_fingerprint: str = ""
     object_ids: List[str] = field(default_factory=list)
     object_count: int = 0
@@ -500,6 +531,8 @@ class SceneAcknowledgement:
             "scenario_revision": int(self.scenario_revision),
             "preset": self.preset,
             "seed": int(self.seed),
+            "robot_id": self.robot_id,
+            "robot_profile_revision": self.robot_profile_revision,
             "scene_fingerprint": self.scene_fingerprint,
             "object_ids": list(self.object_ids),
             "object_count": int(self.object_count),
@@ -519,6 +552,8 @@ class SceneAcknowledgement:
             scenario_revision=int(doc.get("scenario_revision", 0) or 0),
             preset=str(doc.get("preset", "")),
             seed=int(doc.get("seed", 0) or 0),
+            robot_id=str(doc.get("robot_id", "") or ""),
+            robot_profile_revision=str(doc.get("robot_profile_revision", "") or ""),
             scene_fingerprint=str(doc.get("scene_fingerprint", "")),
             object_ids=[str(i) for i in (doc.get("object_ids") or [])],
             object_count=int(doc.get("object_count", 0) or 0),
@@ -530,7 +565,8 @@ class SceneAcknowledgement:
 
     def mismatches(self, *, run_id: str, scenario_id: str, revision: int,
                    preset: str, seed: int, fingerprint: str,
-                   object_count: int) -> List[str]:
+                   object_count: int, robot_id: str = "",
+                   robot_profile_revision: str = "") -> List[str]:
         """Every reason this acknowledgement does not describe the given run.
 
         Returns sentences an operator can act on, not booleans. "scene not
@@ -551,6 +587,21 @@ class SceneAcknowledgement:
                        f"{preset}")
         if self.seed and seed and self.seed != seed:
             out.append(f"acknowledged seed {self.seed} but this run planned {seed}")
+        # THE ROBOT IS NOT NEGOTIABLE. A missing id is tolerated — an older
+        # simulator does not send one — but a DIFFERENT id is refused outright:
+        # a Panda's acknowledgement describes a world with the bin 80 mm further
+        # out and a different reach envelope, and authorising an xArm pick from
+        # it would send the arm at coordinates nothing was validated against.
+        if robot_id and self.robot_id and self.robot_id != robot_id:
+            out.append(f"acknowledged robot {self.robot_id} but this run "
+                       f"selected {robot_id}")
+        if (robot_profile_revision and self.robot_profile_revision
+                and self.robot_profile_revision != robot_profile_revision):
+            out.append(
+                f"acknowledged robot profile revision "
+                f"{self.robot_profile_revision} but this run is configured for "
+                f"{robot_profile_revision} — the same robot, described "
+                "differently, is a different machine to a validated plan")
         if fingerprint and self.scene_fingerprint \
                 and self.scene_fingerprint != fingerprint:
             out.append(f"acknowledged scene fingerprint "
@@ -591,6 +642,12 @@ class IsaacFeedback:
     #: scene now corresponds to. The orchestrator refuses to authorise
     #: execution until this matches the ACTIVE revision exactly.
     scenario_revision: int = 0
+    #: WHICH ROBOT produced this report. On EVERY state, not only the scene
+    #: handshake: a simulator left over from a previous run — restarted for a
+    #: different arm, or simply never shut down — publishes onto the same topic,
+    #: and "this came from the robot this run selected" must be checkable
+    #: without inferring it from timing. Empty means the sender did not say.
+    robot_id: str = ""
     #: SCENE ACKNOWLEDGEMENT, present on SCENE_READY. Everything needed to
     #: decide whether the world Isaac built is the world this run planned
     #: against — see SceneAcknowledgement for why each field is here.
@@ -626,6 +683,7 @@ class IsaacFeedback:
             "item_id": self.item_id,
             "container_id": self.container_id,
             "scenario_revision": int(self.scenario_revision),
+            "robot_id": self.robot_id,
             "dimensions": self.dimensions.to_dict() if self.dimensions else None,
             "source_pose": self.source_pose.to_dict() if self.source_pose else None,
             "target_pose": self.target_pose.to_dict() if self.target_pose else None,
@@ -662,6 +720,7 @@ class IsaacFeedback:
             position_error_mm=None if error is None else float(error),
             container_id=doc.get("container_id"),
             scenario_revision=int(doc.get("scenario_revision", 0)),
+            robot_id=str(doc.get("robot_id", "") or ""),
             scene=SceneAcknowledgement.from_dict(doc.get("scene")),
             message=str(doc.get("message", "")),
             detail=dict(doc.get("detail", {}) or {}),

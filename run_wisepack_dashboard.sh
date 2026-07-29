@@ -27,7 +27,7 @@
 #     execution backend  simulated | isaac       who MOVES the item
 #
 # So `isaac` is the ordinary live ROS stack with the placements executed by a
-# Franka Panda in Isaac Sim instead of by the seeded robot model, and
+# SELECTED manipulator in Isaac Sim instead of by the seeded robot model, and
 # `isaac-fiware` is the same thing observed through Orion-LD. Isaac is NOT a
 # replacement for the ROS data source.
 #
@@ -296,7 +296,12 @@ if [ "$EXECUTION_BACKEND" = "isaac" ]; then
 
     ISAAC_LOG="$(mktemp -t wisepack-isaac-XXXXXX.log)"
     ISAAC_PIDFILE="$(mktemp -t wisepack-isaac-pid-XXXXXX)"
+    # BOTH ENDS GET THE SAME ROBOT, from the same variable. The orchestrator
+    # resolves it too (see the `robot:=` launch argument below), and passing it
+    # here rather than letting each side resolve independently is what stops the
+    # simulator standing up one arm while the orchestrator plans for another.
     echo "[isaac-launch] starting Isaac Sim on the host (log: $ISAAC_LOG)"
+    echo "[isaac-launch] robot       : ${WISEPACK_ISAAC_ROBOT:-<configured default>}"
 
     # THE CHILD REPORTS ITS OWN GROUP ID, and that is not pedantry.
     #
@@ -317,6 +322,7 @@ if [ "$EXECUTION_BACKEND" = "isaac" ]; then
         env ROS_DOMAIN_ID="$ROS_DOMAIN_ID" \
             WISEPACK_PRESET="$PRESET" \
             WISEPACK_SEED="$SEED" \
+            ${WISEPACK_ISAAC_ROBOT:+WISEPACK_ISAAC_ROBOT="$WISEPACK_ISAAC_ROBOT"} \
             ${WISEPACK_RESULTS_DIR:+WISEPACK_RESULTS_DIR="$WISEPACK_RESULTS_DIR"} \
             "$REPO/scripts/run_wisepack_isaac.sh" > "$ISAAC_LOG" 2>&1 &
 
@@ -425,6 +431,7 @@ DOCKER_RUN=(docker run --rm -i $([ -t 1 ] && echo -t) \
         setsid ros2 launch wisepack_bringup demo.launch.py \
             preset:="${WISEPACK_PRESET}" seed:="${WISEPACK_SEED}" \
             execution_backend:="${WISEPACK_EXECUTION_BACKEND}" \
+            robot:="${WISEPACK_ISAAC_ROBOT:-}" \
             > /tmp/wisepack_stack.log 2>&1 &
         LAUNCH_PID=$!
 

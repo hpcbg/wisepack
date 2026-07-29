@@ -3,9 +3,11 @@
 EVERYTHING IS GENERATED. There is no USD asset in this repository and there does
 not need to be: a table, an open-top bin and a handful of pipe segments are boxes
 and cylinders, and a committed binary would be one more thing to keep in step
-with the scenario definition. The one asset that IS loaded — the Franka Emika
-Panda — comes from the Isaac Sim asset root at runtime, resolved through
-``isaacsim.storage.native.get_assets_root_path`` rather than copied here.
+with the scenario definition. The one asset that IS loaded — the SELECTED ROBOT
+— comes from the Isaac Sim asset root at runtime, resolved through
+``isaacsim.storage.native.get_assets_root_path`` rather than copied here, and it
+is loaded by the robot adapter rather than by this module. Nothing here knows
+which arm is in the cell.
 
 THE ITEMS COME FROM WISEPACK, NOT FROM THIS FILE
 ------------------------------------------------
@@ -47,8 +49,12 @@ from .config import LOG_SCENE, PhysicsConfig
 
 #: Prim path roots. Collected here so nothing else in the codebase has to know
 #: the stage layout, and so `item_path` is the single naming rule.
+#:
+#: THE ROBOT'S PATH IS NOT HERE, and used to be. It belongs to the selected
+#: robot's profile (``root_prim_path`` in config/isaac_robots.yaml), because a
+#: stage constant naming one arm is exactly the kind of assumption that makes a
+#: second arm a rewrite rather than a selection.
 WORLD = "/World"
-ROBOT_PATH = f"{WORLD}/Panda"
 TABLE_PATH = f"{WORLD}/Table"
 ITEMS_ROOT = f"{WORLD}/Items"
 CONTAINERS_ROOT = f"{WORLD}/Containers"
@@ -142,9 +148,10 @@ class WisepackScene:
     def _build_table(self) -> None:
         """A static box whose TOP surface is at ``layout.table_top_z_m``.
 
-        The robot is mounted on that surface and every item rests on it, so the
-        top is the datum. The box is positioned by its centre, hence the half
-        height offset — the one place that arithmetic appears.
+        The robot — whichever one — is mounted on that surface and every item
+        rests on it, so the top is the datum. The box is positioned by its
+        centre, hence the half height offset: the one place that arithmetic
+        appears.
         """
         size = self.layout.table_size_m
         cx, cy = self.layout.table_centre_xy_m
@@ -261,13 +268,26 @@ class WisepackScene:
                   f"{tuple(round(v, 3) for v in position)} m")
 
     def _add_camera(self) -> None:
-        """A fixed viewpoint that frames the table, the pick row and the bin."""
+        """A viewpoint that frames the table, the pick row, the bin and the arm.
+
+        TAKEN FROM THE LAYOUT, not written here, because the layout is what
+        moves when a different robot is selected. The xArm 7 works a bin 80 mm
+        nearer its base than the Panda does; a camera hard-coded for the Panda
+        workcell would frame the same shot around furniture that is no longer
+        where it was, and an operator watching the Simulator View would see the
+        arm working at the edge of frame.
+        """
         stage = stage_utils.get_current_stage(backend="usd")
         camera = UsdGeom.Camera.Define(stage, f"{WORLD}/DemoCamera")
         xform = UsdGeom.Xformable(camera.GetPrim())
-        xform.AddTranslateOp().Set(Gf.Vec3d(1.55, -1.15, 1.45))
-        xform.AddRotateXYZOp().Set(Gf.Vec3f(63.0, 0.0, 52.0))
+        xform.AddTranslateOp().Set(Gf.Vec3d(*self.layout.camera_position_m))
+        xform.AddRotateXYZOp().Set(Gf.Vec3f(*[
+            float(v) for v in self.layout.camera_rotation_deg]))
         camera.CreateFocalLengthAttr(20.0)
+        print(f"{LOG_SCENE} DemoCamera at "
+              f"{tuple(round(v, 2) for v in self.layout.camera_position_m)} m "
+              f"framing the "
+              f"{self.layout.robot_id or 'default'} workcell")
 
     # ------------------------------------------------------------------ #
     # Scene reset
@@ -333,6 +353,47 @@ class WisepackScene:
         return (np.asarray(positions.numpy()[0], dtype=float),
                 np.asarray(orientations.numpy()[0], dtype=float))
 
+    def wake_item(self, item_id: str) -> bool:
+        """WAKE A RELEASED BODY. Call this the instant a grasp is let go.
+
+        NOT housekeeping — without it the item does not fall.
+
+        PhysX sleeps a rigid body that has stayed below its velocity thresholds
+        for long enough, and a body held by the temporary grasp joint qualifies:
+        while the arm holds still at the release pose waiting for the gripper to
+        open, the item is rigidly constrained and effectively motionless in the
+        solver's terms. Deleting the joint does not wake it. The result is a
+        cylinder frozen in mid-air at the release height, with exactly zero
+        velocity — which SettleMonitor then reports as "settled" on its first
+        check, and the run records a 160 mm placement error for an item that
+        never left the gripper's frame.
+
+        Measured exactly that way on the first xArm 7 run: released 10 mm above
+        the container rim, settled 10 mm above the container rim, 0.24 s later.
+        The Panda had been getting away with it because its fingers slide 40 mm
+        apart against the held cylinder and the contact impulses kept the body
+        awake — luck, not design, and the same failure was one tuning change
+        away from appearing there too.
+
+        Setting the velocities is what wakes it: writing to a sleeping actor's
+        velocity wakes it in PhysX. Zero rather than some nudge, because the
+        item must fall under GRAVITY from where it was let go — adding an
+        impulse here would be this code deciding where the object goes, which is
+        the one thing the release must not do.
+        """
+        body = self.items.get(item_id)
+        if body is None:
+            return False
+        try:
+            body.set_velocities(np.zeros((1, 3)), np.zeros((1, 3)))
+            return True
+        except Exception as exc:                         # noqa: BLE001
+            # Named, never silent. A body that could not be woken is a body that
+            # will not fall, and the resulting "placement" would be fiction.
+            print(f"{LOG_SCENE} WARNING: could not wake {item_id} on release: "
+                  f"{exc!r} — if it does not fall, this is why")
+            return False
+
     def item_velocities(self, item_id: str
                         ) -> Optional[Tuple[np.ndarray, np.ndarray]]:
         """(linear_mps, angular_radps) of one item, or None if it is gone."""
@@ -352,6 +413,6 @@ class WisepackScene:
 
 
 __all__ = [
-    "WisepackScene", "item_path", "container_path", "ROBOT_PATH", "TABLE_PATH",
+    "WisepackScene", "item_path", "container_path", "TABLE_PATH",
     "ITEMS_ROOT", "CONTAINERS_ROOT", "WORLD",
 ]

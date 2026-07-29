@@ -289,10 +289,17 @@ def test_an_active_run_requires_explicit_confirmation_before_being_discarded():
 
 def test_the_generate_button_renames_itself_when_a_run_is_active():
     html = _read(INDEX)
-    # ONE label drives both the button and the help text, so they cannot drift.
-    assert 'const genLabel = s.run_active ? "Reset run & generate" : "Generate & plan"' in html
+    # ONE label drives the button, the scenario help text and the robot help
+    # text, so they cannot drift. It moved into a helper when the robot selector
+    # started quoting it too; the property is unchanged — one source, three
+    # readers.
+    assert ('return s.run_active ? "Reset run & generate" : "Generate & plan";'
+            in html)
+    assert "const genLabel = genLabelFor(s);" in html
     assert "gen.textContent = genLabel" in html
     assert 'press “${genLabel}”' in html, "the help must quote the actual button"
+    assert "${genLabelFor(s)}" in html, \
+        "the robot help must quote the same button"
 
 
 def test_the_draft_survives_page_switches():
@@ -319,13 +326,22 @@ def test_a_user_selected_preset_is_not_overwritten_by_the_isaac_default():
 
 
 def test_the_operator_may_still_choose_another_preset_under_isaac():
-    """The Isaac default is a DEFAULT, not a restriction."""
+    """The Isaac default is a DEFAULT, not a restriction.
+
+    Scoped to the PRESET handling rather than the whole function. The robot
+    field IS disabled in the logical modes, deliberately — a dropdown of arms
+    neither of which will move is worse than none — and a blunt scan of the
+    enclosing function would read that as this regression.
+    """
     html = _read(INDEX)
-    block = html[html.index("function syncScenarioControls("):
-                 html.index("function fillSelects(")]
-    # Nothing removes or disables options for the Isaac backend.
+    block = html[html.index("const compat = s.preset_compatibility"):
+                 html.index("const active = (s.active_scenario")]
+    # Nothing removes preset options, and none is unconditionally disabled:
+    # an incompatible one is disabled WITH ITS REASON, which is a different
+    # thing from the backend restricting the choice.
     assert "removeChild" not in block
     assert "disabled = true" not in block
+    assert "opt.disabled = Boolean(why)" in block
 
 
 def test_state_polling_cannot_revert_a_selection():

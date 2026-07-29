@@ -97,8 +97,11 @@ class MotionConfig:
     #: Frames the goal must stay within tolerance before the state advances.
     #: A single in-tolerance frame can be a fly-through rather than an arrival.
     dwell_frames: int = 8
-    #: Frames held while the gripper opens or closes. The Panda's fingers are
-    #: position-controlled, so this is a settling allowance, not a trajectory.
+    #: Frames held while the gripper opens or closes. Both supported grippers
+    #: are position-controlled, so this is a settling allowance rather than a
+    #: trajectory. It is robot-neutral on purpose: a per-robot value would be
+    #: one more thing to keep in step for a number whose only job is to be
+    #: generous enough for the slower of the two.
     gripper_frames: int = 45
 
     #: Settling. The item is NOT reported complete when the gripper opens — only
@@ -118,11 +121,12 @@ class MotionConfig:
     max_source_drift_m: float = 0.08
 
     #: Yaw offset, in degrees, applied to the top-down gripper orientation when
-    #: grasping. The pick row lays every item along world X and the Panda hand's
-    #: fingers must close ACROSS that axis. 0 means the default downward
-    #: orientation already closes along world Y; it is exposed because the finger
-    #: axis is a property of the shipped asset's hand frame, not of this code,
-    #: and correcting it must not require editing the state machine.
+    #: grasping. The pick row lays every item along world X and the hand's
+    #: fingers must close ACROSS that axis. 0 here means "use the SELECTED
+    #: ROBOT's `grasp_yaw_offset_deg`", which is where the value belongs: the
+    #: finger axis is a property of the shipped asset's tool frame, not of this
+    #: code. A non-zero value here overrides the profile, so an operator can
+    #: correct a finger axis at the point of use without editing a config file.
     grasp_yaw_offset_deg: float = 0.0
 
     def validate(self) -> None:
@@ -245,6 +249,10 @@ class AppConfig:
 
     preset: str = "isaac_cylinders_smoke"
     seed: int = 42
+    #: WHICH ROBOT, by id from config/isaac_robots.yaml. Recorded here so the
+    #: run's own configuration dump names it; the PROFILE itself is resolved by
+    #: wisepack_core.robots and is not duplicated into this dataclass.
+    robot_id: str = ""
     headless: bool = False
     #: Exit after the run reaches RUN_COMPLETED / RUN_FAILED. Used by the smoke
     #: validator; the dashboard demonstration keeps the window open instead.
@@ -259,6 +267,7 @@ class AppConfig:
         return {
             "preset": self.preset,
             "seed": self.seed,
+            "robot_id": self.robot_id,
             "headless": self.headless,
             "exit_on_complete": self.exit_on_complete,
             "max_runtime_s": self.max_runtime_s,

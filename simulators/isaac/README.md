@@ -1,7 +1,7 @@
 # WISEPACK — Isaac Sim physical execution backend
 
 The optional **execution backend** that performs WISEPACK's approved placements
-with a Franka Emika Panda in NVIDIA Isaac Sim 6.0.1, instead of resolving them
+with a SELECTED manipulator in NVIDIA Isaac Sim 6.0.1, instead of resolving them
 with the built-in simulated robot model.
 
 ```
@@ -44,7 +44,7 @@ where they are. The extension point is
 perception changes nothing else in the stack.
 
 **Secure-grasp approximation.** When the gripper closes, the item is welded to
-`panda_hand` with a temporary USD fixed joint, removed the instant the gripper
+the robot's end-effector link with a temporary USD fixed joint, removed the instant the gripper
 opens to release it. So the **carry is idealised**: the item cannot slip or
 rotate in the fingers. A real parallel-jaw grasp of a smooth steel pipe is
 exactly the case where friction modelling matters most, and this iteration does
@@ -78,7 +78,7 @@ Every number in it is a **hardware** constraint, not a packing choice:
 | | |
 |---|---|
 | 4 items | one pick-and-place cycle is ~25 s of simulated time |
-| ⌀ ≤ 70 mm | the Panda's parallel gripper opens to 80 mm |
+| ⌀ ≤ 70 mm | both supported parallel grippers open to 80 mm |
 | length ≤ 250 mm | must fit the 300 mm bin horizontally with clearance |
 | axes `x`,`y` | a top-down gripper cannot stand a pipe on its end |
 
@@ -104,7 +104,7 @@ Each piece is separable and only one group touches the simulator:
 | `bridge.py` | rclpy only | ROS 2 transport |
 | `scene.py` | yes | procedural table / bin / cylinders |
 | `grasp.py` | yes | the temporary fixed joint |
-| `robot.py` | yes | the Panda state machine |
+| `robot.py` | yes | the ROBOT-NEUTRAL placement state machine |
 | `wisepack_isaac.py` | yes | assembly and the main loop |
 
 `config.py` and `result.py` are unit-tested by the ordinary suite on a machine
@@ -135,8 +135,8 @@ the descent to the drop height is purely vertical at the target XY. Dragging a
 cylinder through a wall would be resolved by PhysX as a large impulse or — worse
 and more likely — as a quiet penetration that still ends "in" the bin.
 
-**Controller:** `isaacsim.robot.experimental.manipulators.examples.franka.Franka`
-— the maintained Franka helper shipped with 6.0.1, providing damped
+**Controller:** `simulators/isaac/adapters/` — one generic articulation and one
+kinematics implementation for every supported robot, providing damped
 least-squares differential IK over the arm Jacobian plus gripper control. It is
 iterative, so every state calls it once per physics frame and watches for
 convergence rather than commanding a pose and assuming arrival.
@@ -200,7 +200,7 @@ they are back at their source poses.
 
 **Why step 4 is stop-mutate-play.** Deleting a rigid body while physics is
 playing invalidates the PhysX tensor simulation view for the *whole stage*,
-including the Franka articulation. Measured on a live run before this ordering
+including the arm's articulation. Measured on a live run before this ordering
 existed: the items rebuilt perfectly, `SCENE_READY` was published, and the next
 joint read failed with
 
@@ -267,7 +267,7 @@ unit conversion. It is covered by tests that need no GPU
 (`tests/test_isaac_backend.py`), including a full world→pose round trip.
 
 `SceneLayout.validate()` checks that the pick row and **all four** container
-corners sit inside the Panda's usable envelope at retreat height, because an
+corners sit inside the SELECTED ROBOT's usable envelope at retreat height, because an
 unreachable IK goal does *not* fail loudly in Isaac — differential IK converges
 to the nearest achievable pose and the gripper closes on air, which reads as a
 grasp-tuning problem and is not one.
@@ -356,6 +356,6 @@ direction is a property of the shipped hand asset, not of this code. Correct it
 with `WISEPACK_ISAAC_GRASP_YAW_OFFSET_DEG=90` rather than editing the state
 machine.
 
-**`Could not find assets root folder`.** The Panda is fetched from NVIDIA's asset
+**`Could not find assets root folder`.** The robot asset is fetched from NVIDIA's asset
 server at runtime; the machine needs outbound HTTPS, or a local Nucleus root set
 in `~/.local/share/ov/data/Kit/**/user.config.json`.

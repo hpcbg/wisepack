@@ -47,6 +47,7 @@ def generate_launch_description() -> LaunchDescription:
     with_perception = LaunchConfiguration("with_perception")
     with_twin = LaunchConfiguration("with_twin")
     execution_backend = LaunchConfiguration("execution_backend")
+    robot = LaunchConfiguration("robot")
 
     # A LaunchConfiguration substitutes to a string; these parameters are
     # declared with non-string types, so state the type or startup is rejected.
@@ -76,9 +77,16 @@ def generate_launch_description() -> LaunchDescription:
             "execution_backend", default_value="simulated",
             description=("Who performs the approved placements: `simulated` "
                          "(the seeded robot model, the default and unchanged) "
-                         "or `isaac` (a Franka Panda in NVIDIA Isaac Sim on the "
-                         "host, with physical release and PhysX settling). This "
-                         "is NOT the dashboard data source.")),
+                         "or `isaac` (the selected manipulator in NVIDIA Isaac "
+                         "Sim on the host, with physical release and PhysX "
+                         "settling). This is NOT the dashboard data source.")),
+        DeclareLaunchArgument(
+            "robot", default_value="",
+            description=("Which robot the Isaac backend executes with, by id "
+                         "from config/isaac_robots.yaml (xarm7 | panda). Empty "
+                         "resolves it: WISEPACK_ISAAC_ROBOT wins over the "
+                         "configured default. Ignored by the simulated "
+                         "backend, which has no robot.")),
         DeclareLaunchArgument("with_anomaly", default_value="true",
                               description="Start the SIMULATED anomaly source"),
     ]
@@ -97,6 +105,7 @@ def generate_launch_description() -> LaunchDescription:
             "results_dir": results_dir,
             "tick_period_s": 0.7,
             "execution_backend": execution_backend,
+            "robot": robot,
         }],
         output="screen",
     )

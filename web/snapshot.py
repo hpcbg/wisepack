@@ -64,6 +64,28 @@ KPI_SOURCES = {
 }
 
 
+def _public_robot(robot_id: Optional[str]) -> Optional[Dict[str, Any]]:
+    """The PUBLIC-SAFE description of one robot, or None.
+
+    Public-safe means what ``RobotProfile.to_public_dict`` publishes: identity,
+    capability and status. Asset URLs and prim paths never leave the process
+    through this path — they are of no use to an operator choosing an arm, and
+    an asset-server path in a web response is free reconnaissance.
+
+    Returns None for an empty id (a logical run has no robot) and for an id the
+    registry does not know, rather than raising: a dashboard poll must not turn
+    a stale robot id into a 500 across the whole page.
+    """
+    if not robot_id:
+        return None
+    try:
+        from wisepack_core.robots import load_registry           # noqa: PLC0415
+        return load_registry().profiles[str(robot_id).lower()].to_public_dict()
+    except Exception:                                            # noqa: BLE001
+        return {"id": str(robot_id), "display_name": str(robot_id),
+                "unknown": True}
+
+
 def _metric(key: str, value: Optional[float], unit: str = "",
             source: Optional[str] = None, note: str = "") -> Dict[str, Any]:
     return {
@@ -174,6 +196,13 @@ class DashboardSnapshot:
     #: Each entry: {entity, field, reason}. Diagnostics renders this verbatim.
     rejected_stale_fields: List[Dict[str, Any]] = field(default_factory=list)
     execution_backend_known: bool = False
+    #: THE ACTIVE ROBOT — the one the RUNNING run is executing with, published
+    #: by the orchestrator. Never the dashboard's draft: those are different
+    #: things and the whole "Running now / Next" distinction depends on the
+    #: dashboard never confusing them. None in the logical modes, which have no
+    #: robot at all and must not pretend to.
+    active_robot: Optional[Dict[str, Any]] = None
+    active_robot_id: Optional[str] = None
     isaac: Optional[Dict[str, Any]] = None
     isaac_results: List[Dict[str, Any]] = field(default_factory=list)
     #: Backend-neutral visualization descriptor, as published by whichever
@@ -329,6 +358,11 @@ class DashboardSnapshot:
             "detail": self.execution_backend_detail,
             "physical": self.execution_backend == "isaac",
             "known": self.execution_backend_known,
+            # WHICH ARM, for the header badge and the Simulator View. Present
+            # only for a physical backend: a logical run has no robot, and
+            # showing one would be an outright false claim about what moved.
+            "robot": self.active_robot,
+            "robot_id": self.active_robot_id,
             "isaac": self.isaac,
         }
 
@@ -425,6 +459,13 @@ class DashboardSnapshot:
             "shortage_events": inv.get("shortage_events", []),
             "planning_result": wp.get("planning_result"),
             "analytics": (wp.get("analytics") or {}).get("inventory"),
+            # PROVENANCE. Who filled these containers — the logical simulator or
+            # a named arm. An inventory row outlives the run that produced it,
+            # and "a robot placed this" stops being a usable record the moment
+            # more than one robot is selectable.
+            "execution_backend": self.execution_backend,
+            "robot_id": self.active_robot_id,
+            "robot_display_name": (self.active_robot or {}).get("display_name"),
         }
 
     def to_logistics(self) -> Dict[str, Any]:
@@ -624,9 +665,15 @@ class SimSnapshotProvider(DashboardSnapshotProvider):
             # hard-coded, so it stays true if sim mode ever gains a backend.
             backend = engine.config.execution_backend
             snap.execution_backend = backend.value
-            snap.execution_backend_label = backend.label
             snap.execution_backend_detail = backend.detail
             snap.execution_backend_known = True
+            # The in-process sim mode runs the engine here, so the ACTIVE robot
+            # is whatever this engine's config records — which for the logical
+            # backend is nothing at all.
+            snap.active_robot_id = engine.config.robot_id or None
+            snap.active_robot = _public_robot(engine.config.robot_id)
+            snap.execution_backend_label = backend.badge(
+                (snap.active_robot or {}).get("display_name", ""))
 
             if engine.baseline and engine.optimized and engine.selected:
                 report = engine.kpis(self._latency())
@@ -808,6 +855,8 @@ class RosSnapshotProvider(DashboardSnapshotProvider):
                 "label", snap.execution_backend.upper())
             snap.execution_backend_detail = backend_doc.get("detail", "")
             snap.execution_backend_known = True
+            snap.active_robot = backend_doc.get("robot")
+            snap.active_robot_id = backend_doc.get("robot_id")
             snap.isaac = backend_doc.get("isaac")
             snap.visualization = backend_doc.get("visualization")
             isaac = backend_doc.get("isaac") or {}

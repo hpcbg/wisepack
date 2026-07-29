@@ -12,7 +12,8 @@
 # no host ROS 2, no host Python packages, no manual configuration.
 #
 # --isaac-sim adds ONE stage: an optional physical smoke run in NVIDIA Isaac
-# Sim 6.0.1, executing a small 4-cylinder scenario with a Franka Panda. It
+# Sim 6.0.1, executing a small 4-cylinder scenario with the selected robot
+# (WISEPACK_ISAAC_ROBOT=xarm7|panda; see config/isaac_robots.yaml). It
 # combines with every existing option and it CHANGES NOTHING ELSE — the packing
 # benchmark, its measured baseline-versus-optimized result and all eleven
 # existing stages run exactly as they do without the flag. Isaac needs a GPU and
@@ -217,7 +218,7 @@ fi
 # 4-cylinder scenario chosen for the arm, not for the packer.
 if [ "$WITH_ISAAC" -eq 1 ]; then
     head_ "10b. Isaac Sim physical execution smoke test"
-    info "This is a PHYSICAL run: a Franka Panda picks each cylinder, carries it"
+    info "This is a PHYSICAL run: the selected robot picks each cylinder, carries it"
     info "over the container, opens the gripper and lets PhysX settle it. Nothing"
     info "is teleported into the bin. It does not affect the packing figures above."
     if "$REPO/scripts/validate_isaac_sim.sh"; then

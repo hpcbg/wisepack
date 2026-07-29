@@ -125,6 +125,12 @@ class DemoState:
             "container_spec": None,
             "dynamic_events_enabled": True,
             "pick_failure_probability": 0.08,
+            # THE DRAFT ROBOT for the NEXT run. None means "not chosen yet", so
+            # it is seeded from the active run or the configured default on the
+            # first render and owned by the operator afterwards. Deliberately
+            # NOT the active robot: changing this must never touch a running
+            # scene, and only "Reset run & generate" carries it into a run.
+            "robot_id": None,
         }
 
     # -- event capture ---------------------------------------------------- #
@@ -161,6 +167,25 @@ DEMO_EVENTS = [
 ]
 
 
+def _preset_compatibility(robot_id: Optional[str]) -> Dict[str, str]:
+    """{preset: reason} for the physical backend, for THIS robot.
+
+    Two different bounds, and the operator has to be able to tell them apart:
+    the backend-level ones (too many items, items wider than any gripper) apply
+    to every arm, and the robot's own ``supported_presets`` applies to one. A
+    reason that says only "unavailable" sends someone looking at the asset when
+    the answer is the selector two fields up.
+    """
+    profile = None
+    if robot_id:
+        try:
+            from wisepack_core.robots import load_registry         # noqa: PLC0415
+            profile = load_registry().profiles.get(str(robot_id).lower())
+        except Exception:                                          # noqa: BLE001
+            profile = None
+    return physical_presets(profile)
+
+
 def _generator_overrides(settings: Dict[str, Any]) -> Dict[str, Any]:
     overrides: Dict[str, Any] = {}
     if settings.get("item_count"):
@@ -177,6 +202,10 @@ def _generator_overrides(settings: Dict[str, Any]) -> Dict[str, Any]:
 def build_engine(settings: Dict[str, Any]) -> WorkflowEngine:
     preset = settings.get("preset", "mixed_pipes_dense")
     seed = int(settings.get("seed", 42))
+    # The in-process demo engine is the LOGICAL backend and has no robot. The
+    # draft robot is carried on the settings for the live modes, where the
+    # orchestrator owns the run; recording it here would attach a robot name to
+    # a run in which nothing robotic happens.
     # The curated dataset is hand-built; generator overrides do not apply to it
     # and silently accepting them would misrepresent what was run.
     overrides = ({} if preset == "curated_volume_reduction"
@@ -508,6 +537,56 @@ def api_state():
         if active_seed is not None:
             settings = {**settings, "seed": active_seed}
 
+    # -- THE ROBOT -------------------------------------------------------- #
+    #
+    # Three separate things, kept separate on purpose:
+    #
+    #   `robots`        the catalogue, from the registry (see /api/config/robots)
+    #   `active_robot`  what the RUNNING run is executing with
+    #   `settings.robot_id`  the DRAFT for the next run
+    #
+    # The draft follows exactly the same rule as the preset: seeded from the
+    # active run (or the configured default) while untouched, owned by the
+    # operator afterwards, and never overwritten by a poll. Conflating draft
+    # and active is what made the preset dropdown unusable before, and a robot
+    # selector that silently reverts is worse — it would look as though the
+    # operator had chosen an arm that is not the one that then moves.
+    robots_catalogue: Dict[str, Any] = {"robots": [], "default_robot": None,
+                                        "error": ""}
+    try:
+        from wisepack_core.robots import load_registry              # noqa: PLC0415
+        robots_catalogue = load_registry().to_public_dict()
+    except Exception as exc:                                        # noqa: BLE001
+        # Named, not swallowed. A broken registry must show as a broken
+        # registry in the panel, not as "no robots exist".
+        robots_catalogue["error"] = str(exc)
+
+    execution = payload.get("execution", {}) or {}
+    active_robot = execution.get("robot")
+    active_robot_id = execution.get("robot_id")
+    if not STATE.settings_touched and settings.get("robot_id") is None:
+        settings = {**settings,
+                    "robot_id": active_robot_id
+                    or robots_catalogue.get("default_robot")}
+
+    # ROBOT SELECTION IS ONLY MEANINGFUL FOR A PHYSICAL BACKEND. In the logical
+    # modes there is no robot at all, and offering a choice between two arms
+    # neither of which will move is worse than offering none — see
+    # `robot_selector` below, which the frontend uses to render a fixed
+    # "Logical workflow simulator" line instead.
+    physical = bool(execution.get("physical"))
+    draft_robot_id = settings.get("robot_id") if physical else None
+    draft_profile = next((r for r in robots_catalogue.get("robots", [])
+                          if r.get("id") == draft_robot_id), None)
+    draft_preset = settings.get("preset")
+    robot_preset_conflict = ""
+    if draft_profile and draft_preset:
+        compatible = draft_profile.get("compatible_presets") or []
+        if compatible and draft_preset not in compatible:
+            robot_preset_conflict = (
+                f"{draft_profile['display_name']} is configured for "
+                f"{', '.join(compatible)}; {draft_preset} is not among them")
+
     # ACTIVE SCENARIO vs DRAFT — two different things, and conflating them made
     # the preset dropdown unusable in every live mode.
     #
@@ -536,7 +615,7 @@ def api_state():
         # Which presets the ACTIVE backend can physically instantiate and reach.
         # The dashboard marks the rest unavailable with the reason, rather than
         # offering a run whose first pick is impossible.
-        "preset_compatibility": (physical_presets()
+        "preset_compatibility": (_preset_compatibility(draft_robot_id)
                                  if snap.execution_backend == "isaac" else {}),
         "default_preset": ("isaac_cylinders_smoke"
                            if snap.execution_backend == "isaac"
@@ -558,6 +637,28 @@ def api_state():
             "scenario_id": scenario.get("scenario_id"),
         },
         "active_preset": active_preset,
+        # The catalogue the selector is built from. Never duplicated in HTML.
+        "robots": robots_catalogue.get("robots", []),
+        "default_robot": robots_catalogue.get("default_robot"),
+        "robots_error": robots_catalogue.get("error", ""),
+        "registry_revision": robots_catalogue.get("registry_revision"),
+        # Whether a robot CHOICE is meaningful at all here. False in the logical
+        # modes, where the frontend shows a fixed execution-source line rather
+        # than a dropdown of arms that will not move.
+        "robot_selector": physical,
+        "robot_selector_reason": (
+            "" if physical else
+            "this run is executed by the logical workflow simulator — there is "
+            "no robot to select"),
+        "active_robot": active_robot,
+        "active_robot_id": active_robot_id,
+        "draft_robot_id": draft_robot_id,
+        "robot_preset_conflict": robot_preset_conflict,
+        # Changing the robot is a NEW RUN, never a live switch. The frontend
+        # uses this to require confirmation before resetting an Isaac run.
+        "robot_change_requires_reset": bool(
+            physical and active_robot_id and draft_robot_id
+            and draft_robot_id != active_robot_id),
         "presets": sorted(PRESETS),
         "container_specs": {k: v["description"] for k, v in CONTAINER_SPECS.items()},
         "strategies": [s.value for s in Strategy],
@@ -566,6 +667,32 @@ def api_state():
         "ts": time.time(),
     })
     return payload
+
+
+@app.get("/api/config/robots")
+def api_config_robots():
+    """The supported Isaac robots — READ-ONLY, and the ONLY robot list.
+
+    The dashboard's Robot selector is built from this response. There is no
+    hard-coded ``<option>`` list in index.html and no robot array in the
+    JavaScript, and ``tests/test_isaac_robots.py`` fails the build if one
+    appears: two lists that agree today are two lists that disagree after the
+    next edit, and the one the operator sees would be the stale one.
+
+    PUBLIC-SAFE SUBSET. Identity, capability and status only — never the asset
+    URL, the prim paths or the joint names. Those are of no use to an operator
+    choosing an arm, and an asset-server path in a web response is free
+    reconnaissance.
+
+    Serving a 503 rather than an empty list when the registry cannot be read: an
+    empty list renders as "no robots configured", which is a different and
+    wrong claim from "the robot registry is broken".
+    """
+    from wisepack_core.robots import RobotConfigError, load_registry  # noqa: PLC0415
+    try:
+        return load_registry().to_public_dict()
+    except RobotConfigError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
 
 
 @app.get("/api/plans")
@@ -676,6 +803,9 @@ def api_visualization():
     payload = snap.to_visualization()
     payload["execution_backend"] = snap.execution_backend
     payload["execution_backend_label"] = snap.execution_backend_label
+    # WHICH ARM the stream is showing. Public-safe subset only — no asset URLs.
+    payload["robot"] = snap.active_robot
+    payload["robot_id"] = snap.active_robot_id
     payload["current_item_id"] = snap.current_item_id
     payload["stage"] = snap.stage
     payload["isaac_state"] = (snap.isaac or {}).get("last_state")

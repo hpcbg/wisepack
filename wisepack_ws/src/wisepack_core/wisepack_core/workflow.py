@@ -108,12 +108,22 @@ class WorkflowConfig:
     #: physical outcome. Planning, validation and the approval gate are identical
     #: either way — see wisepack_core.execution.
     execution_backend: ExecutionBackend = ExecutionBackend.SIMULATED
+    #: WHICH ROBOT executes, by id from config/isaac_robots.yaml. Meaningful
+    #: only for the Isaac backend — a simulated run has no robot, and the
+    #: dashboard shows "Logical workflow simulator" rather than a robot name.
+    #:
+    #: Recorded on the ACTIVE run so its artefacts, its FIWARE projection and
+    #: its scene handshake all name the arm that actually moved. Changing the
+    #: dashboard's draft does not touch this: only a reset (a new run) does, and
+    #: that is the whole reason the two are separate fields.
+    robot_id: str = ""
 
     def __post_init__(self) -> None:
         # Same coercion as OptimizerConfig: strategies reach here as strings from
         # YAML and from the dashboard.
         self.strategy = Strategy(self.strategy)
         self.execution_backend = ExecutionBackend(self.execution_backend)
+        self.robot_id = str(self.robot_id or "").strip().lower()
 
 
 # --------------------------------------------------------------------------- #

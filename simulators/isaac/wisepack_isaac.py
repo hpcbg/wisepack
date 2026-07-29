@@ -8,13 +8,18 @@ discovery, the ROS environment isolation and process ownership.
 
 WHAT THIS PROCESS DOES
 ----------------------
-1. builds the procedural scene — ground, table, open-top container, cylinders,
+1. resolves WHICH ROBOT to run, from `--robot`, the WISEPACK_ISAAC_ROBOT
+   environment override or the configured default, and loads its profile from
+   the single tracked registry (config/isaac_robots.yaml);
+2. builds the procedural scene — ground, table, open-top container, cylinders,
    lighting, camera — from the SAME (preset, seed) the WISEPACK stack planned
-   from, so the object ids, dimensions and masses match by construction;
-2. loads the Franka Emika Panda from the Isaac Sim asset root;
-3. reports READY on /wisepack/isaac/feedback;
-4. executes each accepted placement it is sent, one at a time;
-5. reports the MEASURED physical outcome of every item.
+   from and the layout THAT ROBOT needs, so the object ids, dimensions, masses
+   and reachable positions match by construction;
+3. loads the selected robot from the Isaac Sim asset root and VALIDATES it
+   against its profile before anything is commanded;
+4. reports READY on /wisepack/isaac/feedback;
+5. executes each accepted placement it is sent, one at a time;
+6. reports the MEASURED physical outcome of every item.
 
 WHAT IT DOES NOT DO
 -------------------
@@ -79,6 +84,13 @@ def _parse_args():
     parser.add_argument("--seed", type=int,
                         default=int(os.environ.get("WISEPACK_SEED", "42")),
                         help="Deterministic seed, matching the WISEPACK stack")
+    parser.add_argument("--robot", default="",
+                        help=("Which robot to run, by id from "
+                              "config/isaac_robots.yaml (e.g. xarm7, panda). "
+                              "Overrides WISEPACK_ISAAC_ROBOT and the "
+                              "configured default."))
+    parser.add_argument("--list-robots", action="store_true",
+                        help="Print the configured robots and exit")
     parser.add_argument("--headless", action="store_true",
                         default=os.environ.get("WISEPACK_ISAAC_HEADLESS") == "1",
                         help="Run with no window (required over SSH)")
@@ -117,6 +129,44 @@ def _parse_args():
 
 ARGS = _parse_args()
 
+# --------------------------------------------------------------------------- #
+# 1a. WHICH ROBOT — resolved BEFORE the simulator is constructed
+# --------------------------------------------------------------------------- #
+#
+# Deliberately ahead of SimulationApp. Resolving the robot needs nothing from
+# Isaac, and an unknown robot id, a disabled robot or a malformed registry
+# should cost a fraction of a second and print one clear line — not forty
+# seconds of Kit startup followed by a traceback. It also means `--list-robots`
+# is instant.
+from wisepack_core.robots import (                                # noqa: E402
+    ROBOT_ENV_VAR, RobotConfigError, load_registry,
+)
+
+try:
+    ROBOT_REGISTRY = load_registry()
+    if ARGS.list_robots:
+        print(f"robot registry: {ROBOT_REGISTRY.source_path} "
+              f"(revision {ROBOT_REGISTRY.revision})")
+        print(f"default       : {ROBOT_REGISTRY.default_robot_id}")
+        for _p in ROBOT_REGISTRY.ordered:
+            print(f"  {_p.robot_id:8s} {_p.display_name:24s} "
+                  f"{_p.dof:2d} DOF  {_p.implementation_status:12s} "
+                  f"{'enabled' if _p.enabled else 'DISABLED'}  "
+                  f"presets={','.join(_p.supported_presets) or 'any'}")
+        sys.exit(0)
+    ROBOT_PROFILE = ROBOT_REGISTRY.resolve(explicit=ARGS.robot or None)
+except RobotConfigError as exc:
+    # Exit 5, distinct from the launcher's own codes, so a wrapper script can
+    # tell "you asked for a robot that does not exist" from "Isaac is missing".
+    print(f"[isaac-robot] ERROR: {exc}", file=sys.stderr)
+    print(f"[isaac-robot]   select one with --robot <id> or "
+          f"{ROBOT_ENV_VAR}=<id>", file=sys.stderr)
+    sys.exit(5)
+
+print(f"[isaac-robot] selected {ROBOT_PROFILE.display_name} "
+      f"({ROBOT_PROFILE.robot_id}, profile revision {ROBOT_PROFILE.revision}, "
+      f"{ROBOT_PROFILE.implementation_status})")
+
 # Streaming is decided BEFORE the app is constructed. The livestream extension
 # captures the application framebuffer, and its size plus headless/hide_ui are
 # launch configuration rather than runtime settings — enabling it afterwards
@@ -154,9 +204,10 @@ import numpy as np                                                   # noqa: E40
 import isaacsim.core.experimental.utils.app as app_utils             # noqa: E402
 from isaacsim.core.simulation_manager import SimulationManager       # noqa: E402
 
-# The Franka helper and the ROS 2 bridge both live in extensions that are not
-# enabled by default in a standalone app.
-app_utils.enable_extension("isaacsim.robot.experimental.manipulators.examples")
+# The ROS 2 bridge lives in an extension that is not enabled by default in a
+# standalone app. The manipulator EXAMPLES extension is no longer needed: the
+# robots are loaded through the generic articulation path in
+# simulators/isaac/adapters/, not through a vendor-specific helper class.
 app_utils.enable_extension("isaacsim.ros2.bridge")
 simulation_app.update()
 
@@ -219,26 +270,24 @@ if STREAM.enabled:
     STREAM_STATUS = _start_streaming()
 
 import rclpy                                                         # noqa: E402
-from isaacsim.robot.experimental.manipulators.examples.franka.franka import (  # noqa: E402
-    Franka,
-)
 
 from wisepack_core.generator import build_scenario                   # noqa: E402
 from wisepack_core.isaac_contract import (                           # noqa: E402
     IsaacCommand, IsaacCommandType, IsaacState,
 )
 from wisepack_core.isaac_transform import (                          # noqa: E402
-    DEFAULT_LAYOUT, dimensions_for, placement_pose, table_pose_for_index,
+    dimensions_for, layout_for_robot, placement_pose, table_pose_for_index,
 )
 
 from simulators.isaac.config import (                                # noqa: E402
-    LOG_APP, AppConfig, MotionConfig, PhysicsConfig,
+    LOG_APP, LOG_ROBOT, AppConfig, MotionConfig, PhysicsConfig,
 )
 from simulators.isaac.bridge import (                                # noqa: E402
     IsaacRosBridge, init_ros, shutdown_ros,
 )
-from simulators.isaac.robot import PandaSequence                     # noqa: E402
-from simulators.isaac.scene import ROBOT_PATH, WisepackScene         # noqa: E402
+from simulators.isaac.adapters import build_adapter, RobotModelError  # noqa: E402
+from simulators.isaac.robot import PlacementSequence                 # noqa: E402
+from simulators.isaac.scene import WisepackScene                     # noqa: E402
 
 
 # --------------------------------------------------------------------------- #
@@ -258,11 +307,27 @@ class WisepackIsaacApp:
 
     def __init__(self, config: AppConfig) -> None:
         self.config = config
-        self.layout = DEFAULT_LAYOUT
+        #: THE SELECTED ROBOT, and the workcell it needs. The layout is derived
+        #: from the profile rather than shared: the xArm 7 works a bin 80 mm
+        #: nearer its base than the Panda does, because its far corner would
+        #: otherwise be outside its reach — and differential IK does not fail
+        #: loudly when a goal is unreachable, it converges short and the gripper
+        #: closes on air. The orchestrator derives the SAME layout from the same
+        #: profile, and scene_fingerprint hashes the robot id with it, so the
+        #: two ends cannot silently disagree about where anything is.
+        self.profile = ROBOT_PROFILE
+        self.layout = layout_for_robot(self.profile)
         self.scene = WisepackScene(self.layout, config.physics)
         self.bridge: IsaacRosBridge = None                  # type: ignore[assignment]
-        self.sequence: PandaSequence = None                 # type: ignore[assignment]
+        self.sequence: PlacementSequence = None             # type: ignore[assignment]
+        #: The IsaacRobotAdapter. Everything in this file speaks to the robot
+        #: through it and nothing here names an arm.
         self.robot = None
+        #: Set when the robot model fails validation. While it holds a reason
+        #: the backend is DEGRADED, approval is disabled upstream and nothing
+        #: may be executed — a partially loaded robot must never reach motion.
+        self.robot_error: str = ""
+        self.robot_error_detail: dict = {}
         self.run_id = ""
         self.run_active = False
         self.pending: IsaacCommand = None                   # type: ignore[assignment]
@@ -296,7 +361,19 @@ class WisepackIsaacApp:
     def build(self) -> None:
         cfg = self.config
         print(f"{LOG_APP} preset={cfg.preset} seed={cfg.seed} "
-              f"headless={cfg.headless} device={cfg.physics.device}")
+              f"robot={self.profile.robot_id} headless={cfg.headless} "
+              f"device={cfg.physics.device}")
+        # REFUSE AN INCOMPATIBLE PAIR BEFORE BUILDING ANYTHING. A robot that is
+        # not configured for this preset must not get as far as loading its
+        # asset and reporting READY: the operator would then be looking at a
+        # simulator that is up and an approval gate that never opens, with the
+        # reason nowhere on screen.
+        refusal = self.profile.preset_refusal(cfg.preset)
+        if refusal:
+            raise RobotModelError(
+                refusal, {"robot_id": self.profile.robot_id,
+                          "preset": cfg.preset,
+                          "supported_presets": list(self.profile.supported_presets)})
         self.scenario = build_scenario(cfg.preset, seed=cfg.seed)
         print(f"{LOG_APP} scenario {self.scenario.scenario_id}: "
               f"{len(self.scenario.items)} items")
@@ -319,19 +396,17 @@ class WisepackIsaacApp:
         container_ids = [f"CNT-{n:02d}" for n in (1, 2)]
         self.scene.build(self.scenario, container_ids)
 
-        print(f"{LOG_APP} loading the Franka Panda from the Isaac asset root")
-        self.robot = Franka(robot_path=ROBOT_PATH, create_robot=True)
-        # Mounted ON the table top, which is the datum every pose is measured
-        # against. Set before physics starts, so it is a placement rather than a
-        # teleport.
-        self.robot.set_world_poses(
-            positions=np.array([[0.0, 0.0, self.layout.table_top_z_m]]),
-            orientations=np.array([[1.0, 0.0, 0.0, 0.0]]))
+        # THE ROBOT, through its adapter. Mounted ON the table top, which is the
+        # datum every pose is measured against. Placed before physics starts, so
+        # it is a placement rather than a teleport.
+        self.robot = build_adapter(self.profile)
+        self.robot.load(base_position=[0.0, 0.0, self.layout.table_top_z_m],
+                        base_orientation=[1.0, 0.0, 0.0, 0.0])
 
         if STREAM.enabled:
             self._pin_spectator_camera()
 
-        self.sequence = PandaSequence(
+        self.sequence = PlacementSequence(
             scene=self.scene, layout=self.layout, motion=cfg.motion,
             physics_dt=cfg.physics.physics_dt,
             on_state=self._on_sequence_state, on_done=self._on_item_done)
@@ -344,7 +419,8 @@ class WisepackIsaacApp:
         self._start_capture()
 
         init_ros()
-        self.bridge = IsaacRosBridge(on_command=self._on_command)
+        self.bridge = IsaacRosBridge(on_command=self._on_command,
+                                     robot_id=self.profile.robot_id)
 
     # -- observational frame capture (README media) ----------------------- #
 
@@ -423,6 +499,69 @@ class WisepackIsaacApp:
             carb.log_warn(f"{LOG_APP} could not pin the stream camera to "
                           f"{SPECTATOR_CAMERA}: {exc!r}. The stream will show "
                           "the default viewport.")
+
+    # -- robot model failure ---------------------------------------------- #
+
+    def _robot_model_invalid(self, exc: RobotModelError) -> int:
+        """Report ROBOT_MODEL_INVALID, hold, and exit non-zero.
+
+        THE RUN DOES NOT START. Not "starts degraded", not "starts with the
+        gripper disabled" — a robot whose model did not validate has an unknown
+        relationship between what is commanded and what moves, and the only safe
+        thing to do with it is nothing. The orchestrator turns this state into a
+        DEGRADED backend with approval disabled; see wisepack_orchestration.
+        """
+        self.robot_error = str(exc)
+        self.robot_error_detail = dict(getattr(exc, "detail", {}) or {})
+        carb.log_error(f"{LOG_ROBOT} ROBOT_MODEL_INVALID: {exc}")
+        print(f"{LOG_ROBOT} ROBOT_MODEL_INVALID: {exc}", file=sys.stderr)
+        if self.bridge is not None:
+            self.bridge.publish(
+                IsaacState.ROBOT_MODEL_INVALID,
+                self.run_id or "isaac-standby",
+                message=str(exc),
+                detail={**self.robot_error_detail,
+                        "robot": self.robot_status(),
+                        "approval": "disabled — the robot model did not validate"})
+            # Spin so the report reaches the wire before the process exits. On a
+            # RELIABLE topic with no matched reader yet, closing immediately
+            # after publishing discards it and the orchestrator waits out its
+            # whole timeout for a simulator that already said why it stopped.
+            for _ in range(120):
+                simulation_app.update()
+                self.bridge.spin_once()
+        return 5
+
+    def robot_status(self) -> dict:
+        """Everything Diagnostics shows about the selected robot.
+
+        MEASURED where it can be. The adapter reports the joints and links it
+        DISCOVERED, not the ones the profile configured, because a diagnostic
+        that echoes its own configuration cannot detect the case it exists for.
+        """
+        base = {
+            "robot_id": self.profile.robot_id,
+            "display_name": self.profile.display_name,
+            "manufacturer": self.profile.manufacturer,
+            "model": self.profile.model,
+            "dof": self.profile.dof,
+            "implementation_status": self.profile.implementation_status,
+            "robot_profile_revision": self.profile.revision,
+            "registry_revision": ROBOT_REGISTRY.revision,
+            "configured_robots": [p.robot_id for p in ROBOT_REGISTRY.ordered],
+            "selected_robot": self.profile.robot_id,
+            "kinematics": self.profile.kinematics,
+            "motion_planning": self.profile.is_motion_planner,
+            "last_robot_error": self.robot_error,
+        }
+        if self.robot is not None:
+            base.update(self.robot.get_diagnostics())
+            base["last_robot_error"] = (self.robot_error
+                                        or base.get("last_robot_error", ""))
+        base["active_robot"] = (self.profile.robot_id
+                                if base.get("model_valid") else "")
+        base["scene_ready"] = self._scene_revision is not None
+        return base
 
     def visualization(self) -> dict:
         """The backend-neutral visualization descriptor for this run.
@@ -517,6 +656,14 @@ class WisepackIsaacApp:
         if command.seed and int(command.seed) != int(self.config.seed):
             print(f"{LOG_APP} WARNING: WISEPACK planned seed {command.seed} but "
                   f"this simulator built seed {self.config.seed}.")
+        if command.robot_id and command.robot_id != self.profile.robot_id:
+            # Reported, and the scene gate refuses independently — see
+            # `_scene_matches` and `_pre_pick_refusal`. A run that selected a
+            # different arm is not this simulator's run.
+            print(f"{LOG_APP} WARNING: WISEPACK selected robot "
+                  f"{command.robot_id!r} but this simulator is running "
+                  f"{self.profile.robot_id!r}. No pick will be accepted; "
+                  f"restart Isaac with --robot {command.robot_id}.")
 
         self.bridge.gate.adopt(command.run_id)
         self.run_id = command.run_id
@@ -535,6 +682,13 @@ class WisepackIsaacApp:
             detail={
                 "preset": self.config.preset,
                 "seed": self.config.seed,
+                # WHICH ARM is standing in the cell, and under which
+                # configuration. Carried on READY as well as on SCENE_READY so
+                # the dashboard can name the active robot before any scene has
+                # been acknowledged.
+                "robot": self.robot_status(),
+                "robot_id": self.profile.robot_id,
+                "robot_profile_revision": self.profile.revision,
                 "items": sorted(self.scene.items),
                 "containers": {k: v.to_dict()
                                for k, v in self.scene.containers.items()},
@@ -657,9 +811,10 @@ class WisepackIsaacApp:
             self.bridge.gate.adopt(command.run_id)
 
             # 3. Home the robot with an open gripper, and let it get there
-            #    before the world changes underneath it.
-            self.robot.open_gripper()
-            self.robot.reset_to_default_pose()
+            #    before the world changes underneath it. reset() drops anything
+            #    held BEFORE it moves, so a reset cannot drag an item across the
+            #    scene or leave a weld pointing at a body about to be deleted.
+            self.robot.reset()
             for _ in range(60):
                 simulation_app.update()
 
@@ -701,8 +856,7 @@ class WisepackIsaacApp:
             #    the drives would otherwise drift there over the first seconds
             #    of the new run — the same undefined starting configuration that
             #    startup already guards against.
-            self.robot.open_gripper()
-            self.robot.reset_to_default_pose()
+            self.robot.reset()
 
             # 8. Zero velocities and let contacts settle before anything is
             #    reported ready.
@@ -763,7 +917,14 @@ class WisepackIsaacApp:
             scenario_revision=command.scenario_revision,
             preset=self.config.preset,
             seed=int(self.config.seed),
-            scene_fingerprint=scene_fingerprint(self.scenario, self.layout),
+            # WHICH ROBOT, and configured HOW. An acknowledgement from a Panda
+            # cannot authorise an xArm run: the bin sits elsewhere, the reach
+            # envelope is different, and the tool frame is a different distance
+            # from the fingertips. The orchestrator refuses on either mismatch.
+            robot_id=self.profile.robot_id,
+            robot_profile_revision=self.profile.revision,
+            scene_fingerprint=scene_fingerprint(self.scenario, self.layout,
+                                                self.profile.robot_id),
             object_ids=sorted(self.scene.items),
             object_count=len(self.scene.items),
             robot_home_verified=self._robot_is_home(),
@@ -772,14 +933,13 @@ class WisepackIsaacApp:
             verified_without_rebuild=verified_without_rebuild)
 
     def _robot_is_home(self) -> bool:
-        """MEASURED, not assumed: read the joints and compare to the ready pose."""
-        import numpy as _np                              # noqa: PLC0415
-        try:
-            dof = self.robot.get_dof_positions().numpy()[0]
-        except Exception:                                # noqa: BLE001
-            return False
-        home = _np.array([0.012, -0.568, 0.0, -2.811, 0.0, 3.037, 0.741])
-        return bool(_np.max(_np.abs(dof[:7] - home)) < 0.35)
+        """MEASURED, not assumed: the adapter reads the joints and compares.
+
+        Against THIS robot's home and THIS robot's tolerance, both from its
+        profile. The Panda's ready pose written out as a literal here was one of
+        the two copies of that vector this refactor removed.
+        """
+        return bool(self.robot is not None and self.robot.is_home())
 
     def _scene_matches(self, command: IsaacCommand) -> str:
         """"" when the CURRENT scene already serves this request, else why not."""
@@ -793,9 +953,13 @@ class WisepackIsaacApp:
             return f"built for seed {self.config.seed}, asked for {seed}"
         if self.scenario is None:
             return "no scenario has been built"
+        if command.robot_id and command.robot_id != self.profile.robot_id:
+            return (f"this simulator is running {self.profile.robot_id}, but "
+                    f"the run selected {command.robot_id}")
         wanted = build_scenario(preset, seed=seed)
-        if scene_fingerprint(wanted, self.layout) != scene_fingerprint(
-                self.scenario, self.layout):
+        if scene_fingerprint(wanted, self.layout, self.profile.robot_id) \
+                != scene_fingerprint(self.scenario, self.layout,
+                                     self.profile.robot_id):
             return "the built scene does not match the requested scenario"
         if len(self.scene.items) != len(wanted.items):
             return (f"{len(self.scene.items)} object(s) in the scene, "
@@ -868,10 +1032,14 @@ class WisepackIsaacApp:
         """
         import numpy as _np                              # noqa: PLC0415
 
-        dof = self.robot.get_dof_positions().numpy()[0]
+        dof = self.robot.get_joint_state()
         if not _np.all(_np.isfinite(dof)):
             raise RuntimeError(
                 "the arm reported non-finite joint positions after the rebuild")
+        if not self.robot.model_valid:
+            raise RuntimeError(
+                f"the {self.profile.display_name} model is not valid: "
+                f"{self.robot_error or 'see the robot diagnostics'}")
 
         unreadable = [item for item in self.scene.items
                       if self.scene.item_world_pose(item) is None]
@@ -880,10 +1048,9 @@ class WisepackIsaacApp:
                 f"{len(unreadable)} item(s) have no readable pose after the "
                 f"rebuild: {', '.join(sorted(unreadable))}")
 
-        if self.sequence.grasp.is_attached:
+        if self.sequence.holding:
             raise RuntimeError(
-                f"the grasp joint for {self.sequence.grasp.attached_item} "
-                "survived the reset")
+                f"the grasp joint for {self.sequence.holding} survived the reset")
 
     def _pre_pick_refusal(self, command: IsaacCommand) -> str:
         """Physical sanity checks before ANY motion. "" when it is safe to pick.
@@ -894,6 +1061,17 @@ class WisepackIsaacApp:
         which is how a mis-synchronised scene becomes uncontrolled motion.
         """
         item = command.item_id or ""
+        # THE COMMAND MUST BE ADDRESSED TO THIS ROBOT. An empty robot_id is an
+        # older orchestrator saying nothing and is tolerated; a DIFFERENT one is
+        # a command written against another arm's workcell — the bin is not
+        # where that plan thinks it is — and executing it would be uncontrolled
+        # motion dressed up as a pick.
+        if command.robot_id and command.robot_id != self.profile.robot_id:
+            return (f"the command is for robot {command.robot_id} but this "
+                    f"simulator is running {self.profile.robot_id}")
+        if self.robot is None or not self.robot.model_valid:
+            return (f"the {self.profile.display_name} model did not validate: "
+                    f"{self.robot_error or 'see the robot diagnostics'}")
         if command.scenario_revision and self._scene_revision is not None \
                 and command.scenario_revision != self._scene_revision:
             return (f"command is for scenario revision "
@@ -901,9 +1079,9 @@ class WisepackIsaacApp:
                     f"{self._scene_revision}")
         if not self.scene.has_item(item):
             return f"{item} does not exist in the current scene"
-        if self.sequence.grasp.is_attached:
-            return (f"a grasp joint for {self.sequence.grasp.attached_item} is "
-                    "still attached — the previous item was never released")
+        if self.sequence.holding:
+            return (f"a grasp joint for {self.sequence.holding} is still "
+                    "attached — the previous item was never released")
         pose = self.scene.item_world_pose(item)
         if pose is None:
             return f"{item} has no readable pose"
@@ -982,6 +1160,7 @@ class WisepackIsaacApp:
         self._smoke_queue = [IsaacCommand(
             command=IsaacCommandType.RUN_BEGIN, run_id=run_id,
             preset=self.config.preset, seed=self.config.seed,
+            robot_id=self.profile.robot_id,
             plan_id=plan.plan_id, total_items=len(self.scenario.items))]
 
         for index, placement in enumerate(plan.ordered_placements[:self.smoke_items]):
@@ -998,9 +1177,11 @@ class WisepackIsaacApp:
                 container_inner_mm=container.inner_size.to_dict(),
                 plan_id=plan.plan_id, preset=self.config.preset,
                 seed=self.config.seed,
+                robot_id=self.profile.robot_id,
                 scenario_revision=int(self._scene_revision or 0)))
         self._smoke_queue.append(IsaacCommand(
-            command=IsaacCommandType.RUN_END, run_id=run_id))
+            command=IsaacCommandType.RUN_END, run_id=run_id,
+            robot_id=self.profile.robot_id))
         print(f"{LOG_APP} smoke queue: {len(self._smoke_queue)} commands")
 
     def _pump_smoke_queue(self) -> None:
@@ -1088,7 +1269,8 @@ class WisepackIsaacApp:
         new_seed = int(getattr(ARGS, "reset_seed", 1234))
         self._reset_scene(IsaacCommand(
             command=IsaacCommandType.RESET_SCENE, run_id="reset-validate-2",
-            preset=first_preset, seed=new_seed, scenario_revision=2))
+            preset=first_preset, seed=new_seed, scenario_revision=2,
+            robot_id=self.profile.robot_id))
         pump(30)
 
         if self._scene_revision != 2:
@@ -1115,12 +1297,15 @@ class WisepackIsaacApp:
         print(f"RESET-VALIDATE RESPAWNED {respawned}/{len(expected)} "
               f"at-source={at_source}/{len(expected)}")
 
-        dof = self.robot.get_dof_positions().numpy()[0]
-        home = _np.array([0.012, -0.568, 0.0, -2.811, 0.0, 3.037, 0.741])
-        home_err = float(_np.max(_np.abs(dof[:7] - home)))
-        print(f"RESET-VALIDATE ROBOT-HOME max_joint_error={home_err:.3f} rad")
+        # Against THIS robot's home, from its profile — not a Panda vector.
+        dof = self.robot.get_joint_state()
+        home = _np.asarray(self.profile.home_joint_positions, dtype=float)
+        home_err = float(_np.max(_np.abs(dof[:len(home)] - home)))
+        print(f"RESET-VALIDATE ROBOT-HOME robot={self.profile.robot_id} "
+              f"max_joint_error={home_err:.3f} rad "
+              f"tolerance={self.profile.home_tolerance_rad:.3f}")
         print(f"RESET-VALIDATE GRASP-JOINT "
-              f"{'attached' if self.sequence.grasp.is_attached else 'released'}")
+              f"{'attached' if self.sequence.holding else 'released'}")
 
         # --- phase 4: first item of the NEW run ----------------------------
         self.items_completed = self.items_failed = 0
@@ -1133,8 +1318,9 @@ class WisepackIsaacApp:
               f"failed={self.items_failed}")
 
         ok = (not still_in_container and respawned == len(expected)
-              and at_source == len(expected) and home_err < 0.35
-              and not self.sequence.grasp.is_attached
+              and at_source == len(expected)
+              and home_err < self.profile.home_tolerance_rad
+              and not self.sequence.holding
               and self.items_completed == 1)
         print(f"RESET-VALIDATE RESULT {'PASS' if ok else 'FAIL'}")
         return 0 if ok else 2
@@ -1184,10 +1370,27 @@ class WisepackIsaacApp:
         app_utils.play()
         simulation_app.update()
 
+        # VALIDATE THE ROBOT BEFORE ANYTHING IS COMMANDED. The physics views do
+        # not exist until play(), so this is the earliest point at which the
+        # loaded articulation can be compared against the profile that claims to
+        # describe it — and it is before the first joint target.
+        #
+        # Isaac does not fail loudly when a robot configuration is wrong for an
+        # asset. A joint name that is not in the articulation resolves to an
+        # empty index list and the command does nothing; a wrong end-effector
+        # link yields a Jacobian for some other body and the arm converges
+        # confidently to the wrong pose. Both read as physics problems. So a
+        # mismatch is terminal here rather than discovered mid-run.
+        try:
+            self.robot.initialise()
+            self.robot.validate_model(preset=self.config.preset)
+        except RobotModelError as exc:
+            return self._robot_model_invalid(exc)
+
         # PUT THE ARM IN A KNOWN POSE AND HOLD IT THERE. This is not cosmetic.
         #
-        # `Franka.__init__` RECORDS a default state but never commands it, so at
-        # play() the joint drives hold whatever the USD authored, and the arm
+        # Referencing an asset RECORDS a default state but never commands it, so
+        # at play() the joint drives hold whatever the USD authored, and the arm
         # drifts to that configuration over the following seconds. The first
         # EXECUTE_ITEM may arrive one second later (the self-driving smoke test)
         # or a minute later (a real run, waiting for an operator to approve) —
@@ -1197,10 +1400,10 @@ class WisepackIsaacApp:
         # comfortably when the command arrived immediately, and timed out at
         # both 360 and 900 frames when it arrived after the approval gate. That
         # reads as an unreachable target and is really an undefined starting
-        # configuration. Commanding the canonical Panda ready pose once, before
+        # configuration. Commanding the profile's home pose once, before
         # anything can be dispatched, makes the sequence independent of when the
         # operator decides.
-        self.robot.reset_to_default_pose()
+        self.robot.command_home()
 
         # Then let physics settle: the spawned items resolve small penetrations
         # with the table over the first frames, and grasping during that is how
@@ -1303,7 +1506,8 @@ def _missing_item_outcome(command: IsaacCommand):
 def main() -> int:
     motion = MotionConfig.from_env()
     config = AppConfig(
-        preset=ARGS.preset, seed=ARGS.seed, headless=bool(ARGS.headless),
+        preset=ARGS.preset, seed=ARGS.seed, robot_id=ROBOT_PROFILE.robot_id,
+        headless=bool(ARGS.headless),
         exit_on_complete=bool(ARGS.exit_on_complete or ARGS.self_test
                               or ARGS.smoke_test or ARGS.reset_test),
         max_runtime_s=float(ARGS.max_runtime),
@@ -1316,6 +1520,12 @@ def main() -> int:
     try:
         app.build()
         return app.run()
+    except RobotModelError as exc:
+        # A configuration fault, not a crash. Reported as ROBOT_MODEL_INVALID
+        # with the reason, so the orchestrator degrades and disables approval
+        # rather than waiting out a timeout for a simulator that already knows
+        # it cannot run.
+        return app._robot_model_invalid(exc)
     except KeyboardInterrupt:
         print(f"{LOG_APP} interrupted")
         return 130

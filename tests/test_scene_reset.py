@@ -227,8 +227,12 @@ def test_the_reset_clears_everything_that_could_carry_over():
     body = src[src.index("def _reset_scene"):src.index("def _pre_pick_refusal")]
     for step, why in [
         ('self.sequence.abort(', "must stop active robot motion"),
-        ("open_gripper()", "must release the gripper"),
-        ("reset_to_default_pose()", "must return the Panda to a safe home pose"),
+        # ROBOT-NEUTRAL. `IsaacRobotAdapter.reset()` is the contract for "drop
+        # whatever is held, open the gripper, go home", in that order, for
+        # WHICHEVER robot is selected. The two calls this replaced were
+        # Franka-helper method names, and asserting on those would have made
+        # this test pass only for the Panda.
+        ("self.robot.reset()", "must release the gripper and home the arm"),
         ("gate.adopt(", "must cancel the previous run so late feedback is rejected"),
         ("reset_items(", "must remove the previous cylinders"),
         ("settle_items(", "must clear velocities and let contacts settle"),
@@ -332,9 +336,12 @@ def test_the_usability_check_reads_the_arm_and_every_item():
     body = src[start:src.index("\n    def ", start + 10)]
     # Reading the joints is the only thing that proves the articulation view
     # survived; asking the wrapper whether it is valid does not.
-    assert "get_dof_positions()" in body
+    assert "get_joint_state()" in body
     assert "item_world_pose(" in body
-    assert "grasp.is_attached" in body
+    assert "self.sequence.holding" in body
+    # ...and that the SELECTED robot's model validated. A rebuilt scene in front
+    # of a robot whose joints do not match its profile is not usable either.
+    assert "model_valid" in body
     assert body.count("raise") >= 3
 
 
@@ -391,8 +398,12 @@ def test_the_reason_names_the_actual_limit():
 
 def test_the_dashboard_marks_incompatible_presets_only_in_isaac_mode():
     app = _read(os.path.join(REPO, "web", "app.py"))
-    assert '"preset_compatibility": (physical_presets()' in app
+    # Now robot-aware: the compatibility map is computed for the DRAFT robot, so
+    # a preset the selected arm is not configured for is marked with that reason
+    # rather than only the backend-level bounds.
+    assert '"preset_compatibility": (_preset_compatibility(draft_robot_id)' in app
     assert 'if snap.execution_backend == "isaac" else {}' in app
+    assert "return physical_presets(profile)" in app
 
 
 def test_the_frontend_disables_them_with_the_reason_rather_than_hiding_them():

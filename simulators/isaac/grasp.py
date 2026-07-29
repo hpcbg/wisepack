@@ -3,8 +3,11 @@
 BE CLEAR ABOUT WHAT THIS IS
 ---------------------------
 When the gripper has reached the item and closed, this module welds the item to
-``panda_hand`` with a USD fixed joint. The joint is removed the instant the
-gripper opens to release it.
+the robot's END-EFFECTOR LINK with a USD fixed joint. The joint is removed the
+instant the gripper opens to release it. WHICH prim that is — ``panda_hand``,
+``xarm_gripper_base_link``, something else — is never decided here: the adapter
+passes the resolved path in, because a grasp welder that knew one robot's link
+names would be one more thing to edit per robot.
 
 So the CARRY is idealised: the item cannot slip, rotate in the fingers, or be
 dropped by a marginal grasp, because for the duration of the carry it is rigidly
@@ -31,7 +34,7 @@ real friction grasp is the first item on the second-iteration list.
 
 WHY `excludeFromArticulation` MATTERS
 -------------------------------------
-Without it, PhysX tries to fold the item into the Panda's articulation, which
+Without it, PhysX tries to fold the item into the ARM's articulation, which
 means changing an articulation's topology while it is simulating. Setting the
 attribute makes this a maximal-coordinate joint between two bodies instead —
 created and destroyed at runtime without disturbing the arm.
@@ -121,14 +124,14 @@ class GraspJoint:
                                                 float(rel_orientation[3]))))
         joint.CreateLocalPos1Attr().Set(Gf.Vec3f(0.0, 0.0, 0.0))
         joint.CreateLocalRot1Attr().Set(Gf.Quatf(1.0, Gf.Vec3f(0.0, 0.0, 0.0)))
-        # See the module docstring: this keeps the item OUT of the Panda's
+        # See the module docstring: this keeps the item OUT of the arm's
         # articulation, so the weld does not re-topologise a simulating arm.
         joint.CreateExcludeFromArticulationAttr().Set(True)
 
         self.attached_item = item_id
-        print(f"{LOG_ROBOT} attached {item_id} to panda_hand "
-              f"(secure-grasp approximation; offset "
-              f"{tuple(round(float(v), 4) for v in rel_position)} m)")
+        print(f"{LOG_ROBOT} attached {item_id} to "
+              f"{hand_path.rsplit('/', 1)[-1]} (secure-grasp approximation; "
+              f"offset {tuple(round(float(v), 4) for v in rel_position)} m)")
 
     def detach(self) -> None:
         """Remove the weld. Idempotent — releasing twice is not an error."""

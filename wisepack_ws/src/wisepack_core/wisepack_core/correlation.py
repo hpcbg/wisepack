@@ -51,8 +51,14 @@ SCHEMA_VERSION = "wisepack-correlation/1.0"
 
 #: Facets compared when deciding whether a projection describes the active run.
 #: Order matters only for the message a human reads.
+#:
+#: ``robot_id`` is here because a projection is a claim about a physical run and
+#: WHICH ARM performed it is part of that claim. Orion-LD holds current state:
+#: an inventory or KPI attribute written by a Panda run is still sitting there
+#: when an xArm run starts, and without this facet it reads as this run's.
 CORRELATION_FACETS = ("run_id", "scenario_id", "scenario_revision",
-                      "plan_id", "plan_revision", "approval_revision")
+                      "plan_id", "plan_revision", "approval_revision",
+                      "robot_id")
 
 
 def utc_now_iso() -> str:
@@ -77,6 +83,9 @@ class RunCorrelation:
     plan_id: Optional[str] = None
     plan_revision: Optional[int] = None
     approval_revision: Optional[int] = None
+    #: Which robot executed. ``None`` on a simulated run, which makes no claim
+    #: about a robot and is therefore not compared — see ``mismatches``.
+    robot_id: Optional[str] = None
     #: Monotonic per publisher. Used only to reject out-of-order arrival.
     sequence: int = 0
     published_at: str = field(default_factory=utc_now_iso)
@@ -91,6 +100,7 @@ class RunCorrelation:
             "plan_id": self.plan_id,
             "plan_revision": self.plan_revision,
             "approval_revision": self.approval_revision,
+            "robot_id": self.robot_id,
             "sequence": int(self.sequence),
             "published_at": self.published_at,
         }
@@ -126,6 +136,7 @@ class RunCorrelation:
             plan_id=doc.get("plan_id") or None,
             plan_revision=_int("plan_revision"),
             approval_revision=_int("approval_revision"),
+            robot_id=doc.get("robot_id") or None,
             sequence=_int("sequence") or 0,
             published_at=str(doc.get("published_at", "")),
         )

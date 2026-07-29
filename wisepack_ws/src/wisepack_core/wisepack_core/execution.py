@@ -58,8 +58,9 @@ class ExecutionBackend(str, Enum):
     #: a pick outcome is a coin flip and every KPI derived from it is labelled
     #: ``simulated``. This is the default and its behaviour is unchanged.
     SIMULATED = "simulated"
-    #: NVIDIA Isaac Sim on the host: a Franka Panda, PhysX contacts, and a real
-    #: gravity-driven release into a physical container.
+    #: NVIDIA Isaac Sim on the host: a SELECTED manipulator, PhysX contacts, and
+    #: a real gravity-driven release into a physical container. Which arm is a
+    #: run-time choice — see wisepack_core.robots — so nothing here names one.
     ISAAC = "isaac"
 
     @property
@@ -72,35 +73,58 @@ class ExecutionBackend(str, Enum):
         return {"simulated": "SIMULATED EXECUTION",
                 "isaac": "ISAAC SIM / PHYSICS"}[self.value]
 
+    def badge(self, robot_display_name: str = "") -> str:
+        """The execution badge, naming the robot when one is known.
+
+            execution: ISAAC SIM / xARM 7
+            execution: ISAAC SIM / PANDA
+
+        The robot is appended rather than folded into ``label`` so the badge
+        stays one short line and the simulated backend is unaffected.
+        """
+        if self is not ExecutionBackend.ISAAC or not robot_display_name:
+            return self.label
+        return f"ISAAC SIM / {robot_display_name.upper()}"
+
     @property
     def detail(self) -> str:
         return {
             "simulated": ("pick and place outcomes are produced by a seeded "
                           "model — no kinematics, no contacts, no physics"),
-            "isaac": ("placements are executed by a Franka Emika Panda in NVIDIA "
-                      "Isaac Sim; the release is physical and PhysX settles the "
-                      "item under gravity and contact"),
+            "isaac": ("placements are executed by the selected manipulator in "
+                      "NVIDIA Isaac Sim; the release is physical and PhysX "
+                      "settles the item under gravity and contact"),
         }[self.value]
 
 
 #: Item-count ceiling a bench-scale physical cell can reasonably run. Above this
 #: a "run" is twenty minutes of watching an arm, and the presets that large are
-#: sized for an industrial container the Panda cannot reach across anyway.
+#: sized for an industrial container no bench-scale arm can reach across anyway.
 PHYSICAL_MAX_ITEMS = 8
 
 #: Gripper opening, millimetres. An item wider than this cannot be grasped at
 #: all, so offering such a preset would be offering a run that cannot happen.
+#: This is the FLOOR across the supported arms — the Panda opens to 80 mm and
+#: the xArm gripper to 80 mm — and it is a backend-level bound. A robot with a
+#: narrower hand additionally restricts itself through `supported_presets`.
 PHYSICAL_MAX_DIAMETER_MM = 78
 
 
-def preset_physical_compatibility(preset: str) -> tuple:
+def preset_physical_compatibility(preset: str, profile=None) -> tuple:
     """(compatible, reason) for running ``preset`` on a physical backend.
 
     The dashboard must not offer the operator a scenario the physical adapter
     cannot instantiate and reach. `mixed_pipes_dense` exists in the software
     generator and is a perfectly good PACKING benchmark — it is simply not
-    something a bench-scale Panda can execute, and letting it be selected in an
+    something a bench-scale arm can execute, and letting it be selected in an
     Isaac run produces a plan whose first pick is impossible.
+
+    ``profile`` is an optional ``wisepack_core.robots.RobotProfile``. When one
+    is given, the robot's own ``supported_presets`` is applied on top of the
+    backend-level bounds, so an incompatible robot/preset pair is refused with a
+    reason naming BOTH — "isaac_cylinders_smoke is fine but this arm is not
+    configured for it" and "this arm is fine but the preset is too big" are
+    different problems and the operator has to be able to tell them apart.
 
     Import-light on purpose: the generator is imported lazily so this stays
     usable from the dashboard without pulling the whole core in at module load.
@@ -119,13 +143,18 @@ def preset_physical_compatibility(preset: str) -> tuple:
     if widest > PHYSICAL_MAX_DIAMETER_MM:
         return False, (f"items up to {widest} mm across exceed the "
                        f"{PHYSICAL_MAX_DIAMETER_MM} mm gripper opening")
+    if profile is not None:
+        refusal = profile.preset_refusal(preset)
+        if refusal:
+            return False, refusal
     return True, ""
 
 
-def physical_presets() -> dict:
+def physical_presets(profile=None) -> dict:
     """{preset: reason} for every known preset; reason is "" when compatible."""
     from .generator import PRESETS                                # noqa: PLC0415
-    return {name: preset_physical_compatibility(name)[1] for name in sorted(PRESETS)}
+    return {name: preset_physical_compatibility(name, profile)[1]
+            for name in sorted(PRESETS)}
 
 
 def parse_backend(value: Optional[str]) -> ExecutionBackend:
@@ -171,6 +200,12 @@ ISAAC_STATE_STAGE: Dict[IsaacState, Optional[Stage]] = {
     IsaacState.RESETTING: None,
     IsaacState.SCENE_READY: None,
     IsaacState.RESET_FAILED: None,
+
+    # The robot model did not validate. This IS a stage change, unlike the rest
+    # of the simulator lifecycle: a backend that cannot stand up its own arm
+    # cannot execute anything, and showing the workflow parked at whatever stage
+    # it had reached would read as "still working".
+    IsaacState.ROBOT_MODEL_INVALID: Stage.DEGRADED,
 
     IsaacState.MOVING_TO_PICK: Stage.PICK_ITEM,
     IsaacState.GRASPING: Stage.PICK_ITEM,

@@ -336,6 +336,13 @@
       <h3>Scenario</h3>
       <div class="ctl">
         <label class="f">Preset<select id="s-preset"></select><div class="note" id="s-lock-note" style="margin-top:4px"></div></label>
+        <!-- ROBOT. The options are EMPTY here on purpose and are filled from
+             GET /api/config/robots. A hard-coded <option> list would be a second
+             robot list that agrees with config/isaac_robots.yaml only until one
+             of them is edited, and the one the operator sees would be the stale
+             one. tests/test_isaac_robots.py fails the build if a robot name
+             appears in this file or in the JavaScript. -->
+        <label class="f" id="s-robot-field">Robot<select id="s-robot"></select><div class="note" id="s-robot-note" style="margin-top:4px"></div></label>
         <label class="f">Seed<input id="s-seed" type="number" min="0" step="1" value="42"/></label>
         <label class="f">Strategy<select id="s-strategy"></select></label>
         <label class="f">Item count<input id="s-count" type="number" min="1" max="200" placeholder="preset"/></label>
@@ -656,7 +663,15 @@ function renderHeader(s) {
   if (xb) {
     xb.textContent = "execution: " + (ex.known ? (ex.label || "—") : "—");
     xb.className = "badge " + (ex.physical ? "phys" : ex.known ? "sim" : "");
-    xb.title = ex.known ? (ex.detail || "") : "waiting for the orchestrator";
+    // The badge itself stays one short line — "execution: ISAAC SIM / XARM 7" —
+    // and the arm's full identity goes in the tooltip rather than crowding the
+    // header.
+    const rb = ex.robot;
+    xb.title = ex.known
+      ? [ex.detail || "",
+         rb ? `robot: ${rb.display_name} (${rb.manufacturer} ${rb.model}, ` +
+              `${rb.dof} DOF, ${rb.status})` : ""].filter(Boolean).join(" — ")
+      : "waiting for the orchestrator";
   }
 
   const f = $("#b-fiware");
@@ -1211,6 +1226,10 @@ function readSettings() {
     container_spec: $("#s-container").value || null,
     dynamic_events_enabled: $("#s-dyn").checked,
     pick_failure_probability: parseFloat($("#s-fail").value || "0.08"),
+    // The DRAFT robot becomes the ACTIVE robot only here, on a reset. No other
+    // path carries it, which is what makes "changing the dropdown never touches
+    // a running scene" true rather than merely intended.
+    robot_id: ($("#s-robot") && $("#s-robot").value) || null,
   };
 }
 // THE DRAFT. The scenario controls edit a draft for the NEXT run; they never
@@ -1238,6 +1257,7 @@ function currentDraft() {
     preset: $("#s-preset") ? $("#s-preset").value : null,
     seed: parseInt(($("#s-seed") || {}).value || "42", 10),
     strategy: $("#s-strategy") ? $("#s-strategy").value : null,
+    robot_id: ($("#s-robot") && $("#s-robot").value) || null,
   };
 }
 
@@ -1260,10 +1280,15 @@ async function onDraftChanged() {
 // Shows what is RUNNING versus what the controls would generate. Never disables
 // anything: an active run is a reason to CONFIRM, not a reason to lock the
 // operator out of the only control that could start a different one.
+function genLabelFor(s) {
+  return s.run_active ? "Reset run & generate" : "Generate & plan";
+}
+
 function syncScenarioControls(s) {
   const p = $("#s-preset");
   if (!p) return;
 
+  const rb = $("#s-robot");
   if (!DRAFT_TOUCHED) {
     const stored = loadDraft();
     const seed = stored && stored.preset
@@ -1272,15 +1297,81 @@ function syncScenarioControls(s) {
     if (seed && p.value !== seed && [...p.options].some(o => o.value === seed)) {
       p.value = seed;
     }
+    // The robot draft follows exactly the same rule as the preset: seeded once
+    // from the stored draft, then the active run, then the configured default —
+    // and NEVER re-applied afterwards. A selector that silently reverted would
+    // be worse than a broken one: it would look as though the operator had
+    // chosen the arm that then does not move.
+    const wantRobot = (stored && stored.robot_id)
+      || (s.settings && s.settings.robot_id)
+      || s.active_robot_id || s.default_robot;
+    if (rb && wantRobot && rb.value !== wantRobot
+        && [...rb.options].some(o => o.value === wantRobot && !o.disabled)) {
+      rb.value = wantRobot;
+    }
     if (stored) DRAFT_TOUCHED = true;      // a stored draft is the operator's
     const sd = $("#s-seed");
     if (sd && s.settings && s.settings.seed !== undefined
         && sd !== document.activeElement) sd.value = s.settings.seed;
   }
 
+  // ROBOT SELECTION IS ONLY MEANINGFUL FOR A PHYSICAL BACKEND. In the logical
+  // modes the field becomes a fixed statement of the execution source rather
+  // than a dropdown of arms, neither of which would move. Offering a
+  // meaningless choice is worse than offering none.
+  const rfield = $("#s-robot-field");
+  const rnote = $("#s-robot-note");
+  if (rfield) {
+    if (s.robot_selector) {
+      rfield.style.display = "";
+      if (rb) rb.disabled = false;
+    } else {
+      rfield.style.display = "";
+      if (rb) rb.disabled = true;
+      rfield.firstChild.textContent = "Execution source";
+      if (rnote) {
+        rnote.textContent = "Logical workflow simulator — " +
+          (s.robot_selector_reason || "no robot is involved in this run");
+      }
+    }
+  }
+  if (s.robot_selector && rnote) {
+    const bits = [];
+    const active = s.active_robot;
+    const draftId = rb ? rb.value : null;
+    const draft = (s.robots || []).find(r => r.id === draftId);
+    if (active && active.display_name) {
+      bits.push(`Running now: ${active.display_name}`);
+      if (draftId && active.id && draftId !== active.id && draft) {
+        // The one sentence that says a reset is required. Shown BEFORE the
+        // button is pressed, not after.
+        bits.push(`Next: ${draft.display_name} — takes effect on ` +
+                  `“${genLabelFor(s)}”`);
+      }
+    } else if (draft) {
+      bits.push(`Next: ${draft.display_name}`);
+    }
+    if (draft) {
+      bits.push(`${draft.manufacturer} ${draft.model} · ${draft.dof} DOF · ` +
+                `${draft.status} · ${draft.kinematics}` +
+                (draft.motion_planning ? "" : " (no motion planning)"));
+      const presets = draft.compatible_presets || [];
+      if (presets.length) bits.push(`presets: ${presets.join(", ")}`);
+    }
+    // A robot/preset pair the backend will refuse, said here rather than
+    // discovered when Approve stays greyed with no explanation.
+    if (s.robot_preset_conflict) bits.push("⚠ " + s.robot_preset_conflict);
+    if (s.robots_error) bits.push("robot registry error: " + s.robots_error);
+    rnote.textContent = bits.join(" · ");
+  }
+
   // Controls stay ENABLED. Only the wording changes.
   for (const sel of ["#s-preset", "#s-seed", "#s-strategy", "#s-container",
                      "#s-items", "#s-len", "#s-dia"]) {
+    // NOTE: #s-robot is deliberately NOT in this list. Its enablement is
+    // decided above by whether a robot choice is meaningful at all in this
+    // mode, and re-enabling it here would put a live dropdown of arms in front
+    // of an operator running the logical simulator.
     const node = $(sel);
     if (node) { node.disabled = false; node.title = ""; }
   }
@@ -1299,10 +1390,13 @@ function syncScenarioControls(s) {
 
   const active = (s.active_scenario || {});
   const draftPreset = p.value;
+  // Same label the button carries. One source for both, because they drifted
+  // apart before — the help said "Generate & plan" while the button said
+  // "Reset run & generate".
   // ONE label, used by the button and quoted verbatim by the help text. They
   // drifted apart before — the help said “Generate & plan” while the button
   // said “Reset run & generate” — so there is now a single source for both.
-  const genLabel = s.run_active ? "Reset run & generate" : "Generate & plan";
+  const genLabel = genLabelFor(s);
   const gen = $("#c-reset");
   if (gen) gen.textContent = genLabel;
 
@@ -1323,7 +1417,44 @@ function syncScenarioControls(s) {
   }
 }
 
+// THE ROBOT SELECTOR, built entirely from the backend catalogue.
+//
+// Rebuilt whenever the catalogue changes (a registry edit, a first load), and
+// otherwise left alone so a poll cannot clobber a selection mid-edit. The
+// operator's current value survives a rebuild if the robot is still offered.
+let ROBOT_OPTIONS_KEY = "";
+
+function fillRobots(s) {
+  const sel = $("#s-robot");
+  if (!sel) return;
+  const robots = s.robots || [];
+  const key = JSON.stringify(robots.map(r => [r.id, r.enabled, r.status]));
+  if (key !== ROBOT_OPTIONS_KEY) {
+    const keep = sel.value;
+    ROBOT_OPTIONS_KEY = key;
+    sel.innerHTML = "";
+    for (const r of robots) {
+      // Disabled robots are SHOWN and greyed, not hidden: an operator who
+      // wonders where an arm went deserves the answer rather than a shorter
+      // list. Same rule the preset dropdown already follows.
+      const opt = new Option(
+        r.display_name + (r.enabled ? "" : " — disabled"), r.id);
+      opt.disabled = !r.enabled;
+      opt.title = [r.manufacturer, r.model, r.dof + " DOF", r.status]
+        .filter(Boolean).join(" · ");
+      sel.append(opt);
+    }
+    if (keep && [...sel.options].some(o => o.value === keep)) sel.value = keep;
+  }
+  if (s.robots_error) {
+    // A broken registry must read as a broken registry, not as "no robots".
+    const note = $("#s-robot-note");
+    if (note) note.textContent = "robot registry error: " + s.robots_error;
+  }
+}
+
 function fillSelects(s) {
+  fillRobots(s);
   const p = $("#s-preset");
   if (!p || p.options.length) { syncScenarioControls(s); return; }
   for (const x of s.presets || []) p.append(new Option(x, x));
@@ -1367,9 +1498,20 @@ $("#c-reset").onclick = async () => {
   // scenario; changing a dropdown never is.
   if (STATE.run_active) {
     const physical = (STATE.execution || {}).physical;
-    const what = physical
+    let what = physical
       ? "A PHYSICAL Isaac Sim run is in progress. Reset it and generate a new plan?"
       : "A run is active or awaiting your decision. Reset it and generate a new plan?";
+    if (STATE.robot_change_requires_reset) {
+      // A ROBOT SWITCH IS A BIGGER THING THAN A NEW SCENARIO, and the
+      // confirmation says so: the simulator has to be restarted for the new
+      // arm, and approval stays disabled until it acknowledges the scene.
+      const from = (STATE.active_robot || {}).display_name || STATE.active_robot_id;
+      const to = ((STATE.robots || []).find(r => r.id === STATE.draft_robot_id)
+                  || {}).display_name || STATE.draft_robot_id;
+      what += `\n\nThis also switches the robot from ${from} to ${to}. ` +
+              "The Isaac simulator must be restarted for the new robot, and " +
+              "approval stays disabled until it acknowledges the scene.";
+    }
     if (!window.confirm(what)) return;
   }
   await command("reset", readSettings());
@@ -1407,7 +1549,7 @@ async function refreshState() {
   STATE = await api("/api/state");
   fillSelects(STATE);
   syncScenarioControls(STATE);
-  for (const sel of ["#s-preset", "#s-seed", "#s-strategy"]) {
+  for (const sel of ["#s-preset", "#s-seed", "#s-strategy", "#s-robot"]) {
     const node = $(sel);
     if (node && !node.dataset.draftBound) {
       node.dataset.draftBound = "1";

@@ -193,6 +193,14 @@ function render(d){
   const rows = [
     ["connection", d.status_label || status],
     ["execution backend", d.execution_backend_label || d.execution_backend || "—"],
+    // WHICH ARM is in the picture. Named here because the whole point of this
+    // page is watching a physical run, and "which robot am I looking at" is the
+    // first question a viewer has. "—" in the logical modes, which have none.
+    ["robot", d.robot
+      ? `${d.robot.display_name} (${d.robot.manufacturer} ${d.robot.model}, ` +
+        `${d.robot.dof} DOF)` : (d.robot_id || "—")],
+    ["robot status", d.robot ? `${d.robot.status} · ${d.robot.kinematics}` +
+      (d.robot.motion_planning ? "" : " · no motion planning") : "—"],
     ["transport", d.transport || "none"],
     ["simulator version", d.simulator_version || "—"],
     ["current item", d.current_item_id || "—"],
