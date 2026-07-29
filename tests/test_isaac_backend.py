@@ -1377,12 +1377,48 @@ def test_the_dashboard_stops_only_the_isaac_process_it_started():
     assert "trap 'isaac_cleanup' EXIT INT TERM" in text
 
 
-def test_the_dashboard_waits_for_ready_and_fails_loudly():
+def test_the_dashboard_does_not_block_on_isaac_but_still_fails_loudly():
+    """It WATCHES Isaac; it no longer waits for it before starting the stack.
+
+    The old contract was "block until READY, then start the container". It made
+    port 8080 unavailable for as long as Isaac took to compile shaders — minutes
+    on a cold cache — and an operator watching a dead port cannot tell a slow
+    simulator from a broken launcher. The DIAGNOSTIC half of that contract is
+    unchanged and is asserted here: a timeout and a death are both still named,
+    with the log tail, and the readiness gates upstream are untouched.
+    """
     text = _read(DASHBOARD)
     assert "ISAAC_READY_TIMEOUT" in text
     assert "did not report READY" in text
-    assert "exit 5" in text, "a startup failure must propagate a non-zero status"
-    assert "tail -40" in text, "a failure must print a useful diagnostic"
+    assert "tail -25" in text, "a failure must print a useful diagnostic"
+    assert "ISAAC_WATCHER_PID" in text, "readiness is watched, not waited on"
+
+    # THE ORDER IS THE POINT: `docker run` must be reached without an
+    # intervening wait on Isaac.
+    watcher = text.index("ISAAC_WATCHER_PID=$!")
+    docker = text.index("DOCKER_RUN=(docker run")
+    assert watcher < docker
+    between = text[watcher:docker]
+    assert "for _ in $(seq 1 \"$ISAAC_READY_TIMEOUT\")" not in between, \
+        "nothing may block between starting Isaac and starting the stack"
+    assert "[isaac-launch] not blocking on Isaac" in text
+
+
+def test_a_dead_isaac_is_reported_without_taking_the_dashboard_down():
+    """Reported and DEGRADED — never restarted, never silently absorbed."""
+    text = _read(DASHBOARD)
+    watcher = text[text.index("(\n        # Bounded, quiet"):
+                   text.index("ISAAC_WATCHER_PID=$!")]
+    assert 'kill -0 "$ISAAC_PID"' in watcher
+    assert "startup_status.py\" degrade" in watcher
+    assert "ROBOT_MODEL_INVALID" in watcher
+    # No restart loop. Checked against the CODE rather than the comment that
+    # says so — the comment reads "it never restarts anything" and would
+    # otherwise satisfy a naive substring scan.
+    code = "\n".join(line for line in watcher.splitlines()
+                     if not line.strip().startswith("#"))
+    for reckless in ("restart", "respawn", "setsid", "run_wisepack_isaac.sh"):
+        assert reckless not in code, f"the watcher must not {reckless}"
 
 
 def test_the_container_protection_is_preserved():

@@ -1475,6 +1475,30 @@ the arm converges confidently to the wrong pose. Both read as physics problems.
 A mismatch therefore produces `ROBOT_MODEL_INVALID`, a **DEGRADED** backend and a
 **disabled approval button** — never a best-effort run.
 
+### Startup: the stack first, Isaac alongside it
+
+The launcher does **not** wait for Isaac Sim before bringing up the ROS stack and
+the dashboard. It resolves the robot, starts Isaac, and then starts the stack
+immediately while a watcher reports Isaac's progress. Measured on this host with
+a warm shader cache: the dashboard answers at **~20 s** and Isaac reports READY
+at **~28 s**, against **~76 s** before — and on a cold cache the old ordering
+left port 8080 closed for minutes.
+
+Starting the UI earlier **authorises nothing**. Every gate is unchanged: no
+motion before operator approval, no approval before an active run, and no
+approval before a `SCENE_READY` correlated to that run, its scenario revision,
+its scene fingerprint, its robot id and that robot's profile revision, with the
+home pose verified. Coming up early shows the operator *more* about why they
+cannot approve yet.
+
+Diagnostics gains a **Startup processes** table — process, scope, PID, expected,
+running, exit code, last heartbeat, last error — written by the two launchers
+that own processes and read from `results/startup-host.json` and
+`results/startup-stack.json`. It exists because `docker ps` cannot answer the
+question that matters: a container whose ROS stack died on its first line is
+still `Up`. When there is no active run, Diagnostics names the **specific
+blocker** rather than only showing `IDLE`.
+
 ### Selecting a robot
 
 Resolution order, highest first:

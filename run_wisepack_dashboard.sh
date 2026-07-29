@@ -36,6 +36,21 @@
 # Ctrl-C stops the stack and the Isaac process THIS invocation started, by PID,
 # and nothing else.
 #
+# STARTUP IS CONCURRENT, NOT SEQUENTIAL. Isaac is started first and then WATCHED;
+# the ROS stack and the dashboard come up immediately alongside it. Waiting for
+# Isaac to report READY before starting the container — which is what this used
+# to do — left port 8080 closed for as long as the simulator took to compile
+# shaders, and an operator looking at a dead port cannot tell a slow simulator
+# from a broken launcher. Isaac's progress is now visible IN the dashboard.
+#
+# Starting the UI early authorises nothing. Approval still requires an active
+# run and a SCENE_READY correlated to it, to its scenario revision, to its
+# fingerprint and to its robot — see wisepack_orchestration.isaac_bridge.
+#
+# WHICH ROBOT is resolved to a concrete id BEFORE anything starts, and the same
+# value is given to the host simulator, the container, the orchestrator and the
+# dashboard. See scripts/resolve_robot.py.
+#
 #     WISEPACK_ISAAC_HEADLESS=1 ./run_wisepack_dashboard.sh isaac   # over SSH
 #     ISAAC_SIM_ROOT=/opt/isaac-sim ./run_wisepack_dashboard.sh isaac
 #
@@ -65,7 +80,10 @@ ISAAC_READY_TIMEOUT="${WISEPACK_ISAAC_READY_TIMEOUT:-300}"
 
 case "$MODE" in
     -h|--help|help)
-        sed -n '2,47p' "$0"
+        # The whole header block, delimited rather than counted: a hard-coded
+        # line range silently drops the end of --help the moment the header
+        # grows, which is exactly what happened when startup was documented.
+        awk 'NR>2 && /^# -{20,}/{exit} NR>1{sub(/^# ?/, ""); print}' "$0"
         exit 0 ;;
     ros|fiware|sim|isaac|isaac-fiware) ;;
     *)
@@ -89,6 +107,81 @@ if [ "$EXECUTION_BACKEND" = "isaac" ]; then
 else
     PRESET="${WISEPACK_PRESET:-mixed_pipes_dense}"
 fi
+
+# --- WHICH ROBOT, resolved to a concrete id before anything is started ------
+#
+# This used to print "robot : <configured default>" and hand an EMPTY string to
+# both the simulator and the orchestrator, letting each resolve independently.
+# That is how a placeholder reached `ros2 launch` as the malformed argument
+# `robot:=`, which killed the whole ROS stack while its container stayed Up.
+#
+# So the answer is computed ONCE, here, on the host, before a process exists,
+# and the same value goes to every consumer. An unresolvable robot, an
+# incompatible robot/preset pair or a literal placeholder stops the launch here
+# rather than being discovered by an operator staring at an IDLE dashboard.
+ROBOT_ID=""
+ROBOT_SOURCE=""
+ROBOT_REVISION=""
+ROBOT_REGISTRY=""
+ROBOT_REGISTRY_DEFAULT=""
+# WHERE THE STARTUP STATUS GOES. The results directory is the natural home and
+# is usually right, but it is frequently owned by root — the container writes
+# into it — and the host user then cannot create a file there. That failure used
+# to be silent, which cost the diagnostics table its entire host half without
+# saying so. So the location is CHOSEN, announced, and handed to the reader.
+STATUS_DIR="${WISEPACK_RESULTS_DIR:-$REPO/results}"
+mkdir -p "$STATUS_DIR" 2>/dev/null || true
+HOST_STATUS_OWNED_DIR=""
+if [ -w "$STATUS_DIR" ]; then
+    HOST_STATUS="$STATUS_DIR/startup-host.json"
+else
+    # A DEDICATED directory, not a bare file in /tmp. The status writer replaces
+    # the file atomically (write-temp-then-rename), which changes its inode —
+    # and a FILE bind-mount follows the inode, so the container would keep
+    # reading the original for the life of the run and never see an update.
+    # Measured exactly that way: the launcher reported Isaac dead and
+    # Diagnostics still showed it running. Mounting the directory fixes it, and
+    # a directory this launcher owns is safe to mount where /tmp is not.
+    HOST_STATUS_OWNED_DIR="${TMPDIR:-/tmp}/wisepack-startup-$$"
+    mkdir -p "$HOST_STATUS_OWNED_DIR"
+    HOST_STATUS="$HOST_STATUS_OWNED_DIR/startup-host.json"
+    echo "[dashboard] note: $STATUS_DIR is not writable by $(id -un);"
+    echo "[dashboard]       startup status goes to $HOST_STATUS instead"
+fi
+# The container runs as root and can always write the results directory, so the
+# stack half stays where an operator would look for it.
+STACK_STATUS="$STATUS_DIR/startup-stack.json"
+export WISEPACK_HOST_STATUS="$HOST_STATUS"
+
+if [ "$EXECUTION_BACKEND" = "isaac" ]; then
+    if ! ROBOT_LINE="$(python3 "$REPO/scripts/resolve_robot.py" --preset "$PRESET")"; then
+        echo "[isaac-launch] ERROR: the robot could not be resolved; nothing was started." >&2
+        echo "[isaac-launch]   fix config/isaac_robots.yaml, or set WISEPACK_ISAAC_ROBOT" >&2
+        echo "[isaac-launch]   to one of the configured ids." >&2
+        exit 5
+    fi
+    IFS=$'\t' read -r ROBOT_ID ROBOT_SOURCE ROBOT_REVISION ROBOT_REGISTRY \
+        ROBOT_REGISTRY_DEFAULT <<<"$ROBOT_LINE"
+    # Belt and braces: resolve_robot.py already refuses a placeholder, and this
+    # refuses one that somehow survived. A `<...>` reaching a launch argument is
+    # precisely the regression this replaces.
+    case "$ROBOT_ID" in
+        ""|*"<"*|*">"*|*" "*)
+            echo "[isaac-launch] ERROR: unresolved robot id '${ROBOT_ID}'." >&2
+            exit 5 ;;
+    esac
+    # ONE value, exported once, reaching the host simulator, the container, the
+    # orchestrator, the scene request and the dashboard API.
+    export WISEPACK_ISAAC_ROBOT="$ROBOT_ID"
+fi
+
+python3 "$REPO/scripts/startup_status.py" init --out "$HOST_STATUS" \
+    --scope host --mode "$MODE" \
+    --robot "$ROBOT_ID" --robot-source "$ROBOT_SOURCE" \
+    --robot-revision "$ROBOT_REVISION" --registry-path "$ROBOT_REGISTRY" \
+    --registry-default "$ROBOT_REGISTRY_DEFAULT" 2>/dev/null || true
+# A stale stack status from a previous run must not be read as this run's.
+rm -f "$STACK_STATUS" 2>/dev/null || true
 
 open_browser() {
     ( sleep 3
@@ -251,6 +344,18 @@ isaac_cleanup() {
     # heavily threaded and htop lists THREADS by default (press H to hide them).
     # Those are TIDs inside one process, not multiple Isaac instances. The check
     # below counts process-group members, which is the question that matters.
+    # ONLY what this launcher created, and only when it created it.
+    if [ -n "${HOST_STATUS_OWNED_DIR:-}" ]; then
+        rm -rf -- "$HOST_STATUS_OWNED_DIR"
+        HOST_STATUS_OWNED_DIR=""
+    fi
+    # ONLY what this launcher started. The watcher first, so it cannot report
+    # the shutdown it is being shut down by as a failure.
+    if [ -n "${ISAAC_WATCHER_PID:-}" ]; then
+        kill -TERM "$ISAAC_WATCHER_PID" 2>/dev/null || true
+        wait "$ISAAC_WATCHER_PID" 2>/dev/null || true
+        ISAAC_WATCHER_PID=""
+    fi
     [ -z "$ISAAC_PID" ] && return 0
     kill -0 "$ISAAC_PID" 2>/dev/null || return 0
 
@@ -301,7 +406,10 @@ if [ "$EXECUTION_BACKEND" = "isaac" ]; then
     # here rather than letting each side resolve independently is what stops the
     # simulator standing up one arm while the orchestrator plans for another.
     echo "[isaac-launch] starting Isaac Sim on the host (log: $ISAAC_LOG)"
-    echo "[isaac-launch] robot       : ${WISEPACK_ISAAC_ROBOT:-<configured default>}"
+    echo "[isaac-launch] robot        : $ROBOT_ID"
+    echo "[isaac-launch] robot source : $ROBOT_SOURCE"
+    echo "[isaac-launch] robot profile: $ROBOT_REVISION"
+    echo "[isaac-launch] robot registry: $ROBOT_REGISTRY (default $ROBOT_REGISTRY_DEFAULT)"
 
     # THE CHILD REPORTS ITS OWN GROUP ID, and that is not pedantry.
     #
@@ -340,35 +448,89 @@ if [ "$EXECUTION_BACKEND" = "isaac" ]; then
         exit 5
     fi
     echo "[isaac-launch] Isaac Sim process group: $ISAAC_PID"
+    python3 "$REPO/scripts/startup_status.py" proc --out "$HOST_STATUS" \
+        --name isaac-sim --pid "$ISAAC_PID" --expected 1 --running 1 \
+        2>/dev/null || true
 
-    echo "[isaac-launch] waiting up to ${ISAAC_READY_TIMEOUT}s for Isaac to report READY"
-    echo "[isaac-launch] (first launch compiles shaders and is slow; it caches afterwards)"
-    ISAAC_READY=0
-    for _ in $(seq 1 "$ISAAC_READY_TIMEOUT"); do
-        # Propagate a startup failure immediately rather than waiting out the
-        # whole timeout for a process that has already died.
-        if ! kill -0 "$ISAAC_PID" 2>/dev/null; then
-            echo "[isaac-launch] ERROR: Isaac Sim exited during startup." >&2
-            echo "[isaac-launch] last 40 lines of $ISAAC_LOG:" >&2
-            tail -40 "$ISAAC_LOG" | sed 's/^/    /' >&2
-            exit 5
-        fi
-        if grep -q '\[isaac-app\] READY' "$ISAAC_LOG" 2>/dev/null; then
-            ISAAC_READY=1
-            break
-        fi
-        sleep 1
-    done
+    # THE DASHBOARD NO LONGER WAITS FOR THIS.
+    #
+    # It used to: the launcher blocked here for up to ISAAC_READY_TIMEOUT before
+    # `docker run` was even reached, so port 8080 stayed closed while Isaac
+    # compiled shaders — minutes on a cold cache, and about a minute on a warm
+    # one. An operator watching a dead port cannot tell a slow simulator from a
+    # broken launcher, and there is nothing they can do with the information
+    # once they can.
+    #
+    # So readiness is now WATCHED rather than waited on. The stack and the
+    # dashboard come up immediately and show Isaac's progress as state; the
+    # watcher below records it, and every existing authorisation gate is
+    # untouched — approval still requires SIMULATOR_READY, an active run and a
+    # SCENE_READY correlated to this run, this revision and this robot. Starting
+    # the UI earlier shows the operator MORE about why they cannot approve yet,
+    # not less.
+    echo "[isaac-launch] not blocking on Isaac: the dashboard starts now and shows"
+    echo "[isaac-launch] its progress (first launch compiles shaders and is slow)"
 
-    if [ "$ISAAC_READY" -ne 1 ]; then
-        echo "[isaac-launch] ERROR: Isaac Sim did not report READY within ${ISAAC_READY_TIMEOUT}s." >&2
-        echo "[isaac-launch] check: GPU/driver, DISPLAY (use WISEPACK_ISAAC_HEADLESS=1)," >&2
-        echo "[isaac-launch]        and outbound HTTPS for the Panda asset download." >&2
-        echo "[isaac-launch] last 40 lines of $ISAAC_LOG:" >&2
-        tail -40 "$ISAAC_LOG" | sed 's/^/    /' >&2
-        exit 5
-    fi
-    echo "[isaac-launch] Isaac Sim READY (pid $ISAAC_PID) — physical execution enabled"
+    (
+        # Bounded, quiet, and it never restarts anything. Its whole job is to
+        # turn "Isaac is doing something" into state an operator can read.
+        announced_ready=0
+        deadline=$(( $(date +%s) + ISAAC_READY_TIMEOUT ))
+        while :; do
+            if ! kill -0 "$ISAAC_PID" 2>/dev/null; then
+                # A dead simulator is REPORTED, not retried. The stack keeps
+                # running so Diagnostics stays reachable; approval stays shut
+                # because SCENE_READY will never arrive.
+                reason="Isaac Sim (pid $ISAAC_PID) exited"
+                if grep -q 'ROBOT_MODEL_INVALID' "$ISAAC_LOG" 2>/dev/null; then
+                    reason="$reason — ROBOT_MODEL_INVALID: the $ROBOT_ID model did not validate"
+                fi
+                echo "[isaac-launch] ERROR: $reason" >&2
+                echo "[isaac-launch] last 25 lines of $ISAAC_LOG:" >&2
+                tail -25 "$ISAAC_LOG" | sed 's/^/    /' >&2
+                python3 "$REPO/scripts/startup_status.py" proc \
+                    --out "$HOST_STATUS" --name isaac-sim --running 0 \
+                    --error "$reason" 2>/dev/null || true
+                python3 "$REPO/scripts/startup_status.py" degrade \
+                    --out "$HOST_STATUS" --reason "$reason" 2>/dev/null || true
+                break
+            fi
+            if [ "$announced_ready" -eq 0 ] \
+               && grep -q '\[isaac-app\] READY' "$ISAAC_LOG" 2>/dev/null; then
+                announced_ready=1
+                echo "[isaac-launch] Isaac Sim READY (pid $ISAAC_PID) — physical execution enabled"
+                python3 "$REPO/scripts/startup_status.py" proc \
+                    --out "$HOST_STATUS" --name isaac-sim --running 1 \
+                    2>/dev/null || true
+            fi
+            if [ "$announced_ready" -eq 0 ] && [ "$(date +%s)" -gt "$deadline" ]; then
+                reason="Isaac Sim did not report READY within ${ISAAC_READY_TIMEOUT}s"
+                echo "[isaac-launch] WARNING: $reason" >&2
+                echo "[isaac-launch]   check GPU/driver, DISPLAY (WISEPACK_ISAAC_HEADLESS=1)," >&2
+                echo "[isaac-launch]   and outbound HTTPS for the robot asset download." >&2
+                python3 "$REPO/scripts/startup_status.py" degrade \
+                    --out "$HOST_STATUS" --reason "$reason" 2>/dev/null || true
+                announced_ready=2      # reported once; keep watching for a death
+            fi
+            python3 "$REPO/scripts/startup_status.py" beat \
+                --out "$HOST_STATUS" --name isaac-watcher 2>/dev/null || true
+            sleep 2
+        done
+    ) &
+    ISAAC_WATCHER_PID=$!
+    python3 "$REPO/scripts/startup_status.py" proc --out "$HOST_STATUS" \
+        --name isaac-watcher --pid "$ISAAC_WATCHER_PID" --expected 1 --running 1 \
+        2>/dev/null || true
+fi
+
+# MOUNT THE HOST STATUS ONLY IF IT IS BOTH OUTSIDE THE REPO AND ALREADY A FILE.
+# Docker creates a DIRECTORY for a bind source that does not exist, and a
+# directory where the reader expects JSON is a worse failure than a missing
+# file. Inside the repo it is already visible through the main bind mount.
+HOST_STATUS_MOUNT=()
+if [ -n "$HOST_STATUS_OWNED_DIR" ] && [ -d "$HOST_STATUS_OWNED_DIR" ]; then
+    # The DIRECTORY, so an atomic replace inside it is visible to the reader.
+    HOST_STATUS_MOUNT=(-v "$HOST_STATUS_OWNED_DIR:$HOST_STATUS_OWNED_DIR:ro")
 fi
 
 echo "[dashboard] live mode ($SOURCE) — WISEPACK ROS 2/DDS stack + dashboard"
@@ -389,9 +551,15 @@ DOCKER_RUN=(docker run --rm -i $([ -t 1 ] && echo -t) \
     -e "WISEPACK_PRESET=$PRESET" \
     -e "WISEPACK_SEED=$SEED" \
     -e "WISEPACK_EXECUTION_BACKEND=$EXECUTION_BACKEND" \
+    -e "WISEPACK_ISAAC_ROBOT=$ROBOT_ID" \
+    -e "WISEPACK_ROBOT_SOURCE=$ROBOT_SOURCE" \
+    -e "WISEPACK_STARTUP_STATUS=$STACK_STATUS" \
+    -e "WISEPACK_HOST_STATUS=$HOST_STATUS" \
+    -e "WISEPACK_MODE=$MODE" \
     -e WISEPACK_SKIP_BUILD \
     -e ORION \
     -v "$REPO:$REPO" \
+    "${HOST_STATUS_MOUNT[@]}" \
     -w "$REPO" \
     "$IMAGE" \
     bash -lc '
@@ -418,6 +586,9 @@ DOCKER_RUN=(docker run --rm -i $([ -t 1 ] && echo -t) \
         # match another checkout of this project running on the same machine,
         # and a broader pattern would take out unrelated ROS stacks entirely.
         cleanup() {
+            if [ -n "${HEARTBEAT_PID:-}" ]; then
+                kill -TERM "$HEARTBEAT_PID" 2>/dev/null || true
+            fi
             if [ -n "${LAUNCH_PID:-}" ]; then
                 kill -TERM "-$LAUNCH_PID" 2>/dev/null \
                     || kill "$LAUNCH_PID" 2>/dev/null || true
@@ -426,26 +597,109 @@ DOCKER_RUN=(docker run --rm -i $([ -t 1 ] && echo -t) \
         }
         trap cleanup EXIT INT TERM
 
+        STATUS="${WISEPACK_STARTUP_STATUS:-}"
+        status() {
+            [ -n "$STATUS" ] || return 0
+            python3 scripts/startup_status.py "$@" --out "$STATUS" 2>/dev/null || true
+        }
+        status init --scope stack --mode "${WISEPACK_MODE:-ros}"             --robot "${WISEPACK_ISAAC_ROBOT:-}"             --robot-source "${WISEPACK_ROBOT_SOURCE:-}"
+
         echo "[container] launching WISEPACK (orchestrator + perception + twin) ..."
         echo "[container] execution backend: ${WISEPACK_EXECUTION_BACKEND}"
-        setsid ros2 launch wisepack_bringup demo.launch.py \
-            preset:="${WISEPACK_PRESET}" seed:="${WISEPACK_SEED}" \
-            execution_backend:="${WISEPACK_EXECUTION_BACKEND}" \
-            robot:="${WISEPACK_ISAAC_ROBOT:-}" \
-            > /tmp/wisepack_stack.log 2>&1 &
-        LAUNCH_PID=$!
+        echo "[container] robot            : ${WISEPACK_ISAAC_ROBOT:-none (logical simulator)}"
 
-        # The dashboard must not attach before the nodes exist, or its first
-        # snapshot is all defaults and the tiles look dead on arrival.
-        for i in $(seq 1 40); do
-            if ros2 topic list 2>/dev/null | grep -q /wisepack/execution/state; then break; fi
+        # BUILT AS AN ARRAY so an empty value is OMITTED rather than emitted.
+        #
+        # `robot:="${WISEPACK_ISAAC_ROBOT:-}"` expanded to the literal `robot:=`
+        # whenever the variable was unset — and it was ALWAYS unset, because the
+        # launcher never passed it through `docker run`. ros2 launch rejects
+        # that as "malformed launch argument" and exits on its first line, in
+        # every container-backed mode. The wrapper then waited out a fixed
+        # timeout for a topic that was never coming, announced "WISEPACK stack
+        # up" and started the dashboard against nothing. That is the whole IDLE
+        # regression: an empty string in a shell expansion.
+        LAUNCH_ARGS=(preset:="${WISEPACK_PRESET}" seed:="${WISEPACK_SEED}"
+                     execution_backend:="${WISEPACK_EXECUTION_BACKEND}")
+        if [ -n "${WISEPACK_ISAAC_ROBOT:-}" ]; then
+            LAUNCH_ARGS+=(robot:="${WISEPACK_ISAAC_ROBOT}")
+        fi
+
+        setsid ros2 launch wisepack_bringup demo.launch.py "${LAUNCH_ARGS[@]}"             > /tmp/wisepack_stack.log 2>&1 &
+        LAUNCH_PID=$!
+        status proc --name ros-launch --pid "$LAUNCH_PID" --expected 1 --running 1
+
+        # WAIT FOR THE TOPICS, BUT WATCH THE PROCESS.
+        #
+        # The old loop only asked "is the topic there yet" and then declared
+        # success either way. Liveness is now checked every iteration, so a
+        # launch that dies is reported in about a second instead of being
+        # papered over after forty.
+        STACK_UP=0
+        for i in $(seq 1 60); do
+            if ros2 topic list 2>/dev/null | grep -q /wisepack/execution/state; then
+                STACK_UP=1
+                break
+            fi
+            if ! kill -0 "$LAUNCH_PID" 2>/dev/null; then
+                wait "$LAUNCH_PID" 2>/dev/null
+                RC=$?
+                echo "[container] ERROR: ros2 launch exited with status $RC after ${i}s." >&2
+                echo "[container] last 25 lines of /tmp/wisepack_stack.log:" >&2
+                tail -25 /tmp/wisepack_stack.log | sed "s/^/    /" >&2
+                status proc --name ros-launch --running 0 --exit-code "$RC"                     --error "$(tail -3 /tmp/wisepack_stack.log | tr "\n" " " | cut -c1-400)"
+                status degrade --reason "ros2 launch exited with status $RC"
+                break
+            fi
             sleep 1
         done
-        echo "[container] WISEPACK stack up — attaching dashboard (source=${WISEPACK_SOURCE})"
 
-        exec python3 web/app.py --source "${WISEPACK_SOURCE}" \
-            --port "${WISEPACK_DASH_PORT}"
+        if [ "$STACK_UP" -eq 1 ]; then
+            echo "[container] WISEPACK stack up — attaching dashboard (source=${WISEPACK_SOURCE})"
+            status proc --name ros-launch --running 1
+            # PER-NODE liveness from the ROS graph, so "the launch process is
+            # alive" and "the orchestrator actually came up" stay separable. A
+            # launch that starts three of its four nodes is a real state and
+            # reads identically to a healthy one without this.
+            NODES="$(ros2 node list 2>/dev/null || true)"
+            for pair in "orchestrator:/wisepack_hitl_orchestrator"                         "perception-sim:/wisepack_perception_sim"                         "twin-validator:/wisepack_twin_validator"                         "anomaly-simulator:/wisepack_anomaly_simulator"; do
+                nm="${pair%%:*}"; node="${pair#*:}"
+                if printf "%s\n" "$NODES" | grep -qx "$node"; then
+                    status proc --name "$nm" --expected 1 --running 1
+                else
+                    status proc --name "$nm" --expected 1 --running 0                         --error "not present in the ROS graph after startup"
+                fi
+            done
+        else
+            # THE DASHBOARD STILL STARTS, and it must: it is where the operator
+            # reads WHY the stack is not there. What must not happen — and used
+            # to — is claiming the stack is up. Nothing is restarted; a launch
+            # that failed once will fail the same way again, and a restart loop
+            # would replace one clear diagnosis with a scrolling one.
+            echo "[container] WISEPACK stack is NOT running — starting the dashboard" >&2
+            echo "[container] anyway so Diagnostics can show why. Execution is DEGRADED." >&2
+            status degrade --reason "the ROS stack did not come up"
+        fi
+
+        # A background heartbeat, so a launch that dies LATER is also surfaced
+        # rather than leaving a stale "running" in the status file forever.
+        (
+            while kill -0 "$LAUNCH_PID" 2>/dev/null; do
+                status beat --name ros-launch
+                sleep 5
+            done
+            wait "$LAUNCH_PID" 2>/dev/null
+            RC=$?
+            status proc --name ros-launch --running 0 --exit-code "$RC"                 --error "the ROS launch process exited during the run"
+            status degrade --reason "ros2 launch exited with status $RC during the run"
+        ) &
+        HEARTBEAT_PID=$!
+
+        status proc --name dashboard --pid "$$" --expected 1 --running 1
+        exec python3 web/app.py --source "${WISEPACK_SOURCE}"             --port "${WISEPACK_DASH_PORT}"
     ')
+
+python3 "$REPO/scripts/startup_status.py" proc --out "$HOST_STATUS" \
+    --name wisepack-container --expected 1 --running 1 2>/dev/null || true
 
 if [ "$EXECUTION_BACKEND" = "isaac" ]; then
     # Foreground, not exec: the EXIT trap installed above has to run when the

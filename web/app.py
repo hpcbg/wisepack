@@ -564,17 +564,28 @@ def api_state():
     execution = payload.get("execution", {}) or {}
     active_robot = execution.get("robot")
     active_robot_id = execution.get("robot_id")
-    if not STATE.settings_touched and settings.get("robot_id") is None:
-        settings = {**settings,
-                    "robot_id": active_robot_id
-                    or robots_catalogue.get("default_robot")}
 
     # ROBOT SELECTION IS ONLY MEANINGFUL FOR A PHYSICAL BACKEND. In the logical
     # modes there is no robot at all, and offering a choice between two arms
-    # neither of which will move is worse than offering none — see
-    # `robot_selector` below, which the frontend uses to render a fixed
-    # "Logical workflow simulator" line instead.
+    # neither of which will move is worse than offering none — the frontend
+    # renders a fixed "Logical workflow simulator" line instead.
+    #
+    # `known` matters as much as `physical`: until the orchestrator has said
+    # which backend is authoritative, claiming "no robot" would be asserting
+    # something about a run this process has not heard from.
     physical = bool(execution.get("physical"))
+    if physical:
+        # Seeded only while untouched, exactly like the preset.
+        if not STATE.settings_touched and settings.get("robot_id") is None:
+            settings = {**settings,
+                        "robot_id": active_robot_id
+                        or robots_catalogue.get("default_robot")}
+    else:
+        # NOT "whatever the default happens to be". A logical run has no robot,
+        # and reporting one here is what put a disabled "Franka Emika Panda"
+        # beside help text saying no robot could be selected.
+        settings = {**settings, "robot_id": None}
+        active_robot, active_robot_id = None, None
     draft_robot_id = settings.get("robot_id") if physical else None
     draft_profile = next((r for r in robots_catalogue.get("robots", [])
                           if r.get("id") == draft_robot_id), None)
@@ -646,10 +657,15 @@ def api_state():
         # modes, where the frontend shows a fixed execution-source line rather
         # than a dropdown of arms that will not move.
         "robot_selector": physical,
+        # The EXECUTION SOURCE, named. In a logical mode this is what the panel
+        # shows in place of a robot, so it has to be a real answer rather than
+        # an absence.
+        "execution_source_label": ("" if physical
+                                   else "Logical workflow simulator"),
         "robot_selector_reason": (
             "" if physical else
-            "this run is executed by the logical workflow simulator — there is "
-            "no robot to select"),
+            "the logical workflow simulator executes this run — there is no "
+            "robot to select"),
         "active_robot": active_robot,
         "active_robot_id": active_robot_id,
         "draft_robot_id": draft_robot_id,

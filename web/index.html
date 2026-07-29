@@ -342,7 +342,14 @@
              of them is edited, and the one the operator sees would be the stale
              one. tests/test_isaac_robots.py fails the build if a robot name
              appears in this file or in the JavaScript. -->
-        <label class="f" id="s-robot-field">Robot<select id="s-robot"></select><div class="note" id="s-robot-note" style="margin-top:4px"></div></label>
+        <label class="f" id="s-robot-field"><span id="s-robot-label">Robot</span>
+          <select id="s-robot"></select>
+          <!-- The LOGICAL modes get this fixed line instead of the dropdown. A
+               disabled arm named in a field, beside help text saying no robot
+               can be selected, is two contradictory statements; a run with no
+               robot should name what actually executes it. -->
+          <span id="s-robot-fixed" class="badge" style="display:none">Logical workflow simulator</span>
+          <div class="note" id="s-robot-note" style="margin-top:4px"></div></label>
         <label class="f">Seed<input id="s-seed" type="number" min="0" step="1" value="42"/></label>
         <label class="f">Strategy<select id="s-strategy"></select></label>
         <label class="f">Item count<input id="s-count" type="number" min="1" max="200" placeholder="preset"/></label>
@@ -1229,7 +1236,12 @@ function readSettings() {
     // The DRAFT robot becomes the ACTIVE robot only here, on a reset. No other
     // path carries it, which is what makes "changing the dropdown never touches
     // a running scene" true rather than merely intended.
-    robot_id: ($("#s-robot") && $("#s-robot").value) || null,
+    //
+    // NULL in the logical modes, and that is a claim rather than an omission:
+    // nothing robotic executes there, so a run must not be stamped with the
+    // name of an arm that never moved.
+    robot_id: (STATE && STATE.robot_selector && $("#s-robot"))
+      ? ($("#s-robot").value || null) : null,
   };
 }
 // THE DRAFT. The scenario controls edit a draft for the NEXT run; they never
@@ -1257,7 +1269,8 @@ function currentDraft() {
     preset: $("#s-preset") ? $("#s-preset").value : null,
     seed: parseInt(($("#s-seed") || {}).value || "42", 10),
     strategy: $("#s-strategy") ? $("#s-strategy").value : null,
-    robot_id: ($("#s-robot") && $("#s-robot").value) || null,
+    robot_id: (STATE && STATE.robot_selector && $("#s-robot"))
+      ? ($("#s-robot").value || null) : null,
   };
 }
 
@@ -1319,20 +1332,23 @@ function syncScenarioControls(s) {
   // modes the field becomes a fixed statement of the execution source rather
   // than a dropdown of arms, neither of which would move. Offering a
   // meaningless choice is worse than offering none.
-  const rfield = $("#s-robot-field");
   const rnote = $("#s-robot-note");
-  if (rfield) {
-    if (s.robot_selector) {
-      rfield.style.display = "";
-      if (rb) rb.disabled = false;
-    } else {
-      rfield.style.display = "";
-      if (rb) rb.disabled = true;
-      rfield.firstChild.textContent = "Execution source";
-      if (rnote) {
-        rnote.textContent = "Logical workflow simulator — " +
-          (s.robot_selector_reason || "no robot is involved in this run");
-      }
+  const rlabel = $("#s-robot-label");
+  const rfixed = $("#s-robot-fixed");
+  if (s.robot_selector) {
+    if (rb) { rb.style.display = ""; rb.disabled = false; }
+    if (rfixed) rfixed.style.display = "none";
+    if (rlabel) rlabel.textContent = "Robot";
+  } else {
+    // NO ROBOT EXISTS IN THIS MODE, so none is offered and none is named. The
+    // select is HIDDEN rather than disabled: a greyed-out arm still asserts
+    // that an arm is involved, which is the contradiction this replaces.
+    if (rb) { rb.style.display = "none"; rb.disabled = true; }
+    if (rfixed) rfixed.style.display = "";
+    if (rlabel) rlabel.textContent = "Execution source";
+    if (rnote) {
+      rnote.textContent = s.robot_selector_reason
+        || "the logical workflow simulator executes this run — there is no robot to select";
     }
   }
   if (s.robot_selector && rnote) {

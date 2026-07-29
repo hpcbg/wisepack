@@ -164,6 +164,141 @@ def _mapped_topics() -> Dict[str, str]:
 # Runtime status file (host-generated, allowlisted)
 # --------------------------------------------------------------------------- #
 
+#: The two startup-status files, written by the two launchers that own
+#: processes. Read-only here; see scripts/startup_status.py for the schema.
+#:
+#: The WRITER tells the reader where it wrote. `results/` is frequently owned by
+#: root — the container writes into it — and the host launcher then falls back
+#: to a temporary file. Hard-coding the results path lost the entire host half
+#: of this table whenever that happened, silently.
+STARTUP_FILES = (("host", "startup-host.json"), ("stack", "startup-stack.json"))
+STARTUP_ENV = {"host": "WISEPACK_HOST_STATUS", "stack": "WISEPACK_STARTUP_STATUS"}
+
+#: Every process the stack is expected to own, and which scope reports it. A
+#: name that never reports is shown as "expected, not reported" rather than
+#: omitted — a process that died before its first write is exactly the case
+#: this table exists for, and an omitted row looks like a process nobody wanted.
+EXPECTED_PROCESSES = [
+    ("dashboard", "stack", "the FastAPI application serving this page"),
+    ("ros-launch", "stack", "ros2 launch wisepack_bringup demo.launch.py"),
+    ("orchestrator", "stack", "HitL orchestrator — owns the workflow engine"),
+    ("perception-sim", "stack", "perception simulator"),
+    ("twin-validator", "stack", "Digital Twin validator"),
+    ("anomaly-simulator", "stack", "SIMULATED anomaly source"),
+    ("isaac-sim", "host", "Isaac Sim process group on the host"),
+    ("isaac-watcher", "host", "launcher-side Isaac readiness watcher"),
+    ("wisepack-container", "host", "the container this stack runs in"),
+]
+
+
+def _startup_status() -> Dict[str, Any]:
+    """Merge the host and container startup-status files. Never raises.
+
+    Two writers, two files, merged for reading — so neither launcher has to
+    coordinate with the other and a missing file is simply a scope that has not
+    reported. `docker ps` is not consulted: the question this answers is
+    "did the processes inside actually start", which a container's state cannot.
+    """
+    out: Dict[str, Any] = {"scopes": {}, "processes": [], "degraded": False,
+                           "degraded_reason": "", "robot": {}}
+    reported: Dict[str, Dict[str, Any]] = {}
+    for scope, name in STARTUP_FILES:
+        path = os.environ.get(STARTUP_ENV.get(scope, ""), "") \
+            or os.path.join(RESULTS_DIR, name)
+        if not os.path.isfile(path):
+            out["scopes"][scope] = "not reported"
+            continue
+        try:
+            with open(path, encoding="utf-8") as fh:
+                doc = json.load(fh)
+        except (OSError, ValueError) as exc:
+            # The TYPE, never the message: an exception from a file operation
+            # carries the absolute path, and this payload is served over HTTP.
+            # Diagnostics reports state, not this host's filesystem.
+            out["scopes"][scope] = f"unreadable ({type(exc).__name__})"
+            continue
+        out["scopes"][scope] = (f"reported {doc.get('generated_at', '?')} "
+                                f"(age {round(time.time() - os.path.getmtime(path), 1)}s)")
+        if doc.get("degraded"):
+            out["degraded"] = True
+            reason = doc.get("degraded_reason") or f"{scope} reported DEGRADED"
+            out["degraded_reason"] = "; ".join(
+                filter(None, [out["degraded_reason"], reason]))
+        if doc.get("robot"):
+            # EMPTY VALUES DO NOT OVERWRITE. Both scopes report a robot block
+            # and the container's is deliberately sparse — it knows the id it
+            # was given, not the registry it came from. A plain update() let
+            # those blanks erase the launcher's richer answer, which is how
+            # "configured default" rendered as an em dash on a healthy run.
+            out["robot"].update({k: v for k, v in doc["robot"].items() if v})
+        for entry in doc.get("processes", []) or []:
+            if entry.get("name"):
+                reported[entry["name"]] = {**entry, "scope": scope}
+
+    for name, scope, role in EXPECTED_PROCESSES:
+        entry = reported.pop(name, None)
+        if entry is None:
+            out["processes"].append({
+                "process": name, "scope": scope, "role": role,
+                "pid": "—", "expected": "yes", "running": "not reported",
+                "exit_code": "—", "last_heartbeat": "—", "last_error": "—"})
+            continue
+        running = entry.get("running")
+        out["processes"].append({
+            "process": name, "scope": entry.get("scope", scope), "role": role,
+            "pid": entry.get("pid") if entry.get("pid") is not None else "—",
+            "expected": "yes" if entry.get("expected", True) else "no",
+            "running": ("unknown" if running is None
+                        else ("yes" if running else "NO")),
+            "exit_code": (entry.get("exit_code")
+                          if entry.get("exit_code") is not None else "—"),
+            "last_heartbeat": entry.get("last_heartbeat") or "—",
+            "last_error": entry.get("last_error") or "—",
+        })
+    # Anything reported but not on the roster still gets shown; a process the
+    # allowlist has not caught up with is information, not noise.
+    for name, entry in reported.items():
+        out["processes"].append({
+            "process": name, "scope": entry.get("scope", "?"), "role": "—",
+            "pid": entry.get("pid", "—"), "expected": "unlisted",
+            "running": "yes" if entry.get("running") else "NO",
+            "exit_code": entry.get("exit_code", "—"),
+            "last_heartbeat": entry.get("last_heartbeat") or "—",
+            "last_error": entry.get("last_error") or "—"})
+    return out
+
+
+def _startup_blocker(snap, startup: Dict[str, Any], isaac: Dict[str, Any]) -> str:
+    """WHY there is no run yet, in one sentence. "" once one exists.
+
+    IDLE on its own is not a diagnosis. It is the state a stack sits in when it
+    is starting normally, when its ROS launch died on the first line, and when
+    it is waiting for an operator — and an operator cannot tell those apart from
+    the word alone.
+    """
+    if snap.run_id:
+        return ""
+    if startup.get("degraded"):
+        return (startup.get("degraded_reason")
+                or "a launcher reported the stack DEGRADED")
+    dead = [p["process"] for p in startup.get("processes", [])
+            if p.get("running") == "NO" and p.get("expected") == "yes"]
+    if dead:
+        return (f"{', '.join(dead)} is not running — the stack cannot create a "
+                "run without it")
+    missing = [p["process"] for p in startup.get("processes", [])
+               if p.get("running") == "not reported"
+               and p["process"] in ("ros-launch", "orchestrator")]
+    if missing:
+        return (f"{', '.join(missing)} has not reported — the ROS stack may not "
+                "have started")
+    if isaac and not isaac.get("simulator_ready"):
+        return ("waiting for Isaac Sim to report SIMULATOR_READY; the run is "
+                "created independently and approval stays disabled until the "
+                "scene is acknowledged for it")
+    return "no run has been created yet"
+
+
 def _runtime_status() -> Optional[Dict[str, Any]]:
     path = os.path.join(RESULTS_DIR, "runtime-status.json")
     if not os.path.isfile(path):
@@ -253,7 +388,21 @@ def build(snap, mode: str, mirror: Optional[Dict[str, Any]],
     # different claims; only the second authorises a pick, and only showing both
     # makes the difference visible when a correct-looking scene is nonetheless
     # unacknowledged.
+    # -- startup: what actually started, and what died --------------------- #
+    startup = _startup_status()
     isaac = snap.isaac or {}
+    blocker = _startup_blocker(snap, startup, isaac)
+    overview["startup_scopes"] = ", ".join(
+        f"{k}: {v}" for k, v in sorted(startup["scopes"].items())) or "—"
+    overview["startup_degraded"] = "YES" if startup["degraded"] else "no"
+    if startup["degraded_reason"]:
+        overview["startup_degraded_reason"] = startup["degraded_reason"]
+    if blocker:
+        # SHOWN INSTEAD OF BARE IDLE. An operator reading "IDLE" cannot tell a
+        # stack that is starting from one whose launch process exited.
+        overview["no_active_run_because"] = blocker
+    overview.update(_robot_startup_rows(startup, isaac, snap))
+
     if isaac:
         overview.update({
             "simulator_process": ("ready" if isaac.get("simulator_ready")
@@ -384,6 +533,7 @@ def build(snap, mode: str, mirror: Optional[Dict[str, Any]],
         "cutting_status": cutting_status,
         "inventory_status": inventory_status,
         "logistics_status": logistics_status,
+        "startup_processes": startup["processes"],
         "topics": _topic_statuses(mode, mirror, mapped),
         "interfaces": [
             {"interface": i, "state": s, "meaning": m} for i, s, m in INTERFACES],
@@ -394,6 +544,39 @@ def build(snap, mode: str, mirror: Optional[Dict[str, Any]],
             "Read-only. No environment, credentials, tokens, keys, Docker socket "
             "or shell access are exposed. Container facts come only from an "
             "allowlisted host-generated file."),
+    }
+
+
+def _robot_startup_rows(startup: Dict[str, Any], isaac: Dict[str, Any],
+                        snap) -> Dict[str, Any]:
+    """Robot resolution, end to end, so a mismatch names itself.
+
+    The value is followed from where it was DECIDED (the launcher, against the
+    registry) to where it is USED (the host simulator, the orchestrator, the
+    scene request, the acknowledgement). A disagreement anywhere along that
+    chain is the difference between an arm that moves and an approval gate that
+    never opens, and it is invisible if only the end of the chain is reported.
+    """
+    robot = startup.get("robot") or {}
+    isaac_robot = dict(isaac.get("robot_status") or {})
+    ack = isaac.get("acknowledged_scene") or {}
+    return {
+        "robot_registry_loaded": ("yes" if robot.get("registry_loaded")
+                                  else "not reported"),
+        # RESOLVED, not WHERE. The launcher already printed the path on the
+        # terminal it was run from; publishing it here would put this host's
+        # filesystem layout in an HTTP response for no operator benefit.
+        "robot_registry_resolved": (os.path.basename(robot["registry_path"])
+                                    if robot.get("registry_path") else "no"),
+        "robot_configured_default": robot.get("registry_default") or "—",
+        "robot_effective": robot.get("effective") or "— (logical run: none)",
+        "robot_selection_source": robot.get("source") or "—",
+        "robot_startup_profile_revision": robot.get("profile_revision") or "—",
+        "robot_host_id": isaac_robot.get("robot_id") or "—",
+        "robot_orchestrator_id": isaac.get("robot_id") or "—",
+        "robot_requested_scene_id": isaac.get("robot_id") or "—",
+        "robot_acknowledged_scene_id": (ack.get("robot_id")
+                                        or isaac.get("acknowledged_robot") or "—"),
     }
 
 

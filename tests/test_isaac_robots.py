@@ -310,8 +310,9 @@ def test_the_draft_is_a_separate_field_from_the_active_run():
 def test_dashboard_polling_cannot_overwrite_a_chosen_robot():
     """The regression that made the preset dropdown feel broken, for robots."""
     app = _read(os.path.join(REPO, "web", "app.py"))
-    block = app[app.index("if not STATE.settings_touched"):
-                app.index("# ROBOT SELECTION IS ONLY MEANINGFUL")]
+    block = app[app.index("physical = bool(execution.get"):
+                app.index('draft_robot_id = settings.get("robot_id")')]
+    assert "if not STATE.settings_touched" in block
     assert 'settings.get("robot_id") is None' in block, \
         "the robot draft is seeded only while it has not been chosen"
 
@@ -346,12 +347,31 @@ def test_a_robot_cannot_change_while_an_item_is_being_carried():
 def test_the_logical_modes_expose_no_isaac_robot_selector():
     app = _read(os.path.join(REPO, "web", "app.py"))
     assert '"robot_selector": physical,' in app
+    assert '"execution_source_label": ("" if physical' in app
     assert "logical workflow simulator" in app.lower()
 
     html = _read(os.path.join(REPO, "web", "index.html"))
     assert "s.robot_selector" in html
     assert "Logical workflow simulator" in html
-    assert 'rfield.firstChild.textContent = "Execution source"' in html
+    # HIDDEN, not merely disabled. A greyed-out arm still asserts that an arm is
+    # involved, which is the contradiction the operator reported.
+    assert 'rb.style.display = "none"' in html
+    assert 'rlabel.textContent = "Execution source"' in html
+    assert 'rfixed.style.display = ""' in html
+
+
+def test_the_logical_modes_report_no_robot_at_all():
+    """`robot_id` absent rather than defaulted. A logical run has no robot."""
+    app = _read(os.path.join(REPO, "web", "app.py"))
+    block = app[app.index("physical = bool(execution.get"):
+                app.index('draft_robot_id = settings.get("robot_id")')]
+    assert 'settings = {**settings, "robot_id": None}' in block
+    assert "active_robot, active_robot_id = None, None" in block
+
+    html = _read(os.path.join(REPO, "web", "index.html"))
+    # ...and the draft carried into a reset is null too, so no run is ever
+    # stamped with the name of an arm that never moved.
+    assert "STATE && STATE.robot_selector && $(\"#s-robot\")" in html
 
 
 def test_changing_the_robot_requires_confirmation_before_a_reset():

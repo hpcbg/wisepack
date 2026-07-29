@@ -566,15 +566,16 @@ class RobotRegistry:
             "robots": [p.to_public_dict() for p in self.ordered],
         }
 
-    def resolve(self, *, explicit: Optional[str] = None,
-                draft: Optional[str] = None,
-                env: Optional[Dict[str, str]] = None) -> RobotProfile:
-        """WHICH ROBOT, by the documented precedence.
+    def resolve_with_source(self, *, explicit: Optional[str] = None,
+                            draft: Optional[str] = None,
+                            env: Optional[Dict[str, str]] = None
+                            ) -> Tuple[RobotProfile, str]:
+        """(profile, where it came from), by the documented precedence.
 
-            1. an explicit command-line value
-            2. the exported environment override (WISEPACK_ISAAC_ROBOT)
-            3. the scenario draft selection
-            4. the configured default
+            1. an explicit command-line value      -> "command line"
+            2. WISEPACK_ISAAC_ROBOT in the env     -> "environment"
+            3. the scenario draft selection        -> "scenario"
+            4. the configured default              -> "registry default"
 
         Environment sits above the draft on purpose: the override exists for
         automation, and a validator that exports it must not be overruled by
@@ -583,12 +584,26 @@ class RobotRegistry:
         Every candidate is validated, and an unknown or disabled one raises
         instead of falling through to the next. Falling through would turn a
         typo into a run on a robot nobody selected.
+
+        THE SOURCE IS RETURNED, not merely the answer. A launcher that prints
+        "robot: panda" without saying why leaves an operator unable to tell a
+        deliberate override from a default they forgot they were relying on —
+        and the two need different fixes when the wrong arm starts moving.
         """
         environ = os.environ if env is None else env
-        for value in (explicit, environ.get(ROBOT_ENV_VAR), draft):
+        for value, source in ((explicit, "command line"),
+                              (environ.get(ROBOT_ENV_VAR), "environment"),
+                              (draft, "scenario")):
             if value is not None and str(value).strip():
-                return self.get(value)
-        return self.default()
+                return self.get(value), source
+        return self.default(), "registry default"
+
+    def resolve(self, *, explicit: Optional[str] = None,
+                draft: Optional[str] = None,
+                env: Optional[Dict[str, str]] = None) -> RobotProfile:
+        """The profile alone. See ``resolve_with_source`` for the precedence."""
+        return self.resolve_with_source(explicit=explicit, draft=draft,
+                                        env=env)[0]
 
 
 # --------------------------------------------------------------------------- #

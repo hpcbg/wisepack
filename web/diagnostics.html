@@ -84,6 +84,16 @@
     <div class="kv" id="overview"></div>
   </div>
 
+  <!-- STARTUP PROCESSES. First, and full width, because when this page is
+       being read at all the usual reason is that something did not start —
+       and `docker ps` cannot answer that question. -->
+  <div class="panel full">
+    <h3>Startup processes
+      <span class="note">what the launchers actually started — not container state</span>
+    </h3>
+    <div class="scroll"><table id="startup"><tbody></tbody></table></div>
+  </div>
+
   <div class="panel">
     <h3>Component status <span class="note">allowlisted</span></h3>
     <div class="scroll"><table id="components"><tbody></tbody></table></div>
@@ -171,6 +181,23 @@ async function refresh(){
   if(d.cutting_status) kv($("#cutting"), d.cutting_status);
   if(d.inventory_status) kv($("#inventory"), d.inventory_status);
   if(d.logistics_status) kv($("#logistics"), d.logistics_status);
+
+  const st=$("#startup tbody"); st.innerHTML="";
+  st.append(el("tr",{},["Process","Scope","PID","Expected","Running","Exit",
+                        "Last heartbeat","Last error","Role"].map(h=>el("th",{},h))));
+  for(const p of (d.startup_processes||[])){
+    // "NO" and "not reported" are DIFFERENT and are shown differently: one is a
+    // process that died, the other one that never wrote. They need different
+    // fixes and must not render alike.
+    const cls = p.running==="NO" ? "st-FAILED"
+              : p.running==="yes" ? "st-OK" : "st-WAITING";
+    st.append(el("tr",{},[
+      el("td",{},p.process), el("td",{class:"k"},p.scope),
+      el("td",{class:"k"},String(p.pid)), el("td",{class:"k"},p.expected),
+      el("td",{class:cls},p.running), el("td",{class:"k"},String(p.exit_code)),
+      el("td",{class:"k"},p.last_heartbeat), el("td",{class:"k"},p.last_error),
+      el("td",{class:"k"},p.role)]));
+  }
 
   const ct=$("#components tbody"); ct.innerHTML="";
   ct.append(el("tr",{},["Component","Kind","Health","Role"].map(h=>el("th",{},h))));
