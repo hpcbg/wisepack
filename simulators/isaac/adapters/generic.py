@@ -366,12 +366,26 @@ class GenericArticulationAdapter(IsaacRobotAdapter):
         jacobian = self.articulation.get_jacobian_matrices().numpy()
         arm = self.profile.arm_dof
         options = self.profile.kinematics_options
+        # STABILISATION IS PER ROBOT AND OFF BY DEFAULT. Every term below is
+        # zero unless the profile asks for it, so a robot that does not need one
+        # behaves exactly as it did. See adapters/kinematics.py for the measured
+        # justification of each.
         delta = differential_ik_step(
             jacobian[:, self._jacobian_row, :, :arm],
             ee_position.numpy(), ee_orientation.numpy(),
             position, orientation,
             damping=float(options.get("damping", DEFAULT_DAMPING)),
-            scale=float(options.get("scale", DEFAULT_SCALE)))
+            scale=float(options.get("scale", DEFAULT_SCALE)),
+            positions=current[0, :arm],
+            # The profile's HOME is the preferred posture. It is already the
+            # configuration the arm is validated to hold, so there is no second
+            # number to keep in step with it.
+            rest_posture=self.profile.home_joint_positions,
+            rest_gain=float(options.get("rest_gain", 0.0)),
+            singular_damping=float(options.get("singular_damping", 0.0)),
+            manipulability_threshold=float(
+                options.get("manipulability_threshold", 0.0)),
+            max_joint_step=float(options.get("max_joint_step_rad", 0.0)))
         indices = self._arm_indices or list(range(arm))
         self.articulation.set_dof_position_targets(
             current[:, :arm] + delta, dof_indices=indices)

@@ -22,8 +22,8 @@
 
 schema: wisepack-isaac-robots/1.0
 
-# The default when nothing else selects one.
-default_robot: panda
+# The default when nothing else selects one (panda or xarm7).
+default_robot: xarm7
 
 robots:
   # ------------------------------------------------------------------------ #
@@ -96,6 +96,27 @@ robots:
     kinematics_options:
       damping: 0.05
       scale: 1.0
+      # STABILISATION, each value justified by an instrumented run rather than
+      # by taste. See scripts/probe_motion.py and README.md → "xArm 7 motion".
+      #
+      # rest_gain: a 7-DOF arm has one redundant degree of freedom and damped
+      # least squares says nothing about where it should sit. Measured over one
+      # placement: joint 7 travelled 5.89 rad to net 0.28 rad (21x) and joint 2
+      # reversed direction 26 times while the end effector was converging. The
+      # null-space term pulls the arm's SHAPE toward its home posture without
+      # moving the tool.
+      rest_gain: 0.6
+      # singular_damping / manipulability_threshold: manipulability collapses
+      # from 0.05-0.07 in the pick poses to 0.0013-0.0020 over the container —
+      # 35-50x. Fixed damping is far too small there. The threshold sits between
+      # the two measured regimes so well-conditioned motion is untouched.
+      manipulability_threshold: 0.02
+      singular_damping: 0.25
+      # max_joint_step_rad: the measured commanded delta sat at 0.0524 rad every
+      # tick, which is exactly this joint's 3.14 rad/s limit at 60 Hz — the
+      # controller was asking for more than the arm could deliver, so commanded
+      # and achieved motion disagreed every frame. 0.03 keeps them in step.
+      max_joint_step_rad: 0.03
 
     # UFACTORY publish 700 mm. 0.71 m is what was MEASURED to be servo-able in
     # this workcell: the bin corner at 0.725 m failed to converge and the one at

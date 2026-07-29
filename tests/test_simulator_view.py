@@ -471,19 +471,38 @@ def test_the_launcher_never_probes_an_external_ip_service():
 
 
 def test_cleanup_owns_a_process_group_and_verifies_it():
+    """Ownership is now by SESSION, because the supervisor owns Isaac.
+
+    The launcher no longer starts Isaac directly — a robot switch has to be able
+    to stop one simulator and start another, and only a supervisor that outlives
+    both can do that. So the launcher owns the supervisor's session, which
+    contains every Isaac group the supervisor has ever started. The property is
+    unchanged: count what remains, escalate once, and verify.
+    """
     code = _code(DASHBOARD)
-    assert "isaac_group_size" in code, "ownership must be counted, not assumed"
-    assert 'kill -TERM "-$ISAAC_PID"' in code
+    assert "ISAAC_SUPERVISOR_PGID" in code, "ownership must be by session"
+    assert 'kill -TERM "$ISAAC_SUPERVISOR_PID"' in code
     assert "did not exit on TERM" in code, "no bounded escalation to KILL"
-    assert "process group $ISAAC_PID is gone" in code, "cleanup does not verify"
+    assert 'kill -KILL "-$ISAAC_SUPERVISOR_PGID"' in code
+    assert "is gone" in code, "cleanup does not verify"
+    # ...and the count is a count, not an assumption.
+    assert 'grep -c "^${ISAAC_SUPERVISOR_PGID}$"' in code
 
 
-def test_the_group_leader_reports_its_own_pid():
-    """`setsid` forks, so `$!` is a process that exits immediately — a cleanup
-    keyed on it finds nothing to kill and leaves Isaac holding the GPU."""
+def test_the_supervisor_owns_every_isaac_generation():
+    """One session, however many simulators a run went through.
+
+    A switch starts a new Isaac process group. Keying cleanup on the FIRST
+    group's pid — which is what the pidfile did — would leave every later
+    generation running after Ctrl-C.
+    """
     code = _code(DASHBOARD)
-    assert 'echo $$ > "$1"' in code
-    assert "ISAAC_PIDFILE" in code
+    assert "setsid env" in code and "isaac_supervisor.py" in code
+    supervisor = _read(os.path.join(REPO, "scripts", "isaac_supervisor.py"))
+    assert "start_new_session=True" in supervisor, \
+        "each Isaac generation gets its own group inside the supervisor session"
+    assert "os.killpg(self.pgid, signal.SIGTERM)" in supervisor
+    assert "def group_size(" in supervisor, "ownership counted, not assumed"
 
 
 @pytest.mark.parametrize("script", [DASHBOARD, ISAAC_LAUNCHER])

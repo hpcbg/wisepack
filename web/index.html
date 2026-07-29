@@ -1378,6 +1378,20 @@ function syncScenarioControls(s) {
     // discovered when Approve stays greyed with no explanation.
     if (s.robot_preset_conflict) bits.push("⚠ " + s.robot_preset_conflict);
     if (s.robots_error) bits.push("robot registry error: " + s.robots_error);
+
+    // A SWITCH IN FLIGHT OVERRIDES EVERYTHING ELSE in this line. While Isaac is
+    // being restarted the operator needs one thing: which phase it is in.
+    const sw = s.robot_switch || {};
+    if (sw.in_flight || sw.failed) {
+      const from = sw.previous_robot_id || "the previous robot";
+      const to = sw.requested_robot_id || "the selected robot";
+      const head = sw.failed
+        ? `⚠ Robot switch ${from} → ${to} FAILED: ${sw.failed_reason || "see Diagnostics"}`
+        : `Switching from ${from} to ${to} — ${sw.phase_label || sw.phase}`;
+      rnote.textContent = head + " · approval is disabled until the new scene "
+        + "is verified";
+      return;
+    }
     rnote.textContent = bits.join(" · ");
   }
 
@@ -1518,15 +1532,20 @@ $("#c-reset").onclick = async () => {
       ? "A PHYSICAL Isaac Sim run is in progress. Reset it and generate a new plan?"
       : "A run is active or awaiting your decision. Reset it and generate a new plan?";
     if (STATE.robot_change_requires_reset) {
-      // A ROBOT SWITCH IS A BIGGER THING THAN A NEW SCENARIO, and the
-      // confirmation says so: the simulator has to be restarted for the new
-      // arm, and approval stays disabled until it acknowledges the scene.
+      // A ROBOT SWITCH IS A BIGGER THING THAN A NEW SCENARIO. The adapter and
+      // the USD model are chosen when Isaac starts, so this restarts the
+      // simulator — and the operator is told every consequence before they
+      // agree to it, not discovered afterwards.
       const from = (STATE.active_robot || {}).display_name || STATE.active_robot_id;
       const to = ((STATE.robots || []).find(r => r.id === STATE.draft_robot_id)
                   || {}).display_name || STATE.draft_robot_id;
-      what += `\n\nThis also switches the robot from ${from} to ${to}. ` +
-              "The Isaac simulator must be restarted for the new robot, and " +
-              "approval stays disabled until it acknowledges the scene.";
+      what += `\n\nThis switches the robot from ${from} to ${to}:\n` +
+              "\n  • the active run will be CANCELLED" +
+              "\n  • Isaac Sim will be STOPPED and RESTARTED with " + to +
+              "\n  • any WebRTC stream will disconnect; the native client" +
+              "\n    must reconnect once the new simulator is up" +
+              "\n  • approval stays DISABLED until the new scene is verified" +
+              "\n    for this run, this revision and " + to;
     }
     if (!window.confirm(what)) return;
   }

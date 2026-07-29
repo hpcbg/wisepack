@@ -1371,8 +1371,10 @@ def test_isaac_cleanup_never_uses_a_broad_pattern(script):
 
 
 def test_the_dashboard_stops_only_the_isaac_process_it_started():
+    """By SESSION now: the supervisor owns every Isaac generation it started."""
     text = _read(DASHBOARD)
-    assert 'kill -TERM "-$ISAAC_PID"' in text
+    assert 'kill -TERM "$ISAAC_SUPERVISOR_PID"' in text
+    assert 'kill -KILL "-$ISAAC_SUPERVISOR_PGID"' in text
     assert "isaac_cleanup" in text
     assert "trap 'isaac_cleanup' EXIT INT TERM" in text
 
@@ -1405,20 +1407,35 @@ def test_the_dashboard_does_not_block_on_isaac_but_still_fails_loudly():
 
 
 def test_a_dead_isaac_is_reported_without_taking_the_dashboard_down():
-    """Reported and DEGRADED — never restarted, never silently absorbed."""
+    """Reported and DEGRADED — never restarted, never silently absorbed.
+
+    The watcher now mirrors the SUPERVISOR's status rather than polling Isaac
+    directly, because the supervisor owns the process and is the only component
+    that knows which generation is current. The property is unchanged.
+    """
     text = _read(DASHBOARD)
     watcher = text[text.index("(\n        # Bounded, quiet"):
                    text.index("ISAAC_WATCHER_PID=$!")]
-    assert 'kill -0 "$ISAAC_PID"' in watcher
+    assert 'kill -0 "$ISAAC_SUPERVISOR_PID"' in watcher
     assert "startup_status.py\" degrade" in watcher
-    assert "ROBOT_MODEL_INVALID" in watcher
-    # No restart loop. Checked against the CODE rather than the comment that
-    # says so — the comment reads "it never restarts anything" and would
-    # otherwise satisfy a naive substring scan.
+    assert "ROBOT_SWITCH_FAILED" in watcher
+    # No restart loop. Checked against the CODE rather than the comment.
     code = "\n".join(line for line in watcher.splitlines()
                      if not line.strip().startswith("#"))
-    for reckless in ("restart", "respawn", "setsid", "run_wisepack_isaac.sh"):
+    for reckless in ("restart", "respawn", "run_wisepack_isaac.sh"):
         assert reckless not in code, f"the watcher must not {reckless}"
+
+
+def test_the_supervisor_never_restarts_a_failed_simulator():
+    """A dead robot stays dead and is reported. An operator decides next."""
+    src = _read(os.path.join(REPO, "scripts", "isaac_supervisor.py"))
+    loop = src[src.index("    def run(self) -> int:"):]
+    code = "\n".join(line for line in loop.splitlines()
+                     if not line.strip().startswith("#"))
+    # The only start_isaac in the main loop is the FIRST one; a death sets the
+    # failed phase and nothing else.
+    assert code.count("self.start_isaac(") == 1
+    assert "PHASE_FAILED" in code
 
 
 def test_the_container_protection_is_preserved():

@@ -59,7 +59,7 @@ class IsaacRosBridge(Node):
     """
 
     def __init__(self, on_command: Callable[[IsaacCommand], None],
-                 robot_id: str = "") -> None:
+                 robot_id: str = "", simulator_generation: int = 0) -> None:
         super().__init__("wisepack_isaac_bridge")
         self._on_command = on_command
         #: WHICH ROBOT this process is running. Stamped onto EVERY outbound
@@ -68,6 +68,10 @@ class IsaacRosBridge(Node):
         #: both processes share one DDS domain and the previous one may simply
         #: never have been shut down.
         self.robot_id = robot_id
+        #: WHICH INSTANCE. Stamped beside the robot id so the orchestrator can
+        #: reject a report from the simulator that is being replaced, which the
+        #: robot id alone cannot do when a switch returns to a robot already used.
+        self.simulator_generation = int(simulator_generation)
         self._lock = threading.Lock()
         #: Gates inbound commands. The command topic is TRANSIENT_LOCAL, so a
         #: latched EXECUTE_ITEM is redelivered every time this node
@@ -124,7 +128,9 @@ class IsaacRosBridge(Node):
             dimensions=dimensions, source_pose=source_pose,
             target_pose=target_pose, actual_pose=actual_pose,
             position_error_mm=position_error_mm, message=message,
-            robot_id=self.robot_id, detail=dict(detail or {}))
+            robot_id=self.robot_id,
+            simulator_generation=self.simulator_generation,
+            detail=dict(detail or {}))
         with self._lock:
             self.publisher.publish(String(data=feedback.to_json()))
         self.get_logger().info(

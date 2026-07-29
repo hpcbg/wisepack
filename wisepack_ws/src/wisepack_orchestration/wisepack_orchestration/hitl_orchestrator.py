@@ -484,6 +484,15 @@ class HitLOrchestrator(Node):
     # -- tick ------------------------------------------------------------- #
 
     def _tick(self) -> None:
+        # A ROBOT SWITCH IS ADVANCED FROM THE NODE TICK, not from the execution
+        # loop. The loop only runs after approval, and approval is exactly what
+        # the switch is holding shut — driving it from there would be the same
+        # deadlock the initial scene handshake already had to be moved out of.
+        if self.isaac is not None:
+            try:
+                self.isaac.poll_switch(self.engine)
+            except Exception as exc:                    # noqa: BLE001
+                self.get_logger().error(f"robot switch poll failed: {exc}")
         try:
             self.tree.tick_once()
         except Exception as exc:                        # noqa: BLE001
@@ -1287,27 +1296,23 @@ class HitLOrchestrator(Node):
         # rebuilt around the new scenario. Abort whatever the simulator was doing
         # before the old engine goes out of scope; the bridge re-opens on its
         # next tick when it notices the run_id changed.
+        # SAME ROBOT OR DIFFERENT ROBOT — two different operations.
+        #
+        # Same robot: the existing in-process scene reset. The simulator rebuilds
+        # its objects and acknowledges; nothing restarts.
+        #
+        # Different robot: a HOST RESTART. The adapter and the USD model are
+        # chosen when Isaac starts and cannot be changed afterwards, so rebuilding
+        # only the scenario objects leaves the previous arm standing on the stage
+        # — which is exactly what an operator reported seeing.
+        robot_switch = (self.isaac is not None and robot_profile is not None
+                        and robot_id != self.isaac.robot_id)
+        switch_refusal = ""
         if self.isaac is not None:
             # Stop the arm FIRST, before the old engine goes out of scope.
             self.isaac.abort_run(previous_engine,
                                  "operator reset — starting a new run")
             self.isaac.run_open = False
-            if robot_profile is not None and robot_id != self.isaac.robot_id:
-                # A DIFFERENT ARM MEANS A DIFFERENT WORKCELL. The bridge's
-                # layout, its scene fingerprint and every pose it converts are
-                # derived from the robot's profile, so switching robots without
-                # re-deriving them would send the new arm to the old arm's
-                # coordinates. The simulator process must also be restarted for
-                # the new robot; until it reports a matching SCENE_READY the
-                # gate stays shut, which is the correct behaviour rather than a
-                # gap.
-                self.get_logger().warn(
-                    f"robot changed {self.isaac.robot_id or '-'} -> {robot_id}; "
-                    "restart the Isaac simulator with "
-                    f"--robot {robot_id} (or WISEPACK_ISAAC_ROBOT={robot_id}). "
-                    "Approval stays disabled until it acknowledges the scene "
-                    "for the new robot.")
-                self.isaac.rebind_robot(robot_profile)
 
         # Drive straight to the approval gate — never past it.
         #
@@ -1319,7 +1324,21 @@ class HitLOrchestrator(Node):
         # did not exist yet, and then measured the answer against a different
         # one.
         self.engine.generate_or_load_scenario()
-        if self.isaac is not None:
+        if robot_switch:
+            # THE SCENE REQUEST IS NOT SENT NOW. The old simulator is still
+            # running and still subscribed; it would rebuild its own workcell
+            # and acknowledge it with its own robot id. The request goes out
+            # from `poll_switch` once the host reports the NEW simulator up.
+            #
+            # The run exists and is planned, but it stays in a safe
+            # robot-switch state: `scene_ready` is False while a switch is in
+            # flight, so nothing can be approved and nothing can be executed.
+            switch_refusal = self.isaac.request_robot_switch(
+                self.engine, robot_profile)
+            if switch_refusal:
+                self.get_logger().error(
+                    f"robot switch to {robot_id} refused: {switch_refusal}")
+        elif self.isaac is not None:
             # A NEW SOFTWARE SCENARIO IS NOT A PHYSICAL RESET. Ask the backend
             # to rebuild — unconditionally here, because objects from the
             # previous run really are lying in the container — and gate approval
@@ -1343,7 +1362,14 @@ class HitLOrchestrator(Node):
         self.get_logger().info(
             f"reset -> preset={preset} seed={seed} strategy={strategy.value}"
             + (f" robot={robot_id}" if robot_id else "")
+            + (" (HOST RESTART requested)" if robot_switch else "")
             + "; awaiting approval")
+        if switch_refusal:
+            # Surfaced as a command refusal too, so the dashboard shows it
+            # rather than an approval gate that quietly never opens.
+            raise ValueError(
+                f"the scenario was regenerated, but the robot could not be "
+                f"switched to {robot_id}: {switch_refusal}")
 
     # -- artefacts --------------------------------------------------------- #
 

@@ -382,6 +382,17 @@ class IsaacCommand:
     #: orchestrator may legitimately do and which is therefore not treated as a
     #: mismatch — see the receiver in simulators/isaac/wisepack_isaac.py.
     robot_id: str = ""
+    #: WHICH SIMULATOR INSTANCE. Incremented by the host supervisor every time
+    #: it starts an Isaac process.
+    #:
+    #: The robot id alone cannot tell two instances apart. A robot switch stops
+    #: one simulator and starts another, and for a few seconds both may be on
+    #: the DDS domain — the old one still publishing as it dies, the new one
+    #: coming up. Worse, switching A -> B -> A returns to the SAME robot id
+    #: while being a different process with a different scene. A generation
+    #: makes "this is the instance I asked for" checkable instead of inferred
+    #: from timing. 0 means unstamped, and is never treated as a mismatch.
+    simulator_generation: int = 0
     timestamp: str = field(default_factory=utc_now_iso)
     schema_version: str = SCHEMA_VERSION
 
@@ -422,6 +433,7 @@ class IsaacCommand:
             "total_items": int(self.total_items),
             "scenario_revision": int(self.scenario_revision),
             "robot_id": self.robot_id,
+            "simulator_generation": int(self.simulator_generation),
         }
 
     def to_json(self) -> str:
@@ -453,6 +465,7 @@ class IsaacCommand:
             total_items=int(doc.get("total_items", 0)),
             scenario_revision=int(doc.get("scenario_revision", 0)),
             robot_id=str(doc.get("robot_id", "") or ""),
+            simulator_generation=int(doc.get("simulator_generation", 0) or 0),
             timestamp=str(doc.get("timestamp", utc_now_iso())),
             schema_version=str(doc["schema_version"]),
         )
@@ -514,6 +527,10 @@ class SceneAcknowledgement:
     seed: int = 0
     robot_id: str = ""
     robot_profile_revision: str = ""
+    #: The simulator instance that built this scene. A switch A -> B -> A comes
+    #: back to the same robot id; only the generation separates the scene the
+    #: first instance built from the one the third did.
+    simulator_generation: int = 0
     scene_fingerprint: str = ""
     object_ids: List[str] = field(default_factory=list)
     object_count: int = 0
@@ -533,6 +550,7 @@ class SceneAcknowledgement:
             "seed": int(self.seed),
             "robot_id": self.robot_id,
             "robot_profile_revision": self.robot_profile_revision,
+            "simulator_generation": int(self.simulator_generation),
             "scene_fingerprint": self.scene_fingerprint,
             "object_ids": list(self.object_ids),
             "object_count": int(self.object_count),
@@ -554,6 +572,7 @@ class SceneAcknowledgement:
             seed=int(doc.get("seed", 0) or 0),
             robot_id=str(doc.get("robot_id", "") or ""),
             robot_profile_revision=str(doc.get("robot_profile_revision", "") or ""),
+            simulator_generation=int(doc.get("simulator_generation", 0) or 0),
             scene_fingerprint=str(doc.get("scene_fingerprint", "")),
             object_ids=[str(i) for i in (doc.get("object_ids") or [])],
             object_count=int(doc.get("object_count", 0) or 0),
@@ -566,7 +585,8 @@ class SceneAcknowledgement:
     def mismatches(self, *, run_id: str, scenario_id: str, revision: int,
                    preset: str, seed: int, fingerprint: str,
                    object_count: int, robot_id: str = "",
-                   robot_profile_revision: str = "") -> List[str]:
+                   robot_profile_revision: str = "",
+                   simulator_generation: int = 0) -> List[str]:
         """Every reason this acknowledgement does not describe the given run.
 
         Returns sentences an operator can act on, not booleans. "scene not
@@ -602,6 +622,16 @@ class SceneAcknowledgement:
                 f"{self.robot_profile_revision} but this run is configured for "
                 f"{robot_profile_revision} — the same robot, described "
                 "differently, is a different machine to a validated plan")
+        # THE INSTANCE, not only the robot. A switch that returns to a robot
+        # already used comes back to the same id, and the scene an earlier
+        # instance built is not the scene this run planned against.
+        if (simulator_generation and self.simulator_generation
+                and self.simulator_generation != simulator_generation):
+            out.append(
+                f"acknowledged simulator generation "
+                f"{self.simulator_generation} but this run is waiting for "
+                f"generation {simulator_generation} — that scene was built by a "
+                "previous Isaac process")
         if fingerprint and self.scene_fingerprint \
                 and self.scene_fingerprint != fingerprint:
             out.append(f"acknowledged scene fingerprint "
@@ -648,6 +678,17 @@ class IsaacFeedback:
     #: and "this came from the robot this run selected" must be checkable
     #: without inferring it from timing. Empty means the sender did not say.
     robot_id: str = ""
+    #: WHICH SIMULATOR INSTANCE. Incremented by the host supervisor every time
+    #: it starts an Isaac process.
+    #:
+    #: The robot id alone cannot tell two instances apart. A robot switch stops
+    #: one simulator and starts another, and for a few seconds both may be on
+    #: the DDS domain — the old one still publishing as it dies, the new one
+    #: coming up. Worse, switching A -> B -> A returns to the SAME robot id
+    #: while being a different process with a different scene. A generation
+    #: makes "this is the instance I asked for" checkable instead of inferred
+    #: from timing. 0 means unstamped, and is never treated as a mismatch.
+    simulator_generation: int = 0
     #: SCENE ACKNOWLEDGEMENT, present on SCENE_READY. Everything needed to
     #: decide whether the world Isaac built is the world this run planned
     #: against — see SceneAcknowledgement for why each field is here.
@@ -684,6 +725,7 @@ class IsaacFeedback:
             "container_id": self.container_id,
             "scenario_revision": int(self.scenario_revision),
             "robot_id": self.robot_id,
+            "simulator_generation": int(self.simulator_generation),
             "dimensions": self.dimensions.to_dict() if self.dimensions else None,
             "source_pose": self.source_pose.to_dict() if self.source_pose else None,
             "target_pose": self.target_pose.to_dict() if self.target_pose else None,
@@ -721,6 +763,7 @@ class IsaacFeedback:
             container_id=doc.get("container_id"),
             scenario_revision=int(doc.get("scenario_revision", 0)),
             robot_id=str(doc.get("robot_id", "") or ""),
+            simulator_generation=int(doc.get("simulator_generation", 0) or 0),
             scene=SceneAcknowledgement.from_dict(doc.get("scene")),
             message=str(doc.get("message", "")),
             detail=dict(doc.get("detail", {}) or {}),

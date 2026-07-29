@@ -1499,6 +1499,51 @@ question that matters: a container whose ROS stack died on its first line is
 still `Up`. When there is no active run, Diagnostics names the **specific
 blocker** rather than only showing `IDLE`.
 
+### Switching robots from the dashboard
+
+Selecting the other arm and pressing **Reset run & generate** is **not** a scene
+reset. The adapter and the USD model are chosen when the Isaac process starts and
+cannot be changed afterwards, so a robot change is a **host restart**:
+
+```
+same robot        SCENE_RESET_REQUESTED -> RESETTING_SCENE -> SCENE_READY
+different robot   ROBOT_SWITCH_REQUESTED -> STOPPING_OLD_ROBOT
+                  -> STARTING_NEW_ROBOT -> SIMULATOR_READY
+                  -> BUILDING_SCENE -> SCENE_READY
+```
+
+The launcher starts a **supervisor** (`scripts/isaac_supervisor.py`) that owns
+the Isaac process group. The container may write **one kind of file** into one
+launcher-owned directory, naming **one allowlisted verb** — `switch_robot` — with
+identifiers the supervisor *compares*, never executes. No Docker socket, no host
+shell, no command string, no signal, no pid. The requested robot is validated
+against the tracked registry **before** the running simulator is stopped, so a
+request naming an unknown arm costs a refusal rather than a dead cell.
+
+**The old simulator never receives the new robot's scene request.** It is still
+subscribed while it shuts down and would rebuild its own workcell and acknowledge
+it with its own robot id — which is exactly the misleading partial reset this
+replaces. The scene request goes out only after the host reports a *new
+generation* running the requested robot.
+
+Every started process gets an incrementing **simulator generation**, stamped on
+every command and report. The robot id alone cannot separate two instances:
+switching A → B → A returns to the same id while being a different process with a
+different scene, and during any switch the dying and the starting simulator are
+briefly on the DDS domain together.
+
+The dashboard shows four values separately — **active**, **requested**, **host**
+and **acknowledged scene** — and the header follows the *host*, never the
+selection, so it cannot name an arm that is not on the stage. Approval stays
+disabled for the whole transaction and re-opens only on a `SCENE_READY` matching
+the run, the revision, the fingerprint, the robot, its profile revision and the
+generation. A failure holds in `ROBOT_SWITCH_FAILED`, keeps the requested robot
+as the selection, and never falls back to the previous arm.
+
+Measured on this host, warm cache: xArm 7 → Panda in **12 s** end to end (scene
+gate closed at +2 s, new scene verified at +12 s), and the reverse in **14 s**.
+A same-robot reset restarts nothing.
+
 ### Selecting a robot
 
 Resolution order, highest first:
@@ -1624,6 +1669,38 @@ in whatever configuration the servo drifts into — which is the same space abov
 the table where the remaining cylinders sit. Widening the pick pitch from 110 mm
 to 150 mm and moving the row away from the bin took a four-item run from 1/4 to
 3/4; the remaining failure is the item nearest the bin, on the transit path.
+
+#### xArm 7 motion stability
+
+The arm visibly oscillated. It was **instrumented before anything was changed** —
+joint positions, velocities, commanded deltas, TCP error, IK residual,
+manipulability, joint-limit margin, per tick, through one full pick-and-place
+(`scripts/probe_motion.py`). Three causes, all measured:
+
+| | measured |
+|---|---|
+| **Redundant null-space drift** — a 7-DOF arm has one spare degree of freedom and damped least squares says nothing about where it should sit | joint 7 travelled **5.89 rad** to achieve **0.28 rad** of net change (21×); joint 2 reversed direction **26 times** while the tool was converging |
+| **Fixed damping near singularities** | manipulability collapsed from **0.05–0.07** in the pick poses to **0.0013–0.0020** over the container — 35–50× |
+| **Commanded steps larger than achievable** | commanded joint delta sat at **0.0524 rad** every tick, which is exactly the joint's 3.14 rad/s limit at 60 Hz |
+
+Two hypotheses were **ruled out** by the same data: the solver already re-seeds
+from the measured joint state every tick, and the joint ordering and
+tool-centre-point are validated against the articulation at startup.
+
+The minimum justified fix — a null-space pull toward the profile's home posture,
+Chiaverini variable damping below a manipulability threshold, and a per-tick step
+clamp below the velocity limit — is **per robot and off by default**, so the
+Panda is untouched. Re-measured on the same probe:
+
+| | before | after |
+|---|---|---|
+| total joint travel | 57.50 rad | **18.66 rad** (−68%) |
+| direction reversals | 177 | **50** (−72%) |
+| ticks to complete the sequence | 696 | **437** |
+| worst goal: ticks with the tool moving *away* | 104 of 284 | **0 of 57** |
+
+**This is not collision-aware planning**, and none of it makes the item below
+untrue.
 
 **This is not fixed by moving coordinates further.** It is what a motion planner
 is for, and this iteration does not have one — see the roadmap. Nothing in the

@@ -560,7 +560,30 @@ def _robot_startup_rows(startup: Dict[str, Any], isaac: Dict[str, Any],
     robot = startup.get("robot") or {}
     isaac_robot = dict(isaac.get("robot_status") or {})
     ack = isaac.get("acknowledged_scene") or {}
-    return {
+    switch = dict(isaac.get("robot_switch") or {})
+    rows = {}
+    if switch:
+        # FOUR ANSWERS, never collapsed into one. They agree except while a
+        # switch is in flight or has failed, and that is precisely when a single
+        # number would tell an operator the new arm is running when it is not.
+        rows.update({
+            "robot_switch_available": ("yes" if switch.get("available")
+                                       else switch.get("unavailable_reason")
+                                       or "no"),
+            "robot_switch_phase": switch.get("phase_label")
+            or switch.get("phase") or "—",
+            "robot_switch_in_flight": "YES" if switch.get("in_flight") else "no",
+            "robot_switch_requested": switch.get("requested_robot_id") or "—",
+            "robot_switch_previous": switch.get("previous_robot_id") or "—",
+            "robot_host_reported": switch.get("host_robot_id") or "—",
+            "robot_host_generation": switch.get("host_generation") or "—",
+            "robot_expected_generation": switch.get("expected_generation") or "—",
+            "robot_acknowledged_generation": (
+                isaac.get("acknowledged_simulator_generation") or "—"),
+            "robot_switch_failed": (switch.get("failed_reason") or "no"
+                                    if switch.get("failed") else "no"),
+        })
+    rows.update({
         "robot_registry_loaded": ("yes" if robot.get("registry_loaded")
                                   else "not reported"),
         # RESOLVED, not WHERE. The launcher already printed the path on the
@@ -569,7 +592,13 @@ def _robot_startup_rows(startup: Dict[str, Any], isaac: Dict[str, Any],
         "robot_registry_resolved": (os.path.basename(robot["registry_path"])
                                     if robot.get("registry_path") else "no"),
         "robot_configured_default": robot.get("registry_default") or "—",
-        "robot_effective": robot.get("effective") or "— (logical run: none)",
+        # AT STARTUP — not "now". A robot switch replaces the simulator, so this
+        # is the arm the launcher resolved when the stack came up and
+        # `robot_host_reported` is the one running. They differ legitimately
+        # after any switch, and labelling this one "effective" without saying
+        # when made a completed switch look like a disagreement.
+        "robot_effective_at_startup": robot.get("effective")
+        or "— (logical run: none)",
         "robot_selection_source": robot.get("source") or "—",
         "robot_startup_profile_revision": robot.get("profile_revision") or "—",
         "robot_host_id": isaac_robot.get("robot_id") or "—",
@@ -577,7 +606,8 @@ def _robot_startup_rows(startup: Dict[str, Any], isaac: Dict[str, Any],
         "robot_requested_scene_id": isaac.get("robot_id") or "—",
         "robot_acknowledged_scene_id": (ack.get("robot_id")
                                         or isaac.get("acknowledged_robot") or "—"),
-    }
+    })
+    return rows
 
 
 def _robot_rows(snap, isaac: Dict[str, Any]) -> Dict[str, Any]:

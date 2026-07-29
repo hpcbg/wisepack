@@ -669,6 +669,15 @@ def api_state():
         "active_robot": active_robot,
         "active_robot_id": active_robot_id,
         "draft_robot_id": draft_robot_id,
+        # FOUR SEPARATE ANSWERS, never collapsed:
+        #   active     what the run is executing with
+        #   requested  what a switch asked for
+        #   host       what the host supervisor says is actually running
+        #   scene      what the acknowledged scene was built by
+        "robot_switch": (execution.get("isaac") or {}).get("robot_switch"),
+        "acknowledged_scene_robot_id": (
+            ((execution.get("isaac") or {}).get("acknowledged_scene") or {})
+            .get("robot_id")),
         "robot_preset_conflict": robot_preset_conflict,
         # Changing the robot is a NEW RUN, never a live switch. The frontend
         # uses this to require confirmation before resetting an Isaac run.
@@ -822,6 +831,20 @@ def api_visualization():
     # WHICH ARM the stream is showing. Public-safe subset only — no asset URLs.
     payload["robot"] = snap.active_robot
     payload["robot_id"] = snap.active_robot_id
+    # AFTER A ROBOT SWITCH THE STREAM IS A NEW ONE. Isaac restarted, so its
+    # WebRTC listener restarted with it: the descriptor below is re-read from
+    # the new simulator's READY, and a native client that was connected to the
+    # previous process has to reconnect. Said explicitly, because a frozen last
+    # frame looks exactly like a working stream.
+    switch = (snap.isaac or {}).get("robot_switch") or {}
+    payload["robot_switch"] = switch
+    payload["simulator_generation"] = switch.get("host_generation") or 0
+    payload["stream_reconnect_required"] = bool(
+        switch.get("in_flight") or switch.get("failed"))
+    payload["stream_note"] = (
+        "The simulator restarted for a different robot — this is a NEW stream. "
+        "Reconnect the native WebRTC client if it is still showing the previous "
+        "session." if switch.get("host_generation", 0) > 1 else "")
     payload["current_item_id"] = snap.current_item_id
     payload["stage"] = snap.stage
     payload["isaac_state"] = (snap.isaac or {}).get("last_state")

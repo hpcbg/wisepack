@@ -91,8 +91,10 @@ def test_the_readiness_wait_became_a_background_watcher():
     assert "ISAAC_WATCHER_PID=$!" in text
     assert "not blocking on Isaac" in text
     # ...and the launcher stops the watcher it owns, and only that one.
-    cleanup = text[text.index("isaac_cleanup() {"):text.index("ISAAC_LOG=\"$(mktemp")]
+    cleanup = text[text.index("isaac_cleanup() {"):
+                   text.index("THE LAUNCHER NO LONGER STARTS ISAAC")]
     assert 'kill -TERM "$ISAAC_WATCHER_PID"' in cleanup
+    assert 'kill -TERM "$ISAAC_SUPERVISOR_PID"' in cleanup
 
 
 def test_the_isaac_readiness_gate_upstream_is_untouched():
@@ -213,11 +215,12 @@ def test_the_launcher_prints_a_concrete_robot_and_its_source():
 
 def test_the_launcher_refuses_an_unresolved_robot_before_starting_anything():
     text = _read(DASHBOARD)
-    guard = text[text.index('case "$ROBOT_ID" in'):text.index("export WISEPACK_ISAAC_ROBOT")]
+    guard = text[text.index('case "$ROBOT_ID" in'):
+                 text.index('export WISEPACK_ISAAC_ROBOT="$ROBOT_ID"')]
     assert '*"<"*' in guard and '*">"*' in guard and '*" "*' in guard
     assert "exit 5" in guard
     # ...and the resolution happens BEFORE Isaac or the container is started.
-    assert text.index("resolve_robot.py") < text.index("starting Isaac Sim on the host")
+    assert text.index("resolve_robot.py") < text.index("starting the Isaac supervisor")
     assert text.index("resolve_robot.py") < text.index("DOCKER_RUN=(docker run")
 
 
@@ -274,8 +277,11 @@ def test_the_orchestrator_and_the_host_get_the_same_value():
     text = _read(DASHBOARD)
     # One assignment, exported once, consumed by both.
     assert text.count('export WISEPACK_ISAAC_ROBOT="$ROBOT_ID"') == 1
-    isaac_env = text[text.index("setsid bash -c '"):text.index("# Wait briefly for the group leader")]
-    assert 'WISEPACK_ISAAC_ROBOT="$WISEPACK_ISAAC_ROBOT"' in isaac_env
+    # The supervisor is given the resolved id and passes it to every Isaac
+    # generation it starts (see scripts/isaac_supervisor.py).
+    supervisor = text[text.index("setsid env ROS_DOMAIN_ID"):
+                      text.index("ISAAC_SUPERVISOR_PID=$!")]
+    assert '--robot "$ROBOT_ID"' in supervisor
     assert '-e "WISEPACK_ISAAC_ROBOT=$ROBOT_ID"' in text
 
 
@@ -378,7 +384,7 @@ def test_a_status_write_failure_never_takes_the_launcher_down(tmp_path):
 def test_the_launcher_writes_the_status_before_starting_anything():
     text = _read(DASHBOARD)
     init = text.index("scripts/startup_status.py")
-    assert init < text.index("starting Isaac Sim on the host")
+    assert init < text.index("starting the Isaac supervisor")
     assert init < text.index("DOCKER_RUN=(docker run")
     # A previous run's stack status must not be read as this run's.
     assert 'rm -f "$STACK_STATUS"' in text
@@ -464,7 +470,7 @@ def test_diagnostics_reports_the_robot_resolution_chain(monkeypatch, tmp_path):
     assert rows["robot_registry_resolved"] == "isaac_robots.yaml"
     assert "/" not in rows["robot_registry_resolved"]
     assert rows["robot_configured_default"] == "panda"
-    assert rows["robot_effective"] == "xarm7"
+    assert rows["robot_effective_at_startup"] == "xarm7"
     assert rows["robot_selection_source"] == "environment"
     assert rows["robot_startup_profile_revision"] == "abc123"
     assert rows["robot_host_id"] == "xarm7"

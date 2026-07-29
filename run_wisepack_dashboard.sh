@@ -331,186 +331,202 @@ isaac_group_size() {
 }
 
 isaac_cleanup() {
-    # OWNERSHIP IS BY PROCESS GROUP, and only the group this invocation created.
+    # OWNERSHIP IS BY SESSION, and only the session this invocation created.
     #
-    # `setsid` below puts Isaac in its own process group whose PGID equals the
-    # child's PID, so signalling `-$ISAAC_PID` reaches the whole tree — the
-    # python.sh wrapper, the Kit process it execs, and the WebRTC service Kit
-    # owns as part of that process. A `pkill -f isaac` pattern would instead
-    # match another project's simulator on a shared machine, which is exactly
-    # the rule the container reaping already follows by name rather than pattern.
+    # The supervisor is started with `setsid`, so its session contains it and
+    # every Isaac process group it has ever started. Signalling that session
+    # reaches the whole tree — the python.sh wrapper, the Kit process it execs,
+    # and the WebRTC service Kit owns as part of that process. A `pkill -f
+    # isaac` pattern would instead match another project's simulator on a shared
+    # machine, which is exactly the kind of collateral a demonstration host does
+    # not need.
     #
     # NOTE FOR ANYONE READING htop: Isaac shows dozens of rows because Kit is
     # heavily threaded and htop lists THREADS by default (press H to hide them).
-    # Those are TIDs inside one process, not multiple Isaac instances. The check
-    # below counts process-group members, which is the question that matters.
-    # ONLY what this launcher created, and only when it created it.
+    # Those are TIDs inside one process, not multiple Isaac instances.
+
+    # Only what this launcher created, and only when it created it.
     if [ -n "${HOST_STATUS_OWNED_DIR:-}" ]; then
         rm -rf -- "$HOST_STATUS_OWNED_DIR"
         HOST_STATUS_OWNED_DIR=""
     fi
-    # ONLY what this launcher started. The watcher first, so it cannot report
-    # the shutdown it is being shut down by as a failure.
+    # The watcher first, so it cannot report the shutdown it is being shut down
+    # by as a failure.
     if [ -n "${ISAAC_WATCHER_PID:-}" ]; then
         kill -TERM "$ISAAC_WATCHER_PID" 2>/dev/null || true
         wait "$ISAAC_WATCHER_PID" 2>/dev/null || true
         ISAAC_WATCHER_PID=""
     fi
-    [ -z "$ISAAC_PID" ] && return 0
-    kill -0 "$ISAAC_PID" 2>/dev/null || return 0
 
-    echo "[isaac-launch] stopping Isaac Sim process group $ISAAC_PID"
-    kill -TERM "-$ISAAC_PID" 2>/dev/null || true
-
-    # WAIT ON GROUP MEMBERSHIP, NOT ON THE LEADER. Kit spawns children that
-    # outlive their parent during shutdown, so the leader can be gone while the
-    # simulator is still holding the GPU. Measured exactly that way: keying the
-    # wait on `kill -0 $LEADER` reported success with three processes still in
-    # the group, and the KILL escalation was skipped because the leader had
-    # already exited.
-    local remaining
-    for _ in $(seq 1 30); do
-        remaining="$(isaac_group_size "$ISAAC_PID")"
-        [ "$remaining" -eq 0 ] && break
-        sleep 0.5
-    done
-    if [ "$(isaac_group_size "$ISAAC_PID")" -gt 0 ]; then
-        echo "[isaac-launch] group $ISAAC_PID did not exit on TERM — sending KILL"
-        kill -KILL "-$ISAAC_PID" 2>/dev/null || true
-        for _ in $(seq 1 10); do
-            [ "$(isaac_group_size "$ISAAC_PID")" -eq 0 ] && break
+    # THE SUPERVISOR OWNS ISAAC, so it is asked to stop and given time to take
+    # its process group with it. Killing Isaac directly here would race the
+    # supervisor's own shutdown and could leave it starting a replacement.
+    if [ -n "${ISAAC_SUPERVISOR_PID:-}" ]; then
+        echo "[isaac-launch] stopping the Isaac supervisor ($ISAAC_SUPERVISOR_PID)"
+        kill -TERM "$ISAAC_SUPERVISOR_PID" 2>/dev/null || true
+        for _ in $(seq 1 90); do
+            kill -0 "$ISAAC_SUPERVISOR_PID" 2>/dev/null || break
             sleep 0.5
         done
+        if kill -0 "$ISAAC_SUPERVISOR_PID" 2>/dev/null; then
+            echo "[isaac-launch] supervisor did not exit on TERM — sending KILL" >&2
+            kill -KILL "$ISAAC_SUPERVISOR_PID" 2>/dev/null || true
+        fi
+        ISAAC_SUPERVISOR_PID=""
     fi
 
     # VERIFY, do not assume. A launcher that says "stopped" while the GPU is
     # still held is worse than one that says nothing.
-    remaining="$(isaac_group_size "$ISAAC_PID")"
-    if [ "${remaining:-0}" -gt 0 ]; then
-        echo "[isaac-launch] WARNING: $remaining process(es) remain in group $ISAAC_PID" >&2
-        ps -eo pgid=,pid=,cmd= 2>/dev/null | awk -v g="$ISAAC_PID" '$1 == g' | head -5 >&2
-    else
-        echo "[isaac-launch] process group $ISAAC_PID is gone"
+    if [ -n "${ISAAC_SUPERVISOR_PGID:-}" ]; then
+        remaining="$(ps -eo pgid= 2>/dev/null | tr -d " " \
+            | grep -c "^${ISAAC_SUPERVISOR_PGID}$" || true)"
+        if [ "${remaining:-0}" -gt 0 ]; then
+            echo "[isaac-launch] $remaining process(es) remain in session" \
+                 "$ISAAC_SUPERVISOR_PGID — sending KILL" >&2
+            kill -KILL "-$ISAAC_SUPERVISOR_PGID" 2>/dev/null || true
+            sleep 1
+        fi
+        remaining="$(ps -eo pgid= 2>/dev/null | tr -d " " \
+            | grep -c "^${ISAAC_SUPERVISOR_PGID}$" || true)"
+        if [ "${remaining:-0}" -gt 0 ]; then
+            echo "[isaac-launch] WARNING: $remaining process(es) still in group" \
+                 "$ISAAC_SUPERVISOR_PGID" >&2
+            ps -eo pgid=,pid=,cmd= 2>/dev/null \
+                | awk -v g="$ISAAC_SUPERVISOR_PGID" '$1 == g' | head -5 >&2
+        else
+            echo "[isaac-launch] supervisor session $ISAAC_SUPERVISOR_PGID is gone"
+        fi
+        ISAAC_SUPERVISOR_PGID=""
     fi
-    [ -n "${ISAAC_PIDFILE:-}" ] && rm -f "$ISAAC_PIDFILE"
+
+    # The control directory is this launcher's, and it holds only control
+    # documents and per-generation logs.
+    if [ -n "${ISAAC_CONTROL_DIR:-}" ]; then
+        rm -rf -- "$ISAAC_CONTROL_DIR"
+        ISAAC_CONTROL_DIR=""
+    fi
     return 0
 }
 
 if [ "$EXECUTION_BACKEND" = "isaac" ]; then
     trap 'isaac_cleanup' EXIT INT TERM
 
-    ISAAC_LOG="$(mktemp -t wisepack-isaac-XXXXXX.log)"
-    ISAAC_PIDFILE="$(mktemp -t wisepack-isaac-pid-XXXXXX)"
-    # BOTH ENDS GET THE SAME ROBOT, from the same variable. The orchestrator
-    # resolves it too (see the `robot:=` launch argument below), and passing it
-    # here rather than letting each side resolve independently is what stops the
-    # simulator standing up one arm while the orchestrator plans for another.
-    echo "[isaac-launch] starting Isaac Sim on the host (log: $ISAAC_LOG)"
+    # THE LAUNCHER NO LONGER STARTS ISAAC DIRECTLY.
+    #
+    # It starts a SUPERVISOR that owns the Isaac process group, because the
+    # robot is chosen when the Isaac process starts — the adapter is built from
+    # the profile and the USD model is referenced into the stage — and neither
+    # can be changed afterwards. Switching robots is therefore a PROCESS
+    # operation, and something has to be able to stop one simulator and start
+    # another. The orchestrator runs in a container and must not be able to.
+    #
+    # The supervisor accepts exactly one verb, `switch_robot`, through a
+    # request file in the directory below. No Docker socket, no host shell, no
+    # command string, no signal, no pid. See scripts/isaac_supervisor.py.
+    ISAAC_CONTROL_DIR="${TMPDIR:-/tmp}/wisepack-control-$$"
+    mkdir -p "$ISAAC_CONTROL_DIR/logs" || {
+        echo "[isaac-launch] ERROR: cannot create $ISAAC_CONTROL_DIR" >&2
+        exit 7
+    }
+    # The container WRITES requests here, so this one directory is read-write.
+    # It contains nothing but control documents.
+    export WISEPACK_CONTROL_DIR="$ISAAC_CONTROL_DIR"
+    ISAAC_LOG="$ISAAC_CONTROL_DIR/logs"
+
+    echo "[isaac-launch] starting the Isaac supervisor (logs: $ISAAC_LOG)"
     echo "[isaac-launch] robot        : $ROBOT_ID"
     echo "[isaac-launch] robot source : $ROBOT_SOURCE"
     echo "[isaac-launch] robot profile: $ROBOT_REVISION"
     echo "[isaac-launch] robot registry: $ROBOT_REGISTRY (default $ROBOT_REGISTRY_DEFAULT)"
+    echo "[isaac-launch] control dir  : $ISAAC_CONTROL_DIR (switch_robot only)"
 
-    # THE CHILD REPORTS ITS OWN GROUP ID, and that is not pedantry.
-    #
-    # `setsid` FORKS when it is not already a process-group leader, so the `$!`
-    # the shell records is setsid's short-lived parent, which exits immediately.
-    # Measured here: `$!` was already dead one second later while the simulator
-    # ran happily in a three-member group — so a cleanup keyed on `$!` found
-    # nothing to kill and Ctrl-C left Isaac holding the GPU.
-    #
-    # The new session leader writes its own PID, which IS the process-group id,
-    # so ownership is recorded from inside the group rather than guessed from
-    # outside it.
-    setsid bash -c '
-        echo $$ > "$1"
-        shift
-        exec "$@"
-    ' _ "$ISAAC_PIDFILE" \
-        env ROS_DOMAIN_ID="$ROS_DOMAIN_ID" \
-            WISEPACK_PRESET="$PRESET" \
-            WISEPACK_SEED="$SEED" \
-            ${WISEPACK_ISAAC_ROBOT:+WISEPACK_ISAAC_ROBOT="$WISEPACK_ISAAC_ROBOT"} \
-            ${WISEPACK_RESULTS_DIR:+WISEPACK_RESULTS_DIR="$WISEPACK_RESULTS_DIR"} \
-            "$REPO/scripts/run_wisepack_isaac.sh" > "$ISAAC_LOG" 2>&1 &
+    setsid env ROS_DOMAIN_ID="$ROS_DOMAIN_ID" \
+        WISEPACK_PRESET="$PRESET" \
+        WISEPACK_SEED="$SEED" \
+        ${WISEPACK_RESULTS_DIR:+WISEPACK_RESULTS_DIR="$WISEPACK_RESULTS_DIR"} \
+        python3 "$REPO/scripts/isaac_supervisor.py" \
+            --control-dir "$ISAAC_CONTROL_DIR" \
+            --robot "$ROBOT_ID" \
+            --log-dir "$ISAAC_CONTROL_DIR/logs" \
+        > "$ISAAC_CONTROL_DIR/supervisor.log" 2>&1 &
+    ISAAC_SUPERVISOR_PID=$!
 
-    # Wait briefly for the group leader to announce itself.
-    ISAAC_PID=""
+    # Its process group, so stopping it stops the Isaac group it owns.
     for _ in $(seq 1 40); do
-        if [ -s "$ISAAC_PIDFILE" ]; then
-            ISAAC_PID="$(cat "$ISAAC_PIDFILE")"
-            break
-        fi
+        ISAAC_SUPERVISOR_PGID="$(ps -o pgid= -p "$ISAAC_SUPERVISOR_PID" 2>/dev/null | tr -d ' ')"
+        [ -n "$ISAAC_SUPERVISOR_PGID" ] && break
         sleep 0.25
     done
-    if [ -z "$ISAAC_PID" ]; then
-        echo "[isaac-launch] ERROR: Isaac Sim never reported its process group." >&2
+    if [ -z "${ISAAC_SUPERVISOR_PGID:-}" ]; then
+        echo "[isaac-launch] ERROR: the Isaac supervisor did not start." >&2
+        tail -20 "$ISAAC_CONTROL_DIR/supervisor.log" 2>/dev/null | sed 's/^/    /' >&2
         exit 5
     fi
-    echo "[isaac-launch] Isaac Sim process group: $ISAAC_PID"
+    echo "[isaac-launch] supervisor pid $ISAAC_SUPERVISOR_PID (group $ISAAC_SUPERVISOR_PGID)"
     python3 "$REPO/scripts/startup_status.py" proc --out "$HOST_STATUS" \
-        --name isaac-sim --pid "$ISAAC_PID" --expected 1 --running 1 \
-        2>/dev/null || true
+        --name isaac-supervisor --pid "$ISAAC_SUPERVISOR_PID" \
+        --expected 1 --running 1 2>/dev/null || true
 
-    # THE DASHBOARD NO LONGER WAITS FOR THIS.
-    #
-    # It used to: the launcher blocked here for up to ISAAC_READY_TIMEOUT before
-    # `docker run` was even reached, so port 8080 stayed closed while Isaac
-    # compiled shaders — minutes on a cold cache, and about a minute on a warm
-    # one. An operator watching a dead port cannot tell a slow simulator from a
-    # broken launcher, and there is nothing they can do with the information
-    # once they can.
-    #
-    # So readiness is now WATCHED rather than waited on. The stack and the
-    # dashboard come up immediately and show Isaac's progress as state; the
-    # watcher below records it, and every existing authorisation gate is
-    # untouched — approval still requires SIMULATOR_READY, an active run and a
-    # SCENE_READY correlated to this run, this revision and this robot. Starting
-    # the UI earlier shows the operator MORE about why they cannot approve yet,
-    # not less.
+    # THE DASHBOARD DOES NOT WAIT FOR THIS. Readiness is watched and reported as
+    # state; every authorisation gate upstream is unchanged.
     echo "[isaac-launch] not blocking on Isaac: the dashboard starts now and shows"
     echo "[isaac-launch] its progress (first launch compiles shaders and is slow)"
 
     (
-        # Bounded, quiet, and it never restarts anything. Its whole job is to
-        # turn "Isaac is doing something" into state an operator can read.
+        # Bounded, quiet, and it never restarts anything. It mirrors the
+        # supervisor's own status into the startup table an operator reads.
         announced_ready=0
         deadline=$(( $(date +%s) + ISAAC_READY_TIMEOUT ))
+        STATUS_JSON="$ISAAC_CONTROL_DIR/supervisor-status.json"
         while :; do
-            if ! kill -0 "$ISAAC_PID" 2>/dev/null; then
-                # A dead simulator is REPORTED, not retried. The stack keeps
-                # running so Diagnostics stays reachable; approval stays shut
-                # because SCENE_READY will never arrive.
-                reason="Isaac Sim (pid $ISAAC_PID) exited"
-                if grep -q 'ROBOT_MODEL_INVALID' "$ISAAC_LOG" 2>/dev/null; then
-                    reason="$reason — ROBOT_MODEL_INVALID: the $ROBOT_ID model did not validate"
-                fi
+            if ! kill -0 "$ISAAC_SUPERVISOR_PID" 2>/dev/null; then
+                reason="the Isaac supervisor (pid $ISAAC_SUPERVISOR_PID) exited"
                 echo "[isaac-launch] ERROR: $reason" >&2
-                echo "[isaac-launch] last 25 lines of $ISAAC_LOG:" >&2
-                tail -25 "$ISAAC_LOG" | sed 's/^/    /' >&2
+                tail -25 "$ISAAC_CONTROL_DIR/supervisor.log" 2>/dev/null \
+                    | sed 's/^/    /' >&2
                 python3 "$REPO/scripts/startup_status.py" proc \
-                    --out "$HOST_STATUS" --name isaac-sim --running 0 \
+                    --out "$HOST_STATUS" --name isaac-supervisor --running 0 \
                     --error "$reason" 2>/dev/null || true
                 python3 "$REPO/scripts/startup_status.py" degrade \
                     --out "$HOST_STATUS" --reason "$reason" 2>/dev/null || true
                 break
             fi
-            if [ "$announced_ready" -eq 0 ] \
-               && grep -q '\[isaac-app\] READY' "$ISAAC_LOG" 2>/dev/null; then
+            phase="$(python3 -c "
+import json,sys
+try:
+    d=json.load(open(sys.argv[1]))
+except Exception:
+    print('')
+else:
+    print(f\"{d.get('phase','')}|{d.get('robot_id','')}|{d.get('simulator_generation',0)}|{d.get('simulator_ready')}|{d.get('last_error','')}\")
+" "$STATUS_JSON" 2>/dev/null)"
+            IFS='|' read -r p_phase p_robot p_gen p_ready p_err <<<"${phase:-|||}"
+            if [ "$announced_ready" -eq 0 ] && [ "$p_ready" = "True" ]; then
                 announced_ready=1
-                echo "[isaac-launch] Isaac Sim READY (pid $ISAAC_PID) — physical execution enabled"
+                echo "[isaac-launch] Isaac READY — $p_robot, generation $p_gen"
                 python3 "$REPO/scripts/startup_status.py" proc \
-                    --out "$HOST_STATUS" --name isaac-sim --running 1 \
+                    --out "$HOST_STATUS" --name isaac-sim --expected 1 --running 1 \
                     2>/dev/null || true
             fi
+            if [ "$p_phase" = "ROBOT_SWITCH_FAILED" ]; then
+                python3 "$REPO/scripts/startup_status.py" proc \
+                    --out "$HOST_STATUS" --name isaac-sim --running 0 \
+                    --error "${p_err:-the simulator failed}" 2>/dev/null || true
+                python3 "$REPO/scripts/startup_status.py" degrade \
+                    --out "$HOST_STATUS" \
+                    --reason "${p_err:-the Isaac simulator failed}" \
+                    2>/dev/null || true
+                announced_ready=2
+            elif [ "$announced_ready" -eq 1 ] && [ "$p_ready" != "True" ]; then
+                # A switch is under way: no longer ready, not a failure.
+                announced_ready=0
+            fi
             if [ "$announced_ready" -eq 0 ] && [ "$(date +%s)" -gt "$deadline" ]; then
-                reason="Isaac Sim did not report READY within ${ISAAC_READY_TIMEOUT}s"
+                reason="Isaac did not report READY within ${ISAAC_READY_TIMEOUT}s"
                 echo "[isaac-launch] WARNING: $reason" >&2
-                echo "[isaac-launch]   check GPU/driver, DISPLAY (WISEPACK_ISAAC_HEADLESS=1)," >&2
-                echo "[isaac-launch]   and outbound HTTPS for the robot asset download." >&2
                 python3 "$REPO/scripts/startup_status.py" degrade \
                     --out "$HOST_STATUS" --reason "$reason" 2>/dev/null || true
-                announced_ready=2      # reported once; keep watching for a death
+                announced_ready=2
             fi
             python3 "$REPO/scripts/startup_status.py" beat \
                 --out "$HOST_STATUS" --name isaac-watcher 2>/dev/null || true
@@ -531,6 +547,14 @@ HOST_STATUS_MOUNT=()
 if [ -n "$HOST_STATUS_OWNED_DIR" ] && [ -d "$HOST_STATUS_OWNED_DIR" ]; then
     # The DIRECTORY, so an atomic replace inside it is visible to the reader.
     HOST_STATUS_MOUNT=(-v "$HOST_STATUS_OWNED_DIR:$HOST_STATUS_OWNED_DIR:ro")
+fi
+# THE ONE READ-WRITE PATH THE CONTAINER IS GIVEN, and it holds nothing but
+# control documents. Not the Docker socket, not a host shell, not /proc, not any
+# other host state. The supervisor accepts one verb from it and validates the
+# argument against the tracked registry before it stops anything.
+CONTROL_MOUNT=()
+if [ -n "${ISAAC_CONTROL_DIR:-}" ] && [ -d "${ISAAC_CONTROL_DIR:-}" ]; then
+    CONTROL_MOUNT=(-v "$ISAAC_CONTROL_DIR:$ISAAC_CONTROL_DIR:rw")
 fi
 
 echo "[dashboard] live mode ($SOURCE) — WISEPACK ROS 2/DDS stack + dashboard"
@@ -555,11 +579,13 @@ DOCKER_RUN=(docker run --rm -i $([ -t 1 ] && echo -t) \
     -e "WISEPACK_ROBOT_SOURCE=$ROBOT_SOURCE" \
     -e "WISEPACK_STARTUP_STATUS=$STACK_STATUS" \
     -e "WISEPACK_HOST_STATUS=$HOST_STATUS" \
+    -e "WISEPACK_CONTROL_DIR=${ISAAC_CONTROL_DIR:-}" \
     -e "WISEPACK_MODE=$MODE" \
     -e WISEPACK_SKIP_BUILD \
     -e ORION \
     -v "$REPO:$REPO" \
     "${HOST_STATUS_MOUNT[@]}" \
+    "${CONTROL_MOUNT[@]}" \
     -w "$REPO" \
     "$IMAGE" \
     bash -lc '

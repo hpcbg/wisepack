@@ -163,9 +163,21 @@ except RobotConfigError as exc:
           f"{ROBOT_ENV_VAR}=<id>", file=sys.stderr)
     sys.exit(5)
 
+# WHICH INSTANCE THIS IS. Set by the host supervisor, which increments it every
+# time it starts an Isaac process, and stamped on everything published below.
+# The robot id alone cannot separate two instances: a switch A -> B -> A returns
+# to the same id, and during a switch the dying and the starting simulator are
+# briefly on the DDS domain together. 0 means "started outside a supervisor",
+# which is a normal standalone run and is never treated as a mismatch.
+try:
+    SIMULATOR_GENERATION = int(os.environ.get("WISEPACK_ISAAC_GENERATION", "0"))
+except ValueError:
+    SIMULATOR_GENERATION = 0
+
 print(f"[isaac-robot] selected {ROBOT_PROFILE.display_name} "
       f"({ROBOT_PROFILE.robot_id}, profile revision {ROBOT_PROFILE.revision}, "
-      f"{ROBOT_PROFILE.implementation_status})")
+      f"{ROBOT_PROFILE.implementation_status}, "
+      f"simulator generation {SIMULATOR_GENERATION or 'standalone'})")
 
 # Streaming is decided BEFORE the app is constructed. The livestream extension
 # captures the application framebuffer, and its size plus headless/hide_ui are
@@ -420,7 +432,8 @@ class WisepackIsaacApp:
 
         init_ros()
         self.bridge = IsaacRosBridge(on_command=self._on_command,
-                                     robot_id=self.profile.robot_id)
+                                     robot_id=self.profile.robot_id,
+                                     simulator_generation=SIMULATOR_GENERATION)
 
     # -- observational frame capture (README media) ----------------------- #
 
@@ -548,6 +561,7 @@ class WisepackIsaacApp:
             "implementation_status": self.profile.implementation_status,
             "robot_profile_revision": self.profile.revision,
             "registry_revision": ROBOT_REGISTRY.revision,
+            "simulator_generation": SIMULATOR_GENERATION,
             "configured_robots": [p.robot_id for p in ROBOT_REGISTRY.ordered],
             "selected_robot": self.profile.robot_id,
             "kinematics": self.profile.kinematics,
@@ -923,6 +937,7 @@ class WisepackIsaacApp:
             # from the fingertips. The orchestrator refuses on either mismatch.
             robot_id=self.profile.robot_id,
             robot_profile_revision=self.profile.revision,
+            simulator_generation=SIMULATOR_GENERATION,
             scene_fingerprint=scene_fingerprint(self.scenario, self.layout,
                                                 self.profile.robot_id),
             object_ids=sorted(self.scene.items),
@@ -956,6 +971,11 @@ class WisepackIsaacApp:
         if command.robot_id and command.robot_id != self.profile.robot_id:
             return (f"this simulator is running {self.profile.robot_id}, but "
                     f"the run selected {command.robot_id}")
+        if (command.simulator_generation and SIMULATOR_GENERATION
+                and command.simulator_generation != SIMULATOR_GENERATION):
+            return (f"this is simulator generation {SIMULATOR_GENERATION}, but "
+                    f"the run is waiting for generation "
+                    f"{command.simulator_generation}")
         wanted = build_scenario(preset, seed=seed)
         if scene_fingerprint(wanted, self.layout, self.profile.robot_id) \
                 != scene_fingerprint(self.scenario, self.layout,
@@ -1069,6 +1089,14 @@ class WisepackIsaacApp:
         if command.robot_id and command.robot_id != self.profile.robot_id:
             return (f"the command is for robot {command.robot_id} but this "
                     f"simulator is running {self.profile.robot_id}")
+        # ...and addressed to THIS INSTANCE. After a robot switch the previous
+        # simulator may still be draining its subscription; a command meant for
+        # its replacement must not be executed by the process being replaced.
+        if (command.simulator_generation and SIMULATOR_GENERATION
+                and command.simulator_generation != SIMULATOR_GENERATION):
+            return (f"the command is for simulator generation "
+                    f"{command.simulator_generation} but this is generation "
+                    f"{SIMULATOR_GENERATION}")
         if self.robot is None or not self.robot.model_valid:
             return (f"the {self.profile.display_name} model did not validate: "
                     f"{self.robot_error or 'see the robot diagnostics'}")

@@ -189,6 +189,16 @@ function render(d){
     stage.append(msg);
   }
 
+  // Shown ABOVE the connection table, because a viewer looking at a stale
+  // picture will not scroll to find out why.
+  const note = $("#stage-detail");
+  if (note && d.stream_note) {
+    note.textContent = d.stream_note;
+  } else if (note && d.stream_reconnect_required) {
+    note.textContent = "The simulator is restarting for a different robot — "
+      + "the stream will drop and the native client must reconnect.";
+  }
+
   const conn = $("#conn"); conn.innerHTML = "";
   const rows = [
     ["connection", d.status_label || status],
@@ -201,6 +211,14 @@ function render(d){
         `${d.robot.dof} DOF)` : (d.robot_id || "—")],
     ["robot status", d.robot ? `${d.robot.status} · ${d.robot.kinematics}` +
       (d.robot.motion_planning ? "" : " · no motion planning") : "—"],
+    // A RESTART MEANS A NEW STREAM. The generation is the honest way to say
+    // "this is not the session your client connected to": a frozen last frame
+    // from the previous process looks exactly like a working stream.
+    ["simulator generation", d.simulator_generation || "—"],
+    ["robot switch", (d.robot_switch && (d.robot_switch.in_flight || d.robot_switch.failed))
+      ? `${d.robot_switch.phase_label || d.robot_switch.phase}` +
+        (d.robot_switch.failed ? ` — ${d.robot_switch.failed_reason || ""}` : "")
+      : "—"],
     ["transport", d.transport || "none"],
     ["simulator version", d.simulator_version || "—"],
     ["current item", d.current_item_id || "—"],

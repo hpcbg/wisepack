@@ -66,6 +66,9 @@ from wisepack_core.isaac_contract import (
     ContractError, IsaacCommand, IsaacCommandType, IsaacFeedback, IsaacState,
     RunGate, SceneAcknowledgement,
 )
+from wisepack_core.robot_switch import (
+    PHASE_FAILED, PHASE_READY, RobotSwitchClient, SwitchRequest, describe_phase,
+)
 from wisepack_core.isaac_transform import (
     DEFAULT_LAYOUT, SceneLayout, dimensions_for, placement_pose,
     layout_for_robot, scene_fingerprint, table_pose_for_index,
@@ -181,6 +184,30 @@ class IsaacExecutionBridge:
         #: it holds a reason nothing may be approved and nothing may be picked.
         self.robot_model_error: str = ""
 
+        # -- ROBOT SWITCHING ------------------------------------------------ #
+        #
+        # A robot change is a PROCESS operation, not a scene operation: the
+        # adapter and the USD model are chosen when Isaac starts. So a
+        # cross-robot reset asks the host supervisor to stop one simulator and
+        # start another, and this bridge holds the run in a safe state until the
+        # new instance says it is up.
+        self.switch: RobotSwitchClient = RobotSwitchClient()
+        #: Set while a switch is in flight. Until it clears, no scene request is
+        #: sent — the OLD simulator must never receive the NEW robot's request —
+        #: and nothing may be approved.
+        self.switch_request_id: str = ""
+        self.switch_requested_robot: str = ""
+        self.switch_previous_robot: str = ""
+        self.switch_failed_reason: str = ""
+        self._switch_started_at: float = 0.0
+        #: Bounded. A switch that hangs must fail with a named phase rather than
+        #: leave an operator in front of a dashboard that says "switching".
+        self.switch_timeout_s: float = 420.0
+        #: WHICH SIMULATOR INSTANCE this run is waiting for. Set from the
+        #: supervisor's generation once the new simulator reports ready; 0 means
+        #: "any", which is the correct answer for a run that never switched.
+        self.expected_generation: int = 0
+
     # ------------------------------------------------------------------ #
     # Introspection (the dashboard diagnostics read this)
     # ------------------------------------------------------------------ #
@@ -200,6 +227,11 @@ class IsaacExecutionBridge:
             "acknowledged_robot": (self.acknowledged.robot_id
                                    if self.acknowledged else ""),
             "robot_model_error": self.robot_model_error,
+            "robot_switch": self.switch_status(),
+            "expected_simulator_generation": self.expected_generation,
+            "acknowledged_simulator_generation": (
+                self.acknowledged.simulator_generation
+                if self.acknowledged else 0),
             "simulator_ready": self.simulator_ready,
             "run_open": self.run_open,
             "run_finished": self.run_finished,
@@ -272,10 +304,23 @@ class IsaacExecutionBridge:
                 # relationship between what is commanded and what moves. No
                 # scene is "ready" for it.
                 and not self.robot_model_error
+                # A SWITCH IN FLIGHT MEANS THE SIMULATOR IS BEING REPLACED.
+                # Whatever scene is standing belongs to the instance on its way
+                # out, and a failed switch means the requested arm never came
+                # up at all.
+                and not self.switch_in_flight
+                and not self.switch_failed_reason
                 and self.scene_revision == self.required_revision)
 
     def scene_block_reason(self) -> str:
         """Why physical execution is not authorised, in the operator's words."""
+        if self.switch_failed_reason:
+            return (f"the robot switch to {self.switch_requested_robot} failed: "
+                    f"{self.switch_failed_reason}")
+        if self.switch_in_flight:
+            status = self.supervisor()
+            return (f"switching to {self.switch_requested_robot} — "
+                    f"{describe_phase(status.phase, self.switch_previous_robot, self.switch_requested_robot)}")
         if self.robot_model_error:
             return (f"the simulator could not stand up the selected robot: "
                     f"{self.robot_model_error}")
@@ -298,6 +343,201 @@ class IsaacExecutionBridge:
                     "this scenario yet — the previous run's objects may still "
                     "be in the container")
         return ""
+
+    # ------------------------------------------------------------------ #
+    # Robot switching
+    # ------------------------------------------------------------------ #
+
+    @property
+    def switch_in_flight(self) -> bool:
+        return bool(self.switch_request_id) and not self.switch_failed_reason
+
+    def supervisor(self):
+        """What the host supervisor last reported. Never raises."""
+        return self.switch.status()
+
+    def switch_status(self) -> Dict[str, Any]:
+        """The switch, as the dashboard renders it.
+
+        ACTIVE, REQUESTED and HOST are three different answers and are reported
+        as three fields. They agree except while a switch is in flight or has
+        failed — which is exactly the interval in which claiming they agree
+        would tell an operator the new arm is running when it is not.
+        """
+        status = self.supervisor()
+        return {
+            "available": self.switch.available,
+            "unavailable_reason": self.switch.unavailable_reason(),
+            "in_flight": self.switch_in_flight,
+            "request_id": self.switch_request_id,
+            "previous_robot_id": self.switch_previous_robot,
+            "requested_robot_id": (self.switch_requested_robot
+                                   or status.requested_robot_id),
+            # WHAT THE HOST SAYS IS RUNNING. Never what was asked for.
+            "host_robot_id": status.robot_id,
+            "host_generation": status.simulator_generation,
+            "host_ready": status.simulator_ready,
+            "expected_generation": self.expected_generation,
+            "phase": status.phase,
+            "phase_label": describe_phase(
+                status.phase, previous=self.switch_previous_robot,
+                requested=self.switch_requested_robot or status.requested_robot_id),
+            "failed": bool(self.switch_failed_reason) or status.failed,
+            "failed_reason": self.switch_failed_reason or status.last_error,
+            "supervisor_present": status.present,
+        }
+
+    def request_robot_switch(self, engine, profile) -> str:
+        """Ask the host to restart Isaac with ``profile``. "" on success.
+
+        THE SCENE REQUEST IS NOT SENT HERE, and that is the point. The old
+        simulator is still running at this moment, still subscribed, and would
+        happily rebuild its own workcell and acknowledge it with its own robot
+        id — which is precisely the misleading partial reset this replaces. The
+        request goes out only after the supervisor reports a NEW generation
+        running the requested robot; see `tick`.
+        """
+        previous = self.robot_id
+        self.rebind_robot(profile)
+        self.switch_previous_robot = previous
+        self.switch_requested_robot = profile.robot_id
+        self.switch_failed_reason = ""
+        self.expected_generation = 0
+        self._switch_started_at = time.monotonic()
+        # Nothing from the old simulator may satisfy this run from here on.
+        self.simulator_ready = False
+        self.scene_revision = -1
+        self._in_flight = None
+        self._in_flight_command = None
+
+        reason = self.switch.unavailable_reason()
+        if reason:
+            # NO SILENT FALLBACK. Without a supervisor the robot cannot be
+            # changed from the web application at all, and saying so is the only
+            # honest answer — the alternative is a scene reset that leaves the
+            # previous arm on the stage while the dashboard claims the new one.
+            self.switch_request_id = ""
+            self.switch_failed_reason = reason
+            self.node.get_logger().error(f"{LOG} robot switch refused: {reason}")
+            engine.note_physical_progress(
+                None, "isaac_robot_switch_unavailable", None, None,
+                f"cannot switch to {profile.display_name}: {reason}",
+                details={"requested_robot_id": profile.robot_id,
+                         "previous_robot_id": previous, "reason": reason})
+            return reason
+
+        request = SwitchRequest(
+            requested_robot_id=profile.robot_id,
+            requested_profile_revision=profile.revision,
+            run_id=engine.run_id,
+            scenario_revision=int(getattr(engine, "scenario_revision", 0)))
+        try:
+            self.switch_request_id = self.switch.request_switch(request)
+        except (OSError, RuntimeError) as exc:
+            self.switch_request_id = ""
+            self.switch_failed_reason = f"could not deliver the request: {exc}"
+            self.node.get_logger().error(
+                f"{LOG} robot switch request failed: {exc}")
+            return self.switch_failed_reason
+
+        self.node.get_logger().info(
+            f"{LOG} robot switch requested: {previous or '-'} -> "
+            f"{profile.robot_id} (request {self.switch_request_id})")
+        engine.note_physical_progress(
+            None, "isaac_robot_switch_requested", None, None,
+            f"switching from {self.switch_previous_robot or 'the previous robot'} "
+            f"to {profile.display_name}; Isaac will restart and approval stays "
+            "disabled until the new scene is verified",
+            robot_state="idle",
+            details={"request_id": self.switch_request_id,
+                     "previous_robot_id": previous,
+                     "requested_robot_id": profile.robot_id,
+                     "requested_profile_revision": profile.revision,
+                     "run_id": engine.run_id,
+                     "scenario_revision": int(
+                         getattr(engine, "scenario_revision", 0))})
+        return ""
+
+    def poll_switch(self, engine) -> None:
+        """Drive a switch from the NODE tick, whatever the workflow is doing.
+
+        A switch holds approval shut, and the execution loop only runs after
+        approval — so advancing it from there could never complete. This is the
+        same reason the initial scene handshake is requested from the readiness
+        path rather than from the loop.
+
+        Also re-requests the scene once the new simulator is up: the READY that
+        would normally trigger the handshake arrives while the switch is still
+        in flight and is deliberately not acted on, so something has to ask
+        afterwards.
+        """
+        was_in_flight = self.switch_in_flight
+        self._advance_switch(engine)
+        if was_in_flight and not self.switch_in_flight \
+                and not self.switch_failed_reason:
+            self._sync_scene_if_needed(engine)
+
+    def _advance_switch(self, engine) -> None:
+        """Watch a switch to completion or to a named failure. Bounded."""
+        if not self.switch_request_id or self.switch_failed_reason:
+            return
+        status = self.supervisor()
+
+        if status.failed:
+            self._fail_switch(engine, status.last_error
+                              or "the host supervisor reported the switch failed")
+            return
+
+        ready_for_us = (status.simulator_ready
+                        and status.robot_id == self.switch_requested_robot
+                        and status.simulator_generation > 0)
+        if ready_for_us:
+            # THE NEW INSTANCE IS UP. Only now is a scene request legitimate,
+            # and only now is the generation this run will accept fixed.
+            self.expected_generation = status.simulator_generation
+            self.switch_request_id = ""
+            self.node.get_logger().info(
+                f"{LOG} robot switch complete: {status.robot_id} running as "
+                f"generation {status.simulator_generation}")
+            engine.note_physical_progress(
+                None, "isaac_robot_switch_complete", None, None,
+                f"{status.robot_id} simulator ready (generation "
+                f"{status.simulator_generation}); building the scene",
+                details={"robot_id": status.robot_id,
+                         "simulator_generation": status.simulator_generation})
+            self.node.publish_execution()
+            return
+
+        if time.monotonic() - self._switch_started_at > self.switch_timeout_s:
+            self._fail_switch(
+                engine,
+                f"the host did not report {self.switch_requested_robot} ready "
+                f"within {self.switch_timeout_s:.0f}s "
+                f"(last phase: {status.phase})")
+
+    def _fail_switch(self, engine, reason: str) -> None:
+        """Hold. Never fall back to the previous robot, never claim the new one."""
+        if self.switch_failed_reason:
+            return
+        self.switch_failed_reason = reason
+        self.switch_request_id = ""
+        self.simulator_ready = False
+        self.node.get_logger().error(f"{LOG} ROBOT_SWITCH_FAILED: {reason}")
+        engine.note_physical_progress(
+            None, "isaac_robot_switch_failed", None, None,
+            f"robot switch to {self.switch_requested_robot} FAILED: {reason}",
+            robot_state="idle",
+            details={"requested_robot_id": self.switch_requested_robot,
+                     "previous_robot_id": self.switch_previous_robot,
+                     "reason": reason})
+        if not self._degraded:
+            self._degraded = True
+            engine.enter_degraded(
+                f"the robot switch to {self.switch_requested_robot} failed: "
+                f"{reason}. Execution is HELD and approval is disabled. The "
+                "requested robot is kept as the selection — retry the switch, "
+                "or restart the launcher with it.")
+        self.node.publish_execution()
 
     def rebind_robot(self, profile) -> None:
         """Adopt a NEW robot, and forget everything that described the old one.
@@ -365,6 +605,12 @@ class IsaacExecutionBridge:
         """
         if not self.simulator_ready or engine.scenario is None:
             return
+        if self.switch_in_flight or self.switch_failed_reason:
+            # THE OLD SIMULATOR MUST NEVER RECEIVE THE NEW ROBOT'S REQUEST.
+            # It is still subscribed while it shuts down, and it would rebuild
+            # its own workcell and acknowledge with its own robot id — the
+            # misleading partial reset this whole path exists to remove.
+            return
         revision = int(getattr(engine, "scenario_revision", 0))
         if (self.scene_requested_for_run == engine.run_id
                 and self.required_revision == revision):
@@ -399,6 +645,7 @@ class IsaacExecutionBridge:
             preset=scenario.preset if scenario else engine.config.preset,
             seed=int(scenario.seed if scenario else engine.config.seed),
             robot_id=self.robot_id,
+            simulator_generation=self.expected_generation,
             total_items=self.requested_object_count,
             scenario_revision=self.required_revision))
         engine.note_physical_progress(
@@ -460,6 +707,7 @@ class IsaacExecutionBridge:
             preset=scenario.preset if scenario else engine.config.preset,
             seed=int(scenario.seed if scenario else engine.config.seed),
             robot_id=self.robot_id,
+            simulator_generation=self.expected_generation,
             total_items=len(scenario.items) if scenario else 0,
         ))
         engine.note_physical_progress(
@@ -520,6 +768,14 @@ class IsaacExecutionBridge:
 
         if not self.run_open:
             self.open_run(engine)
+            return True
+
+        # A SWITCH IS ADVANCED BEFORE ANYTHING ELSE. Until it completes there
+        # is no simulator this run may talk to.
+        self._advance_switch(engine)
+        if self.switch_failed_reason:
+            return False
+        if self.switch_in_flight:
             return True
 
         if not self.simulator_ready:
@@ -673,6 +929,7 @@ class IsaacExecutionBridge:
             total_items=len(scenario.items) if scenario else 0,
             scenario_revision=self.required_revision,
             robot_id=self.robot_id,
+            simulator_generation=self.expected_generation,
         )
 
     # ------------------------------------------------------------------ #
@@ -713,6 +970,31 @@ class IsaacExecutionBridge:
             self.node.get_logger().warn(
                 f"{LOG} ignoring {feedback.state.value} from robot "
                 f"{feedback.robot_id!r}: this run selected {self.robot_id!r}")
+            return
+
+        # STALE FEEDBACK FROM AN EARLIER SIMULATOR INSTANCE IS ALSO DROPPED.
+        #
+        # The robot id cannot catch this on its own. Switching A -> B -> A comes
+        # back to the same id while being a different process with a different
+        # scene, and during any switch the dying and the starting simulator are
+        # briefly on the domain together. A generation OLDER than the one this
+        # run is waiting for is the corpse talking.
+        if (self.expected_generation and feedback.simulator_generation
+                and feedback.simulator_generation < self.expected_generation):
+            self.node.get_logger().warn(
+                f"{LOG} ignoring {feedback.state.value} from simulator "
+                f"generation {feedback.simulator_generation}: this run is "
+                f"waiting for generation {self.expected_generation}")
+            return
+
+        # A switch is in flight: NOTHING from the outgoing simulator counts, and
+        # the incoming one has not been adopted yet.
+        if self.switch_in_flight and feedback.state not in (
+                IsaacState.READY, IsaacState.SIMULATOR_READY,
+                IsaacState.ROBOT_MODEL_INVALID):
+            self.node.get_logger().warn(
+                f"{LOG} ignoring {feedback.state.value}: a robot switch to "
+                f"{self.switch_requested_robot} is in progress")
             return
 
         # THE RUN GATE APPLIES TO EXECUTION, NOT TO LIFECYCLE.
@@ -901,7 +1183,8 @@ class IsaacExecutionBridge:
                     fingerprint=self.requested_fingerprint,
                     object_count=self.requested_object_count,
                     robot_id=self.robot_id,
-                    robot_profile_revision=self.robot_profile_revision)
+                    robot_profile_revision=self.robot_profile_revision,
+                    simulator_generation=self.expected_generation)
             if reasons:
                 self.reset_in_progress = False
                 self.scene_mismatch = "; ".join(reasons)

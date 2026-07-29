@@ -363,6 +363,11 @@ class DashboardSnapshot:
             # showing one would be an outright false claim about what moved.
             "robot": self.active_robot,
             "robot_id": self.active_robot_id,
+            # THE SWITCH, as four distinct answers. They agree except while a
+            # switch is in flight or has failed — which is exactly the interval
+            # in which showing one number would tell an operator the new arm is
+            # running when it is not.
+            "robot_switch": (self.isaac or {}).get("robot_switch"),
             "isaac": self.isaac,
         }
 
@@ -855,9 +860,21 @@ class RosSnapshotProvider(DashboardSnapshotProvider):
                 "label", snap.execution_backend.upper())
             snap.execution_backend_detail = backend_doc.get("detail", "")
             snap.execution_backend_known = True
-            snap.active_robot = backend_doc.get("robot")
-            snap.active_robot_id = backend_doc.get("robot_id")
             snap.isaac = backend_doc.get("isaac")
+            # THE HEADER FOLLOWS THE HOST, NOT THE SELECTION.
+            #
+            # `backend_doc["robot"]` is what this RUN selected. During a switch
+            # that is the arm being started, and the one on the stage is still
+            # the previous one — so the badge would name a robot that is not
+            # there. The host's own report wins whenever it disagrees.
+            switch = (backend_doc.get("isaac") or {}).get("robot_switch") or {}
+            host_robot = switch.get("host_robot_id") or ""
+            selected_id = backend_doc.get("robot_id")
+            snap.active_robot_id = host_robot or selected_id
+            if host_robot and host_robot != selected_id:
+                snap.active_robot = _public_robot(host_robot)
+            else:
+                snap.active_robot = backend_doc.get("robot")
             snap.visualization = backend_doc.get("visualization")
             isaac = backend_doc.get("isaac") or {}
             if "scene_ready" in isaac:
