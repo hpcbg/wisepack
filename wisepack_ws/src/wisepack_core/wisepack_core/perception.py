@@ -318,7 +318,22 @@ class ObservationBatch:
     status: BatchStatus = BatchStatus.OK
     observations: List[PhysicalObservation] = field(default_factory=list)
     frame_id: str = WORKAREA_FRAME_ID
+    #: WHEN THE CAMERA FRAME THIS BATCH DESCRIBES WAS ACQUIRED — not when the
+    #: detection was asked for. The two differ by the model load (~30 s on a
+    #: cold start) plus the frame wait, and every consumer that matters treats
+    #: this as a measurement time: staleness is computed from it, and the future
+    #: Isaac synchronizer will place objects as they were at this instant.
+    #:
+    #: EMPTY WHEN NO FRAME WAS ACQUIRED. A batch that failed before the grab has
+    #: no capture time, and inventing one would be asserting a measurement that
+    #: never happened. `observation_age_s` returns None for an unstamped batch,
+    #: so such a batch is never reported stale either — it is reported FAILED,
+    #: which is the accurate thing to say about it.
     captured_at: str = ""
+    #: When the detection was REQUESTED. Diagnostics only: it is what makes a
+    #: slow cold start legible ("requested at T, frame at T+31 s") and it is the
+    #: only timestamp a batch that never reached the camera can carry.
+    requested_at: str = ""
     detector: str = ""
     model_id: str = ""
     calibration_status: str = "unknown"
@@ -359,6 +374,7 @@ class ObservationBatch:
             "count": self.count,
             "frame_id": self.frame_id,
             "captured_at": self.captured_at,
+            "requested_at": self.requested_at,
             "detector": self.detector,
             "model_id": self.model_id,
             "calibration_status": self.calibration_status,
@@ -381,6 +397,7 @@ class ObservationBatch:
                           for o in d.get("observations", [])],
             frame_id=str(d.get("frame_id", WORKAREA_FRAME_ID)),
             captured_at=str(d.get("captured_at", "")),
+            requested_at=str(d.get("requested_at", "")),
             detector=str(d.get("detector", "")),
             model_id=str(d.get("model_id", "")),
             calibration_status=str(d.get("calibration_status", "unknown")),

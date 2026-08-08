@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import json
 import os
+import pathlib
 import sys
 
 import pytest
@@ -118,6 +119,103 @@ def test_unknown_perception_source_is_an_error_not_a_silent_fallback():
     with pytest.raises(PerceptionConfigError) as exc:
         resolve_perception_source("harmony-camera")
     assert "harmony_camera" in str(exc.value)      # names the valid spelling
+
+
+def test_the_dashboard_never_downgrades_an_invalid_source_to_sim():
+    """REGRESSION. `web/app.py` used to swallow PerceptionConfigError.
+
+    It caught the exception, set the source to `sim`, and put the reason in a
+    `config_error` field whose only renderer sits behind an early return that a
+    non-physical source never passes. Net effect:
+    `WISEPACK_PERCEPTION_SOURCE=harmony-camera` (hyphen, not underscore) started
+    a dashboard producing SIMULATED detections for an operator who had asked for
+    a camera, with nothing on screen to say so.
+
+    A source assertion rather than a mock, for the same reason
+    `tests/test_isaac_robots.py` asserts on index.html: this is a rule about
+    what the module is allowed to contain, and it has to hold whether or not
+    FastAPI is installed in the environment running the suite.
+    """
+    source = (pathlib.Path(REPO) / "web" / "app.py").read_text()
+
+    resolution = [ln for ln in source.splitlines()
+                  if "PERCEPTION_SOURCE = resolve_perception_source()" in ln]
+    assert resolution, "web/app.py must resolve the perception source at import"
+    # Resolved at module scope, unguarded — not inside a try/except that could
+    # substitute a different source.
+    assert resolution[0].startswith("PERCEPTION_SOURCE ="), \
+        f"the resolution is indented, so it is inside a guard: {resolution[0]!r}"
+
+    assert "except PerceptionConfigError" not in source, (
+        "web/app.py must not catch PerceptionConfigError — an unrecognised "
+        "perception source has to stop the process, exactly as the ROS "
+        "orchestrator does, instead of silently selecting `sim`")
+    assert "PERCEPTION_CONFIG_ERROR" not in source, (
+        "the config_error carrier is dead once the fallback is gone; leaving it "
+        "invites the fallback back")
+
+
+def test_dashboard_and_orchestrator_resolve_the_source_identically():
+    """The two entry points must not disagree about what is a valid config.
+
+    A value that kills the ROS stack must not quietly run in the dashboard, and
+    vice versa. Both call the same core resolver and neither guards it.
+    """
+    web = (pathlib.Path(REPO) / "web" / "app.py").read_text()
+    orch = (pathlib.Path(REPO) / "wisepack_ws" / "src" / "wisepack_orchestration"
+            / "wisepack_orchestration" / "hitl_orchestrator.py").read_text()
+    for name, text in (("web/app.py", web), ("hitl_orchestrator.py", orch)):
+        assert "resolve_perception_source(" in text, name
+        assert "except PerceptionConfigError" not in text, (
+            f"{name} swallows an invalid perception source")
+
+
+@pytest.mark.parametrize("value,expected", [
+    ("sim", PerceptionSource.SIM),
+    ("harmony_camera", PerceptionSource.HARMONY_CAMERA),
+])
+def test_valid_sources_are_accepted_from_the_environment(monkeypatch, value,
+                                                         expected):
+    """Both supported modes still resolve — the fix must not break either."""
+    monkeypatch.setenv("WISEPACK_PERCEPTION_SOURCE", value)
+    assert resolve_perception_source() is expected
+    assert WorkflowConfig(perception_source=resolve_perception_source()
+                          ).perception_source is expected
+
+
+@pytest.mark.parametrize("bad", [
+    "harmony-camera",       # the reported typo: hyphen instead of underscore
+    "harmony", "camera", "HARMONY_CAM", "real", "true", "1",
+])
+def test_an_invalid_source_never_resolves_to_sim(monkeypatch, bad):
+    """The core contract the dashboard now relies on: raise, never downgrade."""
+    monkeypatch.setenv("WISEPACK_PERCEPTION_SOURCE", bad)
+    with pytest.raises(PerceptionConfigError) as exc:
+        resolve_perception_source()
+    message = str(exc.value)
+    assert bad.lower() in message.lower()       # names what was wrong
+    assert "harmony_camera" in message          # names the valid spelling
+
+
+def test_an_invalid_source_stops_the_dashboard_process(monkeypatch):
+    """End-to-end: the server must not come up and must not run the simulator.
+
+    Skipped where FastAPI is absent (the dashboard cannot start at all there);
+    the source assertions above hold unconditionally.
+    """
+    pytest.importorskip("fastapi",
+                        reason="the dashboard needs FastAPI to start")
+    import subprocess
+    env = {**os.environ, "WISEPACK_PERCEPTION_SOURCE": "harmony-camera"}
+    proc = subprocess.run(
+        [sys.executable, os.path.join(REPO, "web", "app.py"),
+         "--source", "sim", "--port", "0"],
+        capture_output=True, text=True, timeout=120, env=env, cwd=REPO)
+    assert proc.returncode != 0, "the dashboard started despite an invalid source"
+    combined = proc.stdout + proc.stderr
+    assert "harmony-camera" in combined and "harmony_camera" in combined, (
+        "the failure must name both the bad value and the valid spelling")
+    assert "SIMULATED PERCEPTION" not in combined
 
 
 def test_sim_perception_is_byte_identical_to_before(monkeypatch):
@@ -528,6 +626,164 @@ def test_observation_staleness_is_computed_from_the_capture_time():
     assert observation_age_s(batch, now_epoch=captured_epoch + 600) == 600.0
     assert is_stale(batch, ttl_s=300.0, now_epoch=captured_epoch + 600)
     assert not is_stale(batch, ttl_s=900.0, now_epoch=captured_epoch + 600)
+
+
+# --------------------------------------------------------------------------- #
+# 6a. Timestamp semantics
+# --------------------------------------------------------------------------- #
+
+
+class _StubPipeline:
+    """Stands in for HARMONY's `pipeline` module: only the marker cache is read."""
+
+    def __init__(self, calibrated=True):
+        self._last_valid_plane_markers = [[0, 0], [1, 0], [1, 1], [0, 1]] \
+            if calibrated else None
+
+
+class _StubFrame:
+    """A camera frame. Only `.copy()` is used by the detector runtime."""
+
+    def copy(self):
+        return self
+
+
+def _runtime(monkeypatch, clock, *, frame=_StubFrame(), calibrated=True,
+             pipeline_error=None, inference_error=None, objects=None):
+    """A DetectorRuntime with the camera, model and clock replaced.
+
+    No torch, no cv2, no camera and no model file: everything heavy is behind
+    the three seams stubbed here, which is what makes the timestamp semantics
+    testable in ordinary CI.
+    """
+    import harmony_perception_service as svc
+    monkeypatch.setattr(svc, "utc_now_iso", lambda: next(clock))
+    rt = svc.DetectorRuntime()
+
+    def ensure_pipeline():
+        if pipeline_error:
+            raise RuntimeError(pipeline_error)
+        rt._pipeline = _StubPipeline(calibrated)
+        rt.model_loaded = True
+
+    def process_frame(_f):
+        if inference_error:
+            raise RuntimeError(inference_error)
+        return {"bottles": objects if objects is not None else
+                [{"x": 10.0, "y": 20.0, "yaw": 5.0, "conf": 0.9}],
+                "pick_pose": {}}
+
+    monkeypatch.setattr(rt, "_ensure_pipeline", ensure_pipeline)
+    monkeypatch.setattr(rt, "frame", lambda timeout_s=3.0: frame)
+    monkeypatch.setattr(rt, "jpeg", lambda _f: b"")
+    rt._process_frame = process_frame
+    return rt
+
+
+#: A clock whose ticks are far enough apart to model a cold start: the request
+#: at T0, the model load taking 30 s, the frame arriving at T0+30.
+def _clock(*stamps):
+    return iter(stamps)
+
+
+def test_captured_at_is_the_frame_time_not_the_request_time(monkeypatch):
+    """REGRESSION. `captured_at` used to be stamped before the model load.
+
+    On a cold start the model load is ~30 s, so every first batch claimed to
+    describe a scene half a minute older than the frame it actually analysed —
+    and `captured_at` is exactly the instant staleness and the future Isaac
+    synchronizer treat as "when the world looked like this".
+    """
+    rt = _runtime(monkeypatch, _clock("2026-08-08T10:00:00.000Z",   # requested
+                                      "2026-08-08T10:00:30.000Z"))  # frame in hand
+    batch = rt.detect()
+    assert batch.ok and batch.count == 1
+    assert batch.captured_at == "2026-08-08T10:00:30.000Z"   # the FRAME
+    assert batch.requested_at == "2026-08-08T10:00:00.000Z"  # the REQUEST
+    assert batch.captured_at != batch.requested_at
+    # Every observation carries the frame time too, not the request time.
+    assert all(o.captured_at == "2026-08-08T10:00:30.000Z"
+               for o in batch.observations)
+    # `last_inference_at` (the health field) follows the frame as well.
+    assert rt.last_inference_at == "2026-08-08T10:00:30.000Z"
+
+
+def test_captured_at_survives_the_json_round_trip(monkeypatch):
+    """The batch reaches /api/perception as JSON; both stamps must arrive."""
+    rt = _runtime(monkeypatch, _clock("2026-08-08T11:00:00.000Z",
+                                      "2026-08-08T11:00:02.000Z"))
+    original = rt.detect()
+    revived = ObservationBatch.from_dict(
+        json.loads(json.dumps(original.to_dict())))
+    assert revived.captured_at == "2026-08-08T11:00:02.000Z"
+    assert revived.requested_at == "2026-08-08T11:00:00.000Z"
+
+
+def test_a_batch_that_never_reached_the_camera_has_no_capture_time(monkeypatch):
+    """No frame acquired means NO capture time. Never the request time.
+
+    Stamping the request time here would assert a measurement that never
+    happened — and would make a failed scan look like a fresh observation to a
+    staleness check.
+    """
+    no_model = _runtime(monkeypatch, _clock("2026-08-08T12:00:00.000Z"),
+                        pipeline_error="weights are not available")
+    b = no_model.detect()
+    assert b.status is BatchStatus.ERROR
+    assert b.captured_at == ""
+    assert b.requested_at == "2026-08-08T12:00:00.000Z"
+
+    no_frame = _runtime(monkeypatch, _clock("2026-08-08T12:05:00.000Z"),
+                        frame=None)
+    b2 = no_frame.detect()
+    assert b2.status is BatchStatus.ERROR
+    assert b2.captured_at == ""
+    assert b2.requested_at == "2026-08-08T12:05:00.000Z"
+
+    # An unstamped batch is never reported stale — it is reported FAILED, which
+    # is the accurate thing to say about it.
+    for failed in (b, b2):
+        assert is_stale(failed) is False
+
+
+def test_a_failure_after_capture_keeps_the_capture_time(monkeypatch):
+    """Inference failed, but a frame WAS acquired — that instant is real."""
+    rt = _runtime(monkeypatch, _clock("2026-08-08T13:00:00.000Z",
+                                      "2026-08-08T13:00:01.000Z"),
+                  inference_error="CUDA out of memory")
+    b = rt.detect()
+    assert b.status is BatchStatus.ERROR
+    assert "CUDA out of memory" in b.error
+    assert b.captured_at == "2026-08-08T13:00:01.000Z"
+    assert b.requested_at == "2026-08-08T13:00:00.000Z"
+
+
+def test_staleness_is_measured_from_the_frame_not_the_request(monkeypatch):
+    """The point of the fix: a 30 s cold start must not age the observation.
+
+    With the old behaviour this batch was 330 s old against a 300 s TTL and
+    rendered STALE the instant it was produced.
+    """
+    import calendar
+    rt = _runtime(monkeypatch, _clock("2026-08-08T14:00:00.000Z",    # requested
+                                      "2026-08-08T14:00:30.000Z"))   # frame
+    batch = rt.detect()
+    frame_epoch = float(calendar.timegm((2026, 8, 8, 14, 0, 30, 0, 0, 0)))
+    from wisepack_core.perception import observation_age_s
+    assert observation_age_s(batch, now_epoch=frame_epoch) == 0.0
+    # 300 s after the FRAME is the TTL boundary; 300 s after the REQUEST is not.
+    assert not is_stale(batch, ttl_s=300.0, now_epoch=frame_epoch + 299)
+    assert is_stale(batch, ttl_s=300.0, now_epoch=frame_epoch + 301)
+
+
+def test_requested_at_defaults_empty_and_is_optional():
+    """Producers that have no request time (HARMONY's own topic) still work."""
+    batch = parse_harmony_json(
+        json.dumps({"bottles": [{"x": 1.0, "y": 2.0, "conf": 0.9}]}),
+        batch_id="b", captured_at="2026-08-08T15:00:00.000Z")
+    assert batch.requested_at == ""
+    assert batch.captured_at == "2026-08-08T15:00:00.000Z"
+    assert ObservationBatch(batch_id="b").requested_at == ""
 
 
 def test_an_unstamped_batch_is_not_reported_stale():

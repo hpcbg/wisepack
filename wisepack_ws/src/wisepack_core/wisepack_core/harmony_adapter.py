@@ -140,6 +140,7 @@ def observations_from_harmony(
         *,
         batch_id: str,
         captured_at: str = "",
+        requested_at: str = "",
         model_id: str = "",
         geometry: Optional[ProxyGeometry] = None,
         frame: Optional[WorkAreaFrame] = None,
@@ -166,6 +167,7 @@ def observations_from_harmony(
         return ObservationBatch.failed(
             batch_id=batch_id, source=source, error=reason,
             frame_id=frame.frame_id, captured_at=captured_at,
+            requested_at=requested_at,
             detector=HARMONY_DETECTOR, model_id=model_id,
             calibration_status=calibration_status or "unknown",
             calibration_revision=calibration_revision,
@@ -271,6 +273,7 @@ def observations_from_harmony(
         observations=observations,
         frame_id=frame.frame_id,
         captured_at=captured_at,
+        requested_at=requested_at,
         detector=HARMONY_DETECTOR,
         model_id=model_id,
         calibration_status=resolved_calibration,

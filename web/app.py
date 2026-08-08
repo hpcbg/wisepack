@@ -61,8 +61,7 @@ from wisepack_core.artifacts import (                              # noqa: E402
 from wisepack_core.domain import Strategy                          # noqa: E402
 from wisepack_core.execution import physical_presets              # noqa: E402
 from wisepack_core.perception import (                             # noqa: E402
-    PerceptionConfigError, PerceptionSource, ProxyGeometry, WorkAreaFrame,
-    resolve_perception_source,
+    PerceptionSource, ProxyGeometry, WorkAreaFrame, resolve_perception_source,
 )
 from wisepack_core.events import (                                 # noqa: E402
     DynamicEvent, DynamicEventType, Stage,
@@ -85,15 +84,22 @@ SOURCE = os.environ.get("WISEPACK_SOURCE", "sim")
 ORION = os.environ.get("ORION", "http://localhost:1026").rstrip("/")
 
 # THE PERCEPTION SOURCE. A THIRD, INDEPENDENT AXIS — not a data source (SOURCE
-# above) and not an execution backend. Resolved once at import so an unknown
-# value fails loudly at start-up instead of silently running the simulator while
-# the header claims a camera. Unset == `sim`, so nothing existing changes.
-try:
-    PERCEPTION_SOURCE = resolve_perception_source()
-    PERCEPTION_CONFIG_ERROR = ""
-except PerceptionConfigError as _exc:
-    PERCEPTION_SOURCE = PerceptionSource.SIM
-    PERCEPTION_CONFIG_ERROR = str(_exc)
+# above) and not an execution backend. Unset == `sim`, so nothing existing
+# changes.
+#
+# AN UNRECOGNISED VALUE RAISES HERE AND THE PROCESS DOES NOT START. This is
+# deliberately NOT caught. It was, once: the exception was swallowed, the source
+# was downgraded to `sim`, and the reason was put in a `config_error` field that
+# the only renderer never reached — so `WISEPACK_PERCEPTION_SOURCE=harmony-camera`
+# (a hyphen instead of an underscore) started a dashboard that quietly produced
+# SIMULATED detections for an operator who had asked for a camera. A silent
+# downgrade of a perception source is precisely the failure this repository
+# refuses to allow.
+#
+# `wisepack_orchestration.hitl_orchestrator` resolves the same value the same
+# way and lets it raise before any publisher exists. The two must agree: a
+# configuration that kills the ROS stack must not quietly run in the dashboard.
+PERCEPTION_SOURCE = resolve_perception_source()
 
 #: Seconds between execution steps in sim mode. Slow enough to watch, fast
 #: enough that a 40-item scenario finishes inside a demo slot.
@@ -747,7 +753,6 @@ def api_state():
             "label": PERCEPTION_SOURCE.label,
             "detail": PERCEPTION_SOURCE.detail,
             "physical": PERCEPTION_SOURCE.is_physical,
-            "config_error": PERCEPTION_CONFIG_ERROR,
         },
         "ts": time.time(),
     })
@@ -889,7 +894,6 @@ def _perception_payload() -> Dict[str, Any]:
         "perception_source_label": PERCEPTION_SOURCE.label,
         "perception_source_detail": PERCEPTION_SOURCE.detail,
         "physical": PERCEPTION_SOURCE.is_physical,
-        "config_error": PERCEPTION_CONFIG_ERROR,
         # THE PROXY DISCLOSURE (§9). Unobtrusive, but always present in the
         # payload so the panel cannot render real detections without it.
         "proxy_note": (

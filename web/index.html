@@ -1758,7 +1758,10 @@ async function refreshPerception() {
   // FAILURES ARE SHOWN, never smoothed into "0 objects". A failed scan and an
   // empty table are different facts.
   const errBox = $("#percep-error");
-  const error = (b && b.status === "error" && b.error) || h.last_error || doc.config_error || "";
+  // No `config_error` term: an unrecognised perception source now stops the
+  // server at start-up rather than downgrading to `sim`, so there is no
+  // misconfigured-but-running state left for this panel to report.
+  const error = (b && b.status === "error" && b.error) || h.last_error || "";
   errBox.style.display = error ? "" : "none";
   errBox.textContent = error;
 

@@ -2623,8 +2623,16 @@ ros2 launch wisepack_bringup demo.launch.py perception_source:=harmony_camera
 on another host (default `http://127.0.0.1:22101`).
 
 An **unrecognised** perception source is a start-up error, never a silent
-fallback to the simulator: a typo that quietly ran the simulator while the
-header claimed a camera is precisely the failure this refuses to allow.
+fallback to the simulator. Both the dashboard and the ROS orchestrator resolve
+the value the same way and let it raise before anything starts, so
+
+```bash
+WISEPACK_PERCEPTION_SOURCE=harmony-camera   # hyphen, not underscore
+```
+
+**stops the process** with `unknown perception source 'harmony-camera'; known:
+sim, harmony_camera` rather than quietly producing simulated detections for an
+operator who asked for a camera.
 
 #### Triggering a detection
 
@@ -2702,6 +2710,16 @@ Every observation retains: `source`, `detector`, `model_id`, `confidence`,
 `detector_class` and `detector_object_index`. It survives the JSON round trip
 onto `WasteItem.observation`, so a plan can be traced back to the exact
 detection and the exact calibration that produced it.
+
+**Two timestamps, and they are not interchangeable.** The batch carries both:
+
+| Field | Meaning |
+|---|---|
+| `captured_at` | **When the camera frame was acquired.** This is the measurement instant: staleness is computed from it, and a future Isaac synchronizer places objects as they were at this moment. **Empty when no frame was acquired** — a batch that failed before the grab has no capture time, and inventing one would assert a measurement that never happened. |
+| `requested_at` | When the detection was *asked for*. Diagnostics only. It is what makes a slow cold start legible (`requested at T, frame at T+31 s`, while torch loads a 159 MB model) and it is the only timestamp a batch that never reached the camera can carry. |
+
+An unstamped batch is never reported stale — it is reported **failed**, which is
+the accurate thing to say about it.
 
 #### KPI reporting - detector confidence is not a detection rate
 

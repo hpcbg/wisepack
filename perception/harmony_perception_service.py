@@ -391,7 +391,17 @@ class DetectorRuntime:
             self._batch_counter += 1
             batch_id = f"batch-{self._batch_counter:03d}"
             source = PerceptionSource.HARMONY_CAMERA.value
-            captured_at = utc_now_iso()
+            # TWO DIFFERENT INSTANTS, AND THEY ARE NOT INTERCHANGEABLE.
+            #
+            # `requested_at` is now. `captured_at` is whenever the camera
+            # actually hands over a frame — which is AFTER the first-call model
+            # load (~30 s cold) and after the frame wait. Stamping the request
+            # time as the capture time made every batch look up to half a minute
+            # older than the scene it described, and `captured_at` is the
+            # instant a staleness check and the future Isaac synchronizer both
+            # treat as "when the world looked like this".
+            requested_at = utc_now_iso()
+            captured_at = ""
 
             try:
                 self._ensure_pipeline()
@@ -399,7 +409,10 @@ class DetectorRuntime:
                 self.last_error = str(exc)
                 return ObservationBatch.failed(
                     batch_id=batch_id, source=source, error=str(exc),
-                    captured_at=captured_at, detector=HARMONY_DETECTOR,
+                    # NO capture time: no frame was acquired. Inventing one would
+                    # assert a measurement that never happened.
+                    captured_at="", requested_at=requested_at,
+                    detector=HARMONY_DETECTOR,
                     frame_id=self.work_area.frame_id)
 
             frame = self.frame()
@@ -407,8 +420,14 @@ class DetectorRuntime:
                 return ObservationBatch.failed(
                     batch_id=batch_id, source=source,
                     error=self.last_error or "no camera frame available",
-                    captured_at=captured_at, detector=HARMONY_DETECTOR,
+                    captured_at="", requested_at=requested_at,
+                    detector=HARMONY_DETECTOR,
                     model_id=self.model.path or "", frame_id=self.work_area.frame_id)
+
+            # THE FRAME IS IN HAND — this is the measurement instant. Stamped
+            # before inference, because inference describes THIS frame and the
+            # scene may have moved on while the network ran.
+            captured_at = utc_now_iso()
 
             try:
                 result = self._process_frame(frame.copy())
@@ -416,7 +435,8 @@ class DetectorRuntime:
                 self.last_error = f"inference failed: {exc}"
                 return ObservationBatch.failed(
                     batch_id=batch_id, source=source, error=self.last_error,
-                    captured_at=captured_at, detector=HARMONY_DETECTOR,
+                    captured_at=captured_at, requested_at=requested_at,
+                    detector=HARMONY_DETECTOR,
                     model_id=self.model.path or "",
                     frame_id=self.work_area.frame_id)
 
@@ -432,6 +452,7 @@ class DetectorRuntime:
                 result,
                 batch_id=batch_id,
                 captured_at=captured_at,
+                requested_at=requested_at,
                 model_id=self.model.path or "",
                 geometry=self.geometry,
                 frame=self.work_area,
