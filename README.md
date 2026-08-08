@@ -314,7 +314,8 @@ so the table below says which level produced it.
 | ROS 2 / DDS transport | **REAL** | Vulcanexus Fast DDS | multi-site or wide-area deployment |
 | FIWARE audit trail | **REAL** | Orion-LD, NGSI-LD, over DDS | site-level identity and access control |
 | DDS to FIWARE latency | **MEASURED** | When the benchmark has been run; `not measured` otherwise | production network conditions |
-| Perception | **SIMULATED** | Ground-truth scenario poses stand in for detection | camera, RGB-D, detector, pose estimation |
+| Perception, `sim` (default) | **SIMULATED** | Ground-truth scenario poses stand in for detection | camera, RGB-D, detector, pose estimation |
+| Perception, `harmony_camera` | **MEASURED — planar pose only** | A real USB camera through HARMONY's Faster R-CNN detector. Object x/y/yaw are measured on the ArUco-calibrated plane and become the objects WISEPACK plans from | depth, 6-DoF pose, object dimensions (configured proxy geometry is used), and any measured detection RATE — see §14 |
 | Robot, default backend | **SIMULATED - LOGICAL** | Deterministic workflow advance, geometric placement per the accepted plan, seeded grasp failures and workflow events | mass, inertia, gravity, kinematics, contacts, friction, collision response, settling |
 | Robot, Isaac backend | **PHYSICS-BASED SIMULATION** | A selected articulated manipulator — UFACTORY xArm 7 or Franka Emika Panda — with rigid bodies, mass, gravity, collision geometry, contacts, friction and settling in PhysX. Cylinders are carried and released, never teleported, and the measured settled pose is reported back | real hardware, safety functions, calibration, perception |
 | Pick / end-to-end success rate, logical backend | **SIMULATED LOGICAL OUTCOME** | The configured failure probability, nothing else | any physical cause of failure |
@@ -480,6 +481,22 @@ Isaac Sim 6.0.1 on the host instead of with the simulated robot model. Execution
 backend and dashboard data source are **different axes** - see
 [§15](#15-isaac-sim-physical-execution). `sim` is unchanged: still no ROS, no
 FIWARE and no simulator.
+
+### Real camera perception (optional)
+
+```bash
+# 1. the detector service - the single owner of the camera
+WISEPACK_HARMONY_CAMERA=0 python3 perception/harmony_perception_service.py
+
+# 2. any dashboard mode, with observations coming from the real camera
+WISEPACK_PERCEPTION_SOURCE=harmony_camera ./run_wisepack_dashboard.sh sim
+```
+
+Physical bottles stand in for cylindrical workpieces; their measured position
+and orientation become the objects WISEPACK plans from. **Perception source is a
+THIRD axis**, independent of both the data source and the execution backend, so
+`harmony_camera` composes with every mode above. Unset means `sim` and nothing
+changes. See [§15a](#15a-real-camera-perception---the-harmony-bottle-detector).
 
 ### Individual validations
 
@@ -1260,7 +1277,8 @@ and Logistics status panels alongside the ROS topic and FIWARE mapping diagnosti
 | Digital Twin validator | real software | **measured** | validation result |
 | Task generator | real software | deterministic | scenario summary |
 | Strategy comparison | real software | **measured** | compact summary |
-| Perception | simulator | simulated | detected count |
+| Perception, `sim` (default) | simulator | simulated | detected count |
+| Perception, `harmony_camera` | HARMONY Faster R-CNN + real camera | **measured pose** (not a measured detection rate) | detected count |
 | Robot execution | simulator | simulated | actions + KPIs |
 | HitL approval | real workflow | **measured** | approval state |
 | Cut-aware whole-process planner | real software | **measured** | cut proposal / result |
@@ -1269,7 +1287,8 @@ and Logistics status panels alongside the ROS topic and FIWARE mapping diagnosti
 | Anomaly source | simulator/adapter | architectural demo | mapped |
 | ROS 2 / DDS transport | Vulcanexus Fast DDS | **real** | - |
 | FIWARE event mapping | Orion-LD DDS bridge | **live** | - |
-| Physical RGB-D camera | future | not implemented | no |
+| Physical 2-D camera | **live with `WISEPACK_PERCEPTION_SOURCE=harmony_camera`** | real | detected count |
+| Physical RGB-D camera (the proposal's depth pipeline) | future | not implemented | no |
 | MoveIt2 execution | future | not implemented | no |
 
 The `/diagnostics` page renders this table live and, in ROS/FIWARE mode, marks
@@ -2376,6 +2395,382 @@ touched.
 If `htop` appears to show dozens of Isaac entries, those are **threads** - Kit is
 heavily threaded and htop lists TIDs by default (press `H` to hide them). They
 are not separate simulator instances.
+
+## 15a. Real camera perception - the HARMONY bottle detector
+
+**A camera is not an execution backend.** WISEPACK has three orthogonal axes and
+this section adds the third:
+
+```text
+PERCEPTION SOURCE          where the OBJECT OBSERVATIONS come from
+    sim | harmony_camera
+          |
+          v
+generic WISEPACK object observations
+          |
+          v
+packing / workflow / Digital Twin validation / operator approval
+          |
+          v
+EXECUTION BACKEND          who PERFORMS the approved placements
+    simulated | isaac
+```
+
+Every combination is legal and none implies another:
+
+| | `simulated` execution | `isaac` execution |
+|---|---|---|
+| **`sim` perception** | the default, unchanged | §15, unchanged |
+| **`harmony_camera` perception** | real objects, logical execution | real objects, physical execution |
+
+Selecting a camera changes **where the objects come from** and nothing else. The
+existing execution-backend selection, the dashboard data source (`sim`/`ros`/
+`fiware`), the packing algorithms, the validator, the approval gate and the
+audit trail are all untouched.
+
+> In the HARMONY camera mode, physical bottles are used as proxies for
+> cylindrical workpieces. Their detected physical position and orientation are
+> transformed into domain-neutral WISEPACK object observations. This allows the
+> planning and workflow layers to consume real perception data independently of
+> the selected execution backend.
+
+### Simulated perception (the default)
+
+```bash
+WISEPACK_PERCEPTION_SOURCE=sim      # or simply leave it unset
+```
+
+No camera, no image, no detector. The generated ground truth is republished with
+a seeded confidence and every event is labelled `simulated`. **This is what runs
+when the variable is unset, and its behaviour is byte-identical to before this
+feature existed** - `tests/test_perception.py` asserts exactly that.
+
+### Real HARMONY camera perception
+
+```bash
+WISEPACK_PERCEPTION_SOURCE=harmony_camera
+```
+
+Physical bottles on a calibrated table are detected by HARMONY's Faster R-CNN
+detector, positioned by its ArUco homography, and converted into generic
+WISEPACK object observations that the ordinary planning workflow consumes.
+
+#### What HARMONY code is reused, and what was added
+
+Nothing in the detector is reimplemented. From
+[`hpcbg/harmony`](https://github.com/hpcbg/harmony), directory
+`ai-bottle-detector-fiware/`:
+
+| HARMONY component | How WISEPACK uses it |
+|---|---|
+| `camera.py` (`Camera`) | **Imported and used as-is.** Threaded `cv2.VideoCapture` frame grabber. |
+| `pipeline.py` (`process_frame`) | **Imported and used as-is.** Faster R-CNN inference, ArUco homography, bottle/cap matching, position and yaw computation, annotated image rendering. WISEPACK computes no coordinate of its own. |
+| `ros2_backend.py` (`Ros2DetectorBackend`) | **Instantiated, not copied.** Its node, its `/bottle_detection/command` subscription and its four output topics run unchanged; only its camera and pipeline handles are injected so one process owns the camera. |
+| `config/config.json.tpl` | Read as the configuration template; WISEPACK generates its own `config.json` from it plus environment overrides, in a machine-local cache. HARMONY's checkout is never written to. |
+| `setup.py` model download | The **destination and the Hugging Face URL** are reused rather than a second downloader being written. See *Model resolution* below. |
+| `A4_calibration_sheet.pdf` | The calibration artefact. WISEPACK adopts HARMONY's coordinate system verbatim. |
+
+What WISEPACK adds:
+
+| New component | Why it was needed |
+|---|---|
+| `perception/harmony_perception_service.py` | HARMONY's DDS-native backend has **no image preview** - its preview endpoints live only in `main.py`, the legacy NGSI-v2 FastAPI service, and §8 forbids requiring that stack to see a picture. Running both would also mean two processes opening one `cv2.VideoCapture`. So one process owns the camera and serves both interfaces. |
+| `wisepack_core/harmony_adapter.py` | The **only** detector-aware code in the core. Converts HARMONY's bottle JSON into domain-neutral observations. |
+| `wisepack_core/perception.py` | The domain-neutral perception model: source selection, `PhysicalObservation`, `ObservationBatch`, proxy geometry, work-area frame, model resolution, staleness. |
+| `web/perception_client.py` | The dashboard's client. The dashboard never opens a camera and never imports torch. |
+
+#### Prerequisites
+
+* a camera reachable by OpenCV (a normal USB webcam is the supported case);
+* `torch`, `torchvision`, `opencv-python`, `opencv-contrib-python` for the
+  **detector service only** - the dashboard and the ROS stack do not need them;
+* the trained weights (see below);
+* the printed ArUco calibration sheet in view of the camera;
+* a HARMONY checkout. Default `/data/arise/harmony/ai-bottle-detector-fiware`,
+  overridable with `WISEPACK_HARMONY_PATH`.
+
+#### Model resolution
+
+The weights are **never committed to this repository**. They are resolved in
+this order, and the answer is reported by `/health`:
+
+1. `WISEPACK_HARMONY_MODEL_PATH`, if set. A configured path that does not exist
+   is an **error**, not a reason to search elsewhere - silently loading
+   different weights than the ones asked for is worse than reporting the miss.
+2. `/data/arise/models/best_model.pth`, if present (the shared ARISE host copy).
+3. `<harmony>/models/best_model.pth` - the exact destination HARMONY's own
+   installer downloads into.
+4. Otherwise **absent**, with a clear diagnostic naming every path searched, the
+   Hugging Face repository and the command to fetch it. There is no cryptic
+   `FileNotFoundError` out of `torch.load`: resolution is a filesystem question
+   answered before torch is imported at all.
+
+Fetch them with HARMONY's own installer (`python3 setup.py` in the HARMONY
+repository), or directly:
+
+```bash
+curl -L --fail -o <harmony>/models/best_model.pth \
+  https://huggingface.co/hpcbg/harmony-bottle-detector/resolve/main/best_model.pth
+```
+
+#### Calibration and the coordinate frame
+
+**WISEPACK adopts HARMONY's calibration; it does not redesign it.** HARMONY
+detects four ArUco markers (`DICT_ARUCO_ORIGINAL`, ids `11, 10, 15, 16` by
+default) and computes a homography onto a plane whose corner coordinates are
+declared in millimetres. With the shipped A4 sheet that plane is **130 × 130 mm
+with the origin at marker 11**.
+
+Every WISEPACK observation names its frame explicitly - `wisepack_workarea` by
+default - and that frame **is** HARMONY's calibrated plane: WISEPACK applies no
+transform of its own, so `x_mm`/`y_mm` are HARMONY's millimetres unchanged and
+`yaw_deg` is its bottle→cap angle unchanged.
+
+130 mm is small for a realistic WISEPACK work area. The extent is therefore
+**configurable rather than hardcoded**, so a larger printed board is a
+configuration change:
+
+```bash
+WISEPACK_HARMONY_CORNER_MARKERS=11,10,15,16     # marker ids, in plane order
+WISEPACK_HARMONY_CORNER_EXTENT_MM=600           # side of the square, mm
+WISEPACK_PHYSICAL_WORKAREA_WIDTH_MM=600         # declared WISEPACK work area
+WISEPACK_PHYSICAL_WORKAREA_DEPTH_MM=600
+WISEPACK_PHYSICAL_FRAME_ID=wisepack_workarea
+```
+
+An object measured outside the declared plane is **reported, never clamped or
+rescaled** - silently moving a measurement destroys the evidence for the
+calibration problem that produced it.
+
+Two behaviours of HARMONY's pipeline are handled explicitly:
+
+* **Only bottles with a matched cap are reported.** Without the cap there is no
+  orientation, so `pipeline.py` skips the bottle. The reported count is
+  therefore "objects with a resolved orientation", not "objects present".
+* **An uncalibrated frame yields the sentinel `(1, 1)` for every object.** Those
+  are not measurements. WISEPACK rejects such a batch as a **calibration
+  failure** rather than planning from a pile of objects at one point.
+
+#### Proxy-cylinder geometry
+
+A calibrated 2-D detector measures **where** an object is, not how big it is.
+Fabricating a diameter from a bounding box would feed an invented number into
+the one part of this repository that is genuinely measured. So the dimensions of
+the physical proxy objects are **declared**:
+
+```bash
+WISEPACK_PHYSICAL_PROXY_DIAMETER_MM=65     # default: an ordinary 0.5 l PET bottle
+WISEPACK_PHYSICAL_PROXY_LENGTH_MM=215
+WISEPACK_PHYSICAL_PROXY_WALL_MM=2          # for the mass-balance figures only
+WISEPACK_PHYSICAL_PROXY_MATERIAL=carbon_steel
+WISEPACK_PHYSICAL_PROXY_GROUP=A
+```
+
+Every item built from an observation is stamped `geometry_source:
+"configured_proxy"`, and the dashboard shows it. **Measure your bottles and set
+these** - the defaults are a documented default, not a measurement of the
+objects on your table.
+
+#### Starting the detector
+
+```bash
+# 1. the perception service - the single owner of the camera
+WISEPACK_HARMONY_CAMERA=0 \
+python3 perception/harmony_perception_service.py --port 22101
+
+# what it resolved, without opening a camera or loading a model:
+python3 perception/harmony_perception_service.py --check
+```
+
+`WISEPACK_HARMONY_CAMERA` accepts a device index (`0`), a device path
+(`/dev/video2`) or a stream URL. **No `/dev/videoX` is hardcoded**; the template
+default is documented and overridable. `AI_CAMERA` is honoured too, so an
+existing HARMONY habit keeps working.
+
+Its HTTP interface:
+
+```text
+GET  /health                            every health field below
+GET  /api/v1/camera/snapshot            one JPEG frame       (no inference)
+GET  /api/v1/camera/live                MJPEG preview        (no inference)
+POST /api/v1/detect                     ONE-SHOT inference -> observation batch
+GET  /api/v1/camera/last-detection      the current batch
+GET  /api/v1/detection/image/annotated  the annotated detector result
+GET  /api/v1/detection/image/raw        the exact frame that was analysed
+```
+
+**Inference is one-shot.** The MJPEG preview is raw frames only; Faster R-CNN
+runs when someone asks for a detection and not otherwise. A plan that changed
+under the operator while they read it would not be reproducible.
+
+#### Starting WISEPACK
+
+```bash
+# dashboard-only (no ROS), against the detector service over HTTP
+WISEPACK_PERCEPTION_SOURCE=harmony_camera ./run_wisepack_dashboard.sh sim
+
+# the full ROS 2 / DDS stack
+WISEPACK_PERCEPTION_SOURCE=harmony_camera ./run_wisepack_dashboard.sh
+
+# camera perception + PHYSICAL execution in Isaac Sim - the two axes compose
+WISEPACK_PERCEPTION_SOURCE=harmony_camera ./run_wisepack_dashboard.sh isaac
+
+# or directly on the launch file
+ros2 launch wisepack_bringup demo.launch.py perception_source:=harmony_camera
+```
+
+`WISEPACK_HARMONY_SERVICE_URL` points the dashboard at the detector when it runs
+on another host (default `http://127.0.0.1:22101`).
+
+An **unrecognised** perception source is a start-up error, never a silent
+fallback to the simulator: a typo that quietly ran the simulator while the
+header claimed a camera is precisely the failure this refuses to allow.
+
+#### Triggering a detection
+
+Open <http://127.0.0.1:8080>, find the **Physical Perception** panel, and press
+**Detect physical objects**. Equivalently:
+
+```bash
+curl -sX POST localhost:8080/api/command \
+  -H 'Content-Type: application/json' \
+  -d '{"command":"detect_physical_objects"}'
+```
+
+or, over DDS, on HARMONY's own inbound topic:
+
+```bash
+ros2 topic pub --once /bottle_detection/command std_msgs/String '{data: START}'
+```
+
+Each detection **replaces** the current observation. Move the bottles, detect
+again, and WISEPACK re-plans from exactly the objects now on the table - never
+those plus the ones that used to be there. A new batch is a new batch revision,
+so any outstanding approval is revoked and the workflow returns to the gate.
+
+In `sim` perception mode the command is **refused with a reason**. A button
+labelled "Detect physical objects" that quietly ran the simulator would be a
+lie, and a failed camera scan never falls back to simulated detections.
+
+#### Dashboard
+
+The **Physical Perception** panel appears only when the perception source is a
+real one. It shows the annotated detector result - bounding boxes, confidences,
+calibrated coordinates, orientation and the calibration overlay - the raw
+analysed frame, the live camera feed, and:
+
+```text
+Source: HARMONY Faster R-CNN     Camera: connected / unavailable
+Model: loaded / unavailable      Calibration: VALID / INVALID
+Detected cylindrical objects: N  Last detection: <timestamp>
+Frame: wisepack_workarea
+```
+
+plus the per-object table of `x`, `y`, `yaw`, confidence and the configured
+geometry. The panel is **domain-neutral**: it says "cylindrical objects"
+throughout, and the fact that bottles are the physical stand-in is stated once
+in the proxy note served from the API. `tests/test_perception.py` fails the
+build if a detector-specific string is ever hard-coded into the page.
+
+#### Interfaces
+
+| Interface | Direction | Payload |
+|---|---|---|
+| `GET /api/perception` | dashboard | source, health, current batch, poses, scene objects |
+| `POST /api/command {"command":"detect_physical_objects"}` | dashboard | one-shot detection |
+| `GET /api/perception/image/{annotated,raw,snapshot}` | dashboard | JPEG, proxied from the detector |
+| `/wisepack/perception/objects_json` | ROS 2, `std_msgs/String` | the WISEPACK-domain `ObservationBatch` |
+| `/wisepack/perception/status_json` | ROS 2, `std_msgs/String` | perception status |
+| `/bottle_detection/command` | ROS 2, `std_msgs/String` | **HARMONY's own** trigger, reused |
+| `/bottle_detection/{status_json,bottle_count,pick_pose_json,result_json}` | ROS 2 | **HARMONY's own** contract, published unchanged |
+
+The WISEPACK topics are **not** in `all_topics()`, for the same reason the Isaac
+channel is not: that contract is what has a publisher in *every* run, and these
+two have one only with a real perception source. The orchestrator also accepts
+HARMONY's raw `result_json` directly, so WISEPACK works against a **stock
+HARMONY checkout** with no WISEPACK service in front of it; the WISEPACK-domain
+topic wins whenever both are present, so world state keeps one authority.
+
+**No NGSI-v2 dependency.** None of this needs HARMONY's legacy FIWARE-v2 stack.
+The detector service makes no `/v2` call, and WISEPACK's own DDS/NGSI-LD path is
+unchanged.
+
+#### Provenance
+
+Every observation retains: `source`, `detector`, `model_id`, `confidence`,
+`captured_at`, `frame_id`, `calibration_status`, `calibration_revision`,
+`detector_class` and `detector_object_index`. It survives the JSON round trip
+onto `WasteItem.observation`, so a plan can be traced back to the exact
+detection and the exact calibration that produced it.
+
+#### KPI reporting - detector confidence is not a detection rate
+
+**A confidence of 0.94 does not become "vision detection rate = 94%".** Those
+are different quantities: one is the detector's certainty about objects it
+*did* find, the other needs ground truth about objects it might have *missed*.
+With a real detector active, KPI1 reports:
+
+```text
+Vision detection rate:
+not measured - real detector active; no ground-truth trial
+```
+
+The mean confidence is still published, under `physical_detector_mean_confidence`
+- a name that cannot be read as a rate - and per-object confidences are shown in
+the panel. `tests/test_perception.py` asserts the rate stays `not measured`.
+
+#### Failure handling
+
+Every one of these is a **visible failed batch** with its reason, never an empty
+successful scan and never a silent fallback:
+
+| Failure | What you see |
+|---|---|
+| camera absent / disconnected | `Camera: unavailable`, batch error naming the configured device |
+| model unavailable / download failed | `Model: unavailable`, every path searched plus the fetch command |
+| model loading failure | the loader's own error, with the resolution report |
+| no objects detected | status `empty`, **not** an error - an empty table is a valid measurement |
+| calibration markers absent / invalid | `Calibration: INVALID` and an explicit rejection of the sentinel coordinates |
+| inference failure | batch error naming the exception |
+| malformed ROS message / detector output | failed batch; partially malformed entries are dropped **and counted** |
+| HARMONY service unavailable | `service_reachable: false`; camera/model report `unknown`, never `false` |
+| stale observation | `observation_stale` with the batch age |
+
+A camera or model failure never takes an unrelated WISEPACK component down. In
+the ROS stack the workflow **waits** at the detection stage rather than failing
+the run, because with a real camera the objects arrive when the operator asks.
+
+#### Troubleshooting
+
+| Symptom | Cause and fix |
+|---|---|
+| panel absent | `WISEPACK_PERCEPTION_SOURCE` is unset or `sim`. It is the default. |
+| `perception service unreachable` | the service is not running, or `WISEPACK_HARMONY_SERVICE_URL` points elsewhere. |
+| `Calibration: INVALID` | the four ArUco markers are not all in frame. HARMONY caches them once seen; show the sheet and detect again. |
+| `Model: unavailable` | run `--check`; the message lists every path searched and the fetch command. |
+| `camera ... delivered no frame` | wrong index, or another process holds the device - **including a second copy of this service, or HARMONY's own `main.py`**. Only one process may own the camera. |
+| first detection takes ~30 s | normal: torch imports and a 159 MB Faster R-CNN loads on the first request only. |
+| objects detected but count lower than expected | HARMONY only reports bottles whose **cap** it also matched - that is where orientation comes from. |
+| coordinates all near `(1, 1)` | uncalibrated frame; WISEPACK rejects this rather than planning from it. |
+| detected but `outside_workarea` in diagnostics | the declared work area is smaller than the calibrated plane; set `WISEPACK_PHYSICAL_WORKAREA_*_MM`. |
+
+#### Next step: Isaac scene synchronization
+
+Deliberately **not** implemented here. The interface for it exists and is
+already exercised: `/api/perception` publishes `scene_objects`, a
+backend-neutral list of
+
+```json
+{"object_id": "physical-cylinder-001", "object_type": "cylindrical_proxy",
+ "frame_id": "wisepack_workarea",
+ "pose": {"x_mm": 82.4, "y_mm": 46.1, "z_mm": 0.0, "yaw_deg": -31.0},
+ "geometry": {"shape": "cylinder", "diameter_mm": 65, "length_mm": 215,
+              "source": "configured_proxy"}}
+```
+
+A scene synchronizer needs an identity, a planar pose, a geometry and the frame
+the pose is in - which is exactly this, and nothing else. **No consumer will
+ever need to parse bottle-specific HARMONY JSON inside Isaac.**
 
 ## 16. Tests and evidence
 

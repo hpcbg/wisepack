@@ -68,9 +68,14 @@ class ProposalTarget:
 PROPOSAL_TARGETS: Sequence[ProposalTarget] = (
     ProposalTarget(
         "KPI1", "Vision detection rate", 85.0, measurable_here=False,
-        note=("No perception model exists in this demonstrator. The simulated "
-              "detection figure reflects the configured simulator confidence, "
-              "not any vision system.")),
+        note=("Not measured in either perception mode, for two different "
+              "reasons. With simulated perception there is no vision model at "
+              "all and the figure reflects the configured simulator "
+              "confidence. With the real HARMONY camera detector there IS a "
+              "vision model, but a detection RATE needs a ground-truth trial — "
+              "how many objects were actually on the table — and detector "
+              "confidence is a different quantity that must never be "
+              "substituted for it.")),
     ProposalTarget(
         "KPI2", "Pick success rate", 80.0, measurable_here=False,
         note=("No robot and no grasp planner. The simulated figure reflects the "
@@ -300,12 +305,18 @@ def compute_kpis(scenario: Scenario, baseline: PackingPlan,
                  stats: Optional[ExecutionStats] = None,
                  action_log: Optional[ActionLog] = None,
                  latency_p50_ms: Optional[float] = None,
-                 run_id: str = "run") -> KPIReport:
+                 run_id: str = "run",
+                 perception_source: str = "sim",
+                 perception_mean_confidence: Optional[float] = None) -> KPIReport:
     """Build the full KPI report for one run.
 
     ``latency_p50_ms`` comes from the DDS->FIWARE latency artefact when one
     exists. It is not synthesised: with no artefact the metric stays
     NOT_MEASURED and the dashboard shows "not measured".
+
+    ``perception_source`` changes only the PROVENANCE AND WORDING of the
+    detection metrics, never their arithmetic. A real detector does not turn
+    ``detection_rate_pct`` into a measurement — see the KPI1 note above and §12.
     """
     stats = stats or ExecutionStats()
     report = KPIReport(
@@ -375,9 +386,40 @@ def compute_kpis(scenario: Scenario, baseline: PackingPlan,
     report.add("simulated_end_to_end_success_rate_pct",
                _pct(stats.cycles_completed, stats.cycles_attempted), "%", S,
                "simulated packaging cycles, NOT a robot measurement")
+    # -- perception ---------------------------------------------------------- #
+    #
+    # THE ONE PLACE §12 IS ENFORCED. `detection_rate_pct` is
+    # detected / ACTUALLY-PRESENT, and only the simulator knows the denominator
+    # because only the simulator generated the objects. A real camera does not:
+    # `WorkflowEngine._scan_physical` leaves `detectable_items` at 0 on purpose,
+    # `_pct` returns NOT_MEASURED for a zero denominator, and the dashboard
+    # renders "not measured" rather than a number.
+    #
+    # A confidence of 0.94 must NEVER become "vision detection rate = 94%".
+    # Those are different quantities: one is the detector's own certainty about
+    # objects it did find, the other needs ground truth about objects it might
+    # have missed. The mean confidence is still published — under a name that
+    # cannot be mistaken for a rate, with SIMULATED/MEASURED provenance that
+    # matches where it came from.
+    physical_perception = str(perception_source or "sim") != "sim"
     report.add("detection_rate_pct",
-               _pct(stats.detected_items, stats.detectable_items), "%", S,
-               "simulated perception confidence, NOT a vision measurement")
+               _pct(stats.detected_items, stats.detectable_items), "%",
+               M if physical_perception else S,
+               ("not measured — a real detector is active but no ground-truth "
+                "trial has been run, so the number of objects actually present "
+                "is unknown. Detector confidence is NOT a detection rate."
+                if physical_perception else
+                "simulated perception confidence, NOT a vision measurement"))
+    report.add("detected_objects", float(stats.detected_items), "objects",
+               M if physical_perception else S,
+               ("objects reported by the real detector in the current "
+                "observation batch" if physical_perception else
+                "objects reported by the perception simulator"))
+    if physical_perception:
+        report.add("physical_detector_mean_confidence",
+                   perception_mean_confidence, "confidence", M,
+                   "mean of the detector's own per-object confidences. NOT a "
+                   "detection rate, NOT an accuracy, and never a success metric")
 
     # -- integration --------------------------------------------------------- #
     logged = (action_log.count if action_log else stats.fiware_events_logged)

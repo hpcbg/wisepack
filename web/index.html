@@ -78,6 +78,10 @@
   }
   .badge.live{color:var(--ok);border-color:var(--ok);background:var(--ok-bg);font-weight:700}
   .badge.err{color:var(--bad);border-color:var(--bad);background:var(--bad-bg)}
+  /* A perception failure is a full-width statement, not a pill: it carries the
+     detector's own reason and that reason has to be readable. */
+  .percep-error{color:var(--bad);background:var(--bad-bg);border:1px solid var(--bad);
+    border-radius:6px;padding:6px 9px;font-size:12px;line-height:1.4}
   .conn::before{content:'';display:inline-block;width:7px;height:7px;border-radius:50%;
     margin-right:6px;vertical-align:1px;background:var(--mut)}
   .conn.on::before{background:var(--ok)} .conn.off::before{background:var(--bad)}
@@ -372,6 +376,43 @@
       <div style="margin-top:10px"></div>
       <h3>Proposal KPI targets <span class="note">a target is not a result</span></h3>
       <div class="scroll"><table id="targets"><tbody></tbody></table></div>
+    </div>
+
+    <!-- PHYSICAL PERCEPTION (§9). HIDDEN unless the perception source is a real
+         one, so the ordinary simulated dashboard is byte-for-byte what it was.
+         Deliberately DOMAIN-NEUTRAL in every string: this panel shows
+         "cylindrical objects", and which physical stand-in object is on the
+         table is stated once, unobtrusively, by the proxy note SERVED FROM THE
+         API (#percep-proxy). Nothing detector-specific is hard-coded here, and
+         tests/test_perception.py fails the build if it ever is.
+         This panel is about where OBJECTS come from; the execution backend is a
+         separate axis and is shown in its own badge elsewhere. -->
+    <div class="panel" id="perceppanel" style="display:none">
+      <h3>Physical Perception
+        <span class="badge" id="percep-badge">CAMERA</span>
+        <span class="note" id="percep-source"></span>
+      </h3>
+      <div id="percep-status" class="note" style="margin-bottom:8px"></div>
+      <div id="percep-error" class="percep-error" style="display:none;margin-bottom:8px"></div>
+      <!-- The ANNOTATED detector result is the primary image: it carries the
+           boxes, the confidences, the calibrated coordinates, the orientation
+           and the calibration overlay. The raw feed is secondary. -->
+      <div style="margin-bottom:8px">
+        <img id="percep-image" alt="annotated detector result"
+             style="max-width:100%;border-radius:6px;display:none"/>
+        <div id="percep-noimage" class="note">no detector image yet — run a detection</div>
+      </div>
+      <div class="btns" id="percep-views" style="margin-bottom:6px">
+        <button data-v="annotated" aria-pressed="true">annotated result</button>
+        <button data-v="raw">analysed frame</button>
+        <button data-v="live">live camera</button>
+      </div>
+      <div class="btns">
+        <button class="pri" id="c-detect-physical">Detect physical objects</button>
+      </div>
+      <div class="scroll"><table id="percep-objects"><tbody></tbody></table></div>
+      <div class="note" id="percep-proxy" style="margin-top:8px"></div>
+      <div class="note" id="percep-confidence" style="margin-top:4px"></div>
     </div>
 
     <!-- Physical execution diagnostics. HIDDEN unless a physical backend is
@@ -1666,6 +1707,136 @@ async function refreshPhysical() {
   }
 }
 
+// ------------------------------------------------- physical perception panel
+//
+// WHICH IMAGE IS SHOWING. The annotated detector result is the default because
+// it is the one that carries evidence — boxes, confidence, calibrated
+// coordinates, orientation. `live` is a raw MJPEG stream served by the detector
+// itself; it runs NO inference, which is why it can be continuous.
+let PERCEP_VIEW = "annotated";
+let PERCEP_IMAGE_REV = 0;
+
+function percepTri(value, yes, no, unknown) {
+  if (value === true) return yes;
+  if (value === false) return no;
+  return unknown;
+}
+
+async function refreshPerception() {
+  const box = $("#perceppanel");
+  if (!box) return;
+  const doc = await api("/api/perception");
+  // Shown only for a real perception source. A "Physical Perception" heading
+  // over a simulated run would claim a camera that does not exist.
+  if (!doc || !doc.physical) { box.style.display = "none"; return; }
+  box.style.display = "";
+
+  const h = doc.health || {};
+  const b = doc.batch;
+  $("#percep-source").textContent = `Source: ${doc.perception_source_label || ""}`;
+  const badge = $("#percep-badge");
+  // The badge tracks the CAMERA, not the panel's existence: a panel that always
+  // says "CAMERA" while the camera is unplugged is worse than no badge.
+  const reachable = h.service_reachable;
+  badge.textContent = percepTri(reachable, "CAMERA", "DETECTOR OFFLINE", "DETECTOR UNKNOWN");
+  badge.className = "badge" + (reachable === false ? " err" : " phys");
+
+  const bits = [];
+  bits.push("Camera: " + percepTri(h.camera_available, "connected", "unavailable", "unknown"));
+  bits.push("Model: " + percepTri(h.model_loaded, "loaded",
+    percepTri(h.model_available, "available, not loaded", "unavailable", "unknown"), "unknown"));
+  bits.push("Calibration: " + (h.calibration_valid ? "VALID"
+    : (h.calibration_status || "unknown").toUpperCase()));
+  bits.push("Detected cylindrical objects: " + (b && b.status !== "error" ? b.count : "—"));
+  bits.push("Last detection: " + ((b && b.captured_at) || h.last_inference_at || "never"));
+  if (doc.observation_stale) bits.push("OBSERVATION STALE");
+  // The frame the coordinates are in, always named. Three numbers without a
+  // frame are not a pose.
+  if (b && b.frame_id) bits.push("Frame: " + b.frame_id);
+  $("#percep-status").textContent = bits.join(" · ");
+
+  // FAILURES ARE SHOWN, never smoothed into "0 objects". A failed scan and an
+  // empty table are different facts.
+  const errBox = $("#percep-error");
+  const error = (b && b.status === "error" && b.error) || h.last_error || doc.config_error || "";
+  errBox.style.display = error ? "" : "none";
+  errBox.textContent = error;
+
+  // -- image ------------------------------------------------------------- #
+  const img = $("#percep-image");
+  const none = $("#percep-noimage");
+  if (PERCEP_VIEW === "live") {
+    img.src = doc.live_url;
+    img.style.display = "";
+    none.style.display = "none";
+  } else if (b && b.status !== "error" && b.captured_at) {
+    // Cache-busted on the BATCH, not on the clock: the annotated image only
+    // changes when a detection runs, and re-fetching a JPEG every poll would
+    // put a needless megabyte a second through the proxy.
+    const key = `${b.batch_id}:${b.captured_at}`;
+    if (key !== PERCEP_IMAGE_REV) {
+      PERCEP_IMAGE_REV = key;
+      img.src = `/api/perception/image/${PERCEP_VIEW}?v=${encodeURIComponent(key)}`;
+    }
+    img.style.display = "";
+    none.style.display = "none";
+  } else {
+    img.style.display = "none";
+    none.style.display = "";
+  }
+
+  // -- objects ------------------------------------------------------------ #
+  const body = $("#percep-objects tbody");
+  body.innerHTML = "";
+  body.append(el("tr", {}, [
+    el("th", {}, "object"), el("th", {}, "x mm"), el("th", {}, "y mm"),
+    el("th", {}, "yaw °"), el("th", {}, "confidence"), el("th", {}, "geometry")]));
+  for (const o of ((b && b.observations) || [])) {
+    const p = o.pose || {}, g = o.geometry || {};
+    body.append(el("tr", {}, [
+      el("td", { title: `${o.detector || ""} · ${o.captured_at || ""}` },
+         o.observation_id),
+      el("td", {}, p.x_mm === undefined ? "—" : p.x_mm.toFixed(1)),
+      el("td", {}, p.y_mm === undefined ? "—" : p.y_mm.toFixed(1)),
+      el("td", {}, p.yaw_deg === undefined ? "—" : p.yaw_deg.toFixed(1)),
+      // The per-object confidence IS shown — §12 objects to calling it a
+      // detection rate, not to displaying it.
+      el("td", { class: "s measured" },
+         o.confidence === null || o.confidence === undefined
+           ? "—" : o.confidence.toFixed(2)),
+      el("td", { class: "note" },
+         g.diameter_mm ? `⌀${g.diameter_mm} × ${g.length_mm} mm (${g.source})` : "—")]));
+  }
+  $("#percep-proxy").textContent = doc.proxy_note || "";
+  $("#percep-confidence").textContent = doc.confidence_note || "";
+}
+
+for (const btn of document.querySelectorAll("#percep-views button")) {
+  btn.onclick = () => {
+    PERCEP_VIEW = btn.dataset.v;
+    PERCEP_IMAGE_REV = 0;
+    for (const other of document.querySelectorAll("#percep-views button"))
+      other.setAttribute("aria-pressed", String(other === btn));
+    refreshPerception();
+  };
+}
+$("#c-detect-physical").onclick = async () => {
+  const btn = $("#c-detect-physical");
+  // Inference takes seconds and the first one takes tens of seconds while the
+  // model loads. A button that looks idle invites a second click, and a second
+  // click would queue a second detection behind the first.
+  btn.disabled = true;
+  const label = btn.textContent;
+  btn.textContent = "Detecting…";
+  try {
+    await command("detect_physical_objects", {});
+  } finally {
+    btn.disabled = false;
+    btn.textContent = label;
+    refreshPerception();
+  }
+};
+
 // Each panel refreshes INDEPENDENTLY. Previously one throw in any panel aborted
 // the whole sequence and printed "refresh failed", so a single missing field
 // blanked the entire dashboard. A panel that fails now says so in its own place
@@ -1693,6 +1864,7 @@ async function refreshAll() {
   await panel("cut", refreshCut);
   await panel("topology", drawTopo);
   await panel("physical", refreshPhysical);
+  await panel("perception", refreshPerception);
   await panel("simnav", refreshSimulatorNav);
 }
 

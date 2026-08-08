@@ -111,11 +111,16 @@ class Source(str, Enum):
     """Provenance of a reported figure. Never guess this value.
 
     MEASURED  — produced by running code on this machine (optimizer timings,
-                container counts, utilization, DDS->FIWARE latency).
+                container counts, utilization, DDS->FIWARE latency) or read from
+                a real sensor (a physical perception observation).
     SIMULATED — produced by the simulator (pick outcomes, perception confidence,
                 dose class). Real inside the demo, not real in the world.
     OPERATOR  — supplied by a human through the dashboard.
     TARGET    — a WISEPACK proposal target (KPI1-KPI4). NOT a result.
+
+    MEASURED on a perception observation says the POSE was measured by a real
+    detector. It says nothing about detection *accuracy* — that needs a
+    ground-truth trial, and kpi.py refuses to invent one from confidence.
     """
 
     MEASURED = "measured"
@@ -269,6 +274,148 @@ class Box:
 
 
 # --------------------------------------------------------------------------- #
+# PhysicalObservation
+# --------------------------------------------------------------------------- #
+
+
+@dataclass
+class PhysicalObservation:
+    """One object OBSERVED by a real perception system, in physical units.
+
+    DOMAIN-NEUTRAL BY CONSTRUCTION. Nothing here names a bottle, a detector
+    architecture or a camera vendor. A physical detector reports "there is a
+    cylindrical object at (x, y) rotated by yaw, and I am this confident"; that
+    is the whole content of this type. Whichever detector produced it goes in
+    ``detector``/``model_id`` as provenance, never in the shape of the data.
+
+    WHY THE UNITS ARE FLOATS HERE AND INTEGERS EVERYWHERE ELSE. The packing
+    arithmetic uses integer millimetres on purpose (see the module docstring):
+    float drift there turns an exact "fits" into a random near-miss. A sensor
+    reading is a different kind of number — it has sub-millimetre precision that
+    is genuinely part of the measurement, and rounding it at the sensor boundary
+    would throw away the only copy. So the observation keeps the measured floats
+    and ``WasteItem.source_position`` carries the rounded integer projection the
+    planner uses. Both are published; neither is derived from the other twice.
+
+    ``x_mm``/``y_mm``/``yaw_deg`` are expressed in ``frame_id``, and ``frame_id``
+    is mandatory. A pose without a frame is not a pose — it is three numbers, and
+    the later Isaac scene synchronizer would have no way to place them.
+
+    GEOMETRY IS NOT MEASURED. ``diameter_mm``/``length_mm`` are the configured
+    known dimensions of the physical proxy object, carried here so a consumer
+    has one complete record. ``geometry_source`` says so explicitly. A 2-D
+    detector cannot measure the diameter of a cylinder, and fabricating one from
+    a bounding box would put an invented number into the packing arithmetic.
+    """
+
+    observation_id: str
+    x_mm: float
+    y_mm: float
+    yaw_deg: float = 0.0
+    z_mm: float = 0.0
+    confidence: Optional[float] = None
+    object_type: str = "cylindrical_proxy"
+    source: str = "unknown"                 # perception source id, e.g. harmony_camera
+    frame_id: str = "wisepack_workarea"
+    #: -- provenance (§11): enough to debug or re-analyse this detection later --
+    detector: str = ""                      # detector/model family identification
+    model_id: str = ""                      # weights identity (path, hash or repo id)
+    detector_class: str = ""                # the DETECTOR's own class label
+    detector_object_index: Optional[int] = None   # index/id within its own result
+    captured_at: str = ""                   # ISO-8601 capture/detection timestamp
+    calibration_status: str = "unknown"     # valid | invalid | unknown
+    calibration_revision: str = ""
+    #: -- known proxy geometry (configured, never inferred from the detector) --
+    diameter_mm: Optional[int] = None
+    length_mm: Optional[int] = None
+    geometry_source: str = "configured_proxy"
+
+    def __post_init__(self) -> None:
+        _require_id("observation_id", self.observation_id)
+        for name in ("x_mm", "y_mm", "yaw_deg", "z_mm"):
+            value = getattr(self, name)
+            if isinstance(value, bool) or not isinstance(value, (int, float)):
+                raise DomainError(f"{self.observation_id}: {name} must be a "
+                                  f"number, got {value!r}")
+            setattr(self, name, float(value))
+        if self.confidence is not None:
+            self.confidence = float(self.confidence)
+            if not 0.0 <= self.confidence <= 1.0:
+                raise DomainError(
+                    f"{self.observation_id}: confidence must be in [0, 1], "
+                    f"got {self.confidence}")
+        if not self.frame_id:
+            raise DomainError(
+                f"{self.observation_id}: frame_id is mandatory — a pose without "
+                "a coordinate frame cannot be placed by any consumer")
+        if self.diameter_mm is not None:
+            self.diameter_mm = _require_positive_int("diameter_mm", self.diameter_mm)
+        if self.length_mm is not None:
+            self.length_mm = _require_positive_int("length_mm", self.length_mm)
+
+    @property
+    def position(self) -> Vec3:
+        """The integer-millimetre projection the packing layer consumes."""
+        return Vec3(int(round(self.x_mm)), int(round(self.y_mm)),
+                    int(round(self.z_mm)))
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "observation_id": self.observation_id,
+            "object_type": self.object_type,
+            "source": self.source,
+            "frame_id": self.frame_id,
+            "pose": {
+                "x_mm": round(self.x_mm, 3),
+                "y_mm": round(self.y_mm, 3),
+                "z_mm": round(self.z_mm, 3),
+                "yaw_deg": round(self.yaw_deg, 3),
+            },
+            "confidence": (round(self.confidence, 4)
+                           if self.confidence is not None else None),
+            "detector": self.detector,
+            "model_id": self.model_id,
+            "detector_class": self.detector_class,
+            "detector_object_index": self.detector_object_index,
+            "captured_at": self.captured_at,
+            "calibration_status": self.calibration_status,
+            "calibration_revision": self.calibration_revision,
+            "geometry": {
+                "diameter_mm": self.diameter_mm,
+                "length_mm": self.length_mm,
+                "source": self.geometry_source,
+            },
+        }
+
+    @staticmethod
+    def from_dict(d: Dict[str, Any]) -> "PhysicalObservation":
+        pose = d.get("pose") or {}
+        geometry = d.get("geometry") or {}
+        return PhysicalObservation(
+            observation_id=d["observation_id"],
+            x_mm=float(pose.get("x_mm", d.get("x_mm", 0.0))),
+            y_mm=float(pose.get("y_mm", d.get("y_mm", 0.0))),
+            yaw_deg=float(pose.get("yaw_deg", d.get("yaw_deg", 0.0))),
+            z_mm=float(pose.get("z_mm", d.get("z_mm", 0.0))),
+            confidence=(None if d.get("confidence") is None
+                        else float(d["confidence"])),
+            object_type=d.get("object_type", "cylindrical_proxy"),
+            source=d.get("source", "unknown"),
+            frame_id=d.get("frame_id", "wisepack_workarea"),
+            detector=d.get("detector", ""),
+            model_id=d.get("model_id", ""),
+            detector_class=d.get("detector_class", ""),
+            detector_object_index=d.get("detector_object_index"),
+            captured_at=d.get("captured_at", ""),
+            calibration_status=d.get("calibration_status", "unknown"),
+            calibration_revision=d.get("calibration_revision", ""),
+            diameter_mm=geometry.get("diameter_mm"),
+            length_mm=geometry.get("length_mm"),
+            geometry_source=geometry.get("source", "configured_proxy"),
+        )
+
+
+# --------------------------------------------------------------------------- #
 # WasteItem
 # --------------------------------------------------------------------------- #
 
@@ -320,6 +467,18 @@ class WasteItem:
     generation: int = 0                               # 0 == original, 1.. derived
     cut_history: List[Dict[str, Any]] = field(default_factory=list)
     derived_item_ids: List[str] = field(default_factory=list)
+
+    # -- physical perception provenance ----------------------------------- #
+    # Set ONLY when this item came from a real perception source. None for every
+    # generated item, which is what keeps the default `sim` behaviour and every
+    # pre-existing scenario JSON byte-identical (see from_dict).
+    #
+    # The packing algorithms never read this. It exists so the measured pose,
+    # its confidence and its detector provenance survive into the item state and
+    # out through the API — §3 requires x/y/yaw/confidence to be preserved even
+    # though the packer does not need them yet, and the Isaac scene synchronizer
+    # will read exactly this field rather than any detector-specific JSON.
+    observation: Optional["PhysicalObservation"] = None
 
     def __post_init__(self) -> None:
         _require_id("item_id", self.item_id)
@@ -470,6 +629,10 @@ class WasteItem:
             "derived_item_ids": list(self.derived_item_ids),
             "is_cuttable": self.is_cuttable,
             "is_derived": self.is_derived,
+            # Absent-as-None rather than omitted: a consumer can then tell
+            # "generated item" from "observed item whose provenance was lost".
+            "observation": (self.observation.to_dict()
+                            if self.observation else None),
         }
 
     @staticmethod
@@ -498,6 +661,8 @@ class WasteItem:
             generation=int(d.get("generation", 0)),
             cut_history=list(d.get("cut_history", [])),
             derived_item_ids=list(d.get("derived_item_ids", [])),
+            observation=(PhysicalObservation.from_dict(d["observation"])
+                         if d.get("observation") else None),
         )
 
 
@@ -941,6 +1106,6 @@ class Scenario:
 __all__ = [
     "SCHEMA_VERSION", "GeometryType", "APPROXIMATED_GEOMETRIES", "ItemStatus",
     "ContainerStatus", "ValidationStatus", "ApprovalState", "Axis", "Source",
-    "Strategy", "DomainError", "Vec3", "Box", "WasteItem", "Container",
-    "Placement", "PackingPlan", "Scenario",
+    "Strategy", "DomainError", "Vec3", "Box", "PhysicalObservation", "WasteItem",
+    "Container", "Placement", "PackingPlan", "Scenario",
 ]

@@ -51,9 +51,13 @@ from wisepack_core.execution import ExecutionBackend, parse_backend
 from wisepack_core.packing import OptimizerConfig
 from wisepack_core.anomaly import AnomalyEvent
 from wisepack_core.correlation import RunCorrelation
+from wisepack_core.harmony_adapter import parse_harmony_json
+from wisepack_core.perception import (
+    ObservationBatch, ProxyGeometry, WorkAreaFrame, resolve_perception_source,
+)
 from wisepack_core.workflow import (
-    AnomalyHold, ApprovalRequired, RobotSimConfig, WorkflowConfig, WorkflowEngine,
-    WorkflowError,
+    AnomalyHold, ApprovalRequired, PerceptionUnavailable, RobotSimConfig,
+    WorkflowConfig, WorkflowEngine, WorkflowError,
 )
 
 
@@ -109,7 +113,16 @@ class ScanAndDetect(_EngineBehaviour):
     def update(self):
         if self.engine.detected:
             return py_trees.common.Status.SUCCESS
-        self.engine.scan_and_detect()
+        try:
+            self.engine.scan_and_detect()
+        except PerceptionUnavailable:
+            # WAITING, NOT FAILING. With a real perception source the objects
+            # arrive when the operator triggers a detection, which may be
+            # minutes after the stack starts. RUNNING holds the tree at this
+            # behaviour — planning cannot proceed without objects, and there is
+            # deliberately no fallback to simulated ones (§15). The reason is
+            # already on the action log and in the Physical Perception panel.
+            return py_trees.common.Status.RUNNING
         self.owner.publish_detection()
         return py_trees.common.Status.SUCCESS
 
@@ -310,6 +323,10 @@ class HitLOrchestrator(Node):
         # WISEPACK_ISAAC_ROBOT environment override above the configured default
         # so an automated validator cannot be overruled by a stale draft.
         self.declare_parameter("robot", "")
+        # WHERE THE OBJECT OBSERVATIONS COME FROM. A THIRD, INDEPENDENT AXIS:
+        # not the execution backend above, not the dashboard's data source. ""
+        # resolves from WISEPACK_PERCEPTION_SOURCE, and unset is `sim`.
+        self.declare_parameter("perception_source", "")
 
         preset = self.get_parameter("preset").value
         seed = int(self.get_parameter("seed").value)
@@ -320,6 +337,21 @@ class HitLOrchestrator(Node):
         # reported physical execution it never performed.
         self.execution_backend = parse_backend(
             self.get_parameter("execution_backend").value)
+        # Same discipline as the backend: an unknown name raises here, before
+        # any publisher exists, rather than silently running the simulator while
+        # every surface claims a camera.
+        self.perception_source = resolve_perception_source(
+            self.get_parameter("perception_source").value or None)
+        self.proxy_geometry = ProxyGeometry.from_env()
+        self.work_area = WorkAreaFrame.from_env()
+        #: The newest batch the perception service published, waiting to be
+        #: adopted on the next scan. One slot, not a queue: a batch supersedes
+        #: its predecessor completely (§6).
+        self._pending_observation: Optional[ObservationBatch] = None
+        self._perception_status: Dict[str, Any] = {}
+        #: True once a WISEPACK-domain batch has been seen, after which
+        #: HARMONY's raw `result_json` is ignored — see `_on_harmony_result`.
+        self._saw_wisepack_observations = False
 
         events = []
         if bool(self.get_parameter("dynamic_events").value):
@@ -346,7 +378,11 @@ class HitLOrchestrator(Node):
                 seed=seed),
             dynamic_events=events,
             auto_approve=self.auto_approve,
-            execution_backend=self.execution_backend))
+            execution_backend=self.execution_backend,
+            perception_source=self.perception_source,
+            proxy_geometry=self.proxy_geometry,
+            work_area=self.work_area))
+        self._attach_observation_provider()
 
         # -- publishers: exactly one writer per topic -------------------------
         def pub(topic, msg_type):
@@ -428,6 +464,37 @@ class HitLOrchestrator(Node):
                                  qos_for(T.CUTTING_APPROVAL))
         self.create_subscription(String, T.INVENTORY_REQUEST, self._on_inventory_request,
                                  qos_for(T.INVENTORY_REQUEST))
+
+        # -- physical perception (OPTIONAL channel) ---------------------------
+        # Created only for a physical perception source. In `sim` there is no
+        # detector to subscribe to and no trigger to publish, so the topic graph
+        # of an ordinary run is exactly what it was.
+        #
+        # SINGLE AUTHORITY PRESERVED. The perception service owns the
+        # observation; the orchestrator only reads it and adopts it into the
+        # batch the planner sees. The trigger goes out on HARMONY's OWN inbound
+        # command topic — reusing its contract rather than inventing a parallel
+        # one (§7).
+        self.p_detect_command = None
+        if self.perception_source.is_physical:
+            self.create_subscription(
+                String, T.PERCEPTION_OBJECTS, self._on_perception_objects,
+                qos_for(T.PERCEPTION_OBJECTS))
+            self.create_subscription(
+                String, T.PERCEPTION_STATUS, self._on_perception_status,
+                qos_for(T.PERCEPTION_STATUS))
+            # ALSO ACCEPT AN UNMODIFIED HARMONY DETECTOR. `AI_BACKEND=ros2
+            # AI_DETECTION_MODE=real ./run.sh` publishes only HARMONY's own
+            # `result_json`; adapting it here means WISEPACK works against a
+            # stock HARMONY checkout with no WISEPACK service in front of it.
+            # The WISEPACK-domain topic WINS whenever both are present — see
+            # `_on_harmony_result` — so there is still one authority.
+            self.create_subscription(
+                String, "/bottle_detection/result_json",
+                self._on_harmony_result, qos_for(T.PERCEPTION_OBJECTS))
+            self.p_detect_command = self.create_publisher(
+                String, T.HARMONY_DETECTION_COMMAND,
+                qos_for(T.HARMONY_DETECTION_COMMAND))
 
         # Every action event goes out on DDS the moment it is recorded. This is
         # the audit path; nothing batches it and nothing bypasses it.
@@ -640,6 +707,119 @@ class HitLOrchestrator(Node):
 
     def publish_detection(self) -> None:
         self.p_detected.publish(Int32(data=len(self.engine.detected)))
+        self.publish_correlation("scenario")
+
+    # ------------------------------------------------------------------ #
+    # Physical perception
+    # ------------------------------------------------------------------ #
+
+    def _attach_observation_provider(self) -> None:
+        """Give the engine a way to fetch the current physical observation.
+
+        In ROS mode observations arrive ASYNCHRONOUSLY over DDS, so the provider
+        does not fetch anything: it hands over whatever the detector last
+        published, or a failed batch saying nothing has been detected yet. The
+        engine's contract is unchanged — call it, get a batch — which is why the
+        same engine works behind HTTP in the dashboard's sim mode.
+        """
+        if self.perception_source.is_physical:
+            self.engine.observation_provider = self._take_pending_observation
+
+    def _take_pending_observation(self) -> ObservationBatch:
+        batch, self._pending_observation = self._pending_observation, None
+        if batch is not None:
+            return batch
+        return ObservationBatch.failed(
+            batch_id="batch-pending",
+            source=self.perception_source.value,
+            error=("no physical observation has been received yet — trigger a "
+                   "detection (operator command `detect_physical_objects`, or "
+                   "publish START on /bottle_detection/command) and make sure "
+                   "the perception service is running on this ROS_DOMAIN_ID"))
+
+    def request_physical_detection(self) -> bool:
+        """Ask the detector for one scan, over HARMONY's own command topic."""
+        if self.p_detect_command is None:
+            return False
+        self.p_detect_command.publish(String(data="START"))
+        self.get_logger().info(
+            f"requested a physical detection on {T.HARMONY_DETECTION_COMMAND}")
+        return True
+
+    def _on_perception_objects(self, msg: String) -> None:
+        """A WISEPACK-domain observation batch. The PREFERRED source."""
+        self._saw_wisepack_observations = True
+        try:
+            batch = ObservationBatch.from_dict(json.loads(msg.data))
+        except Exception as exc:                            # noqa: BLE001
+            # A malformed ROS message is one of §15's failures. Recorded as a
+            # failed batch so it renders, never raised out of a DDS callback
+            # where it would only reach a log nobody is reading.
+            batch = ObservationBatch.failed(
+                batch_id="batch-malformed",
+                source=self.perception_source.value,
+                error=f"malformed perception message on {T.PERCEPTION_OBJECTS}: {exc}")
+        self._adopt_observation(batch)
+
+    def _on_harmony_result(self, msg: String) -> None:
+        """HARMONY's own `result_json`, adapted. Used only as a FALLBACK.
+
+        Ignored once a WISEPACK-domain batch has been seen: with the WISEPACK
+        perception service running, both topics carry the same detection, and
+        adopting both would apply one scan twice and bump the batch revision
+        twice. One authority over the world state, exactly as elsewhere.
+        """
+        if getattr(self, "_saw_wisepack_observations", False):
+            return
+        self._adopt_observation(parse_harmony_json(
+            msg.data,
+            batch_id=f"batch-h{self.engine.observation_batches_applied + 1:03d}",
+            geometry=self.proxy_geometry,
+            frame=self.work_area,
+            source=self.perception_source.value))
+
+    def _adopt_observation(self, batch: ObservationBatch) -> None:
+        """Make ``batch`` the observation WISEPACK plans from, and re-plan.
+
+        This is where a real detection becomes the object batch every downstream
+        stage consumes (§10). If the workflow has not yet scanned, the batch is
+        parked and the tree picks it up on its next tick; if it has, the batch
+        REPLACES the previous objects and planning restarts from them.
+        """
+        self._pending_observation = batch
+        self.publish_perception()
+        if self.engine.scenario is None or not self.engine.detected:
+            return                      # ScanAndDetect will consume it on tick
+        try:
+            self.engine.apply_observation_batch(
+                self._take_pending_observation())
+        except PerceptionUnavailable as exc:
+            self.get_logger().error(f"physical detection failed: {exc}")
+            return
+        # A new batch is a new batch revision: any outstanding approval was
+        # already revoked by apply_observation_batch, so re-plan and return to
+        # the gate with the objects that are actually on the table.
+        self.engine.generate_plans()
+        self.engine.digital_twin_validate()
+        self.publish_scenario()
+        self.publish_detection()
+        self.publish_plans()
+
+    def _on_perception_status(self, msg: String) -> None:
+        try:
+            self._perception_status = json.loads(msg.data)
+        except (TypeError, ValueError):
+            self._perception_status = {"status": "error",
+                                       "error": "malformed perception status"}
+
+    def publish_perception(self) -> None:
+        """Republish the engine's perception view onto the scenario projection.
+
+        Deliberately NOT a new authority: the observation batch is published by
+        the detector service, and this only stamps the ENGINE's adoption of it
+        into the existing scenario state so the audit trail records which batch
+        a plan was built from.
+        """
         self.publish_correlation("scenario")
 
     def publish_plans(self) -> None:
@@ -937,6 +1117,23 @@ class HitLOrchestrator(Node):
                 cls, severity=args.get("severity"),
                 confidence=args.get("confidence"))
             self._ingest_anomaly(event)
+
+        elif command == "detect_physical_objects":
+            # REFUSED WITH A REASON when perception is simulated. A button
+            # labelled "Detect physical objects" that quietly ran the simulator
+            # would be the exact deception §15 forbids.
+            if not self.perception_source.is_physical:
+                raise ValueError(
+                    "perception source is `sim` — there is no camera. Relaunch "
+                    "with perception_source:=harmony_camera (or "
+                    "WISEPACK_PERCEPTION_SOURCE=harmony_camera).")
+            if not self.request_physical_detection():
+                raise ValueError("no perception command publisher is available")
+            # The batch arrives asynchronously on the perception topic and is
+            # adopted in `_adopt_observation`. Returning here keeps the command
+            # path non-blocking: a Faster R-CNN pass takes seconds, and holding
+            # the orchestrator's callback for it would stall the heartbeat.
+            self.auto_step = False
 
         elif command == "acknowledge_anomaly":
             engine.acknowledge_anomaly(args.get("operator", "dashboard operator"))
@@ -1289,7 +1486,11 @@ class HitLOrchestrator(Node):
             dynamic_events=events,
             generator_overrides=overrides,
             auto_approve=self.auto_approve,
-            execution_backend=self.execution_backend))
+            execution_backend=self.execution_backend,
+            perception_source=self.perception_source,
+            proxy_geometry=self.proxy_geometry,
+            work_area=self.work_area))
+        self._attach_observation_provider()
         self.engine.log.add_sink(self._publish_event)
 
         # A reset is a NEW run with a new run_id, so the physical scene has to be

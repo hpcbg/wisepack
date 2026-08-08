@@ -32,7 +32,9 @@ not inside the WISEPACK container; see scripts/run_wisepack_isaac.sh.
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument
 from launch.conditions import IfCondition
-from launch.substitutions import LaunchConfiguration
+from launch.substitutions import (
+    EnvironmentVariable, LaunchConfiguration, PythonExpression,
+)
 from launch_ros.actions import Node
 from launch_ros.parameter_descriptions import ParameterValue
 
@@ -89,8 +91,30 @@ def generate_launch_description() -> LaunchDescription:
                          "backend, which has no robot.")),
         DeclareLaunchArgument("with_anomaly", default_value="true",
                               description="Start the SIMULATED anomaly source"),
+        DeclareLaunchArgument(
+            "perception_source",
+            # The environment is the DEFAULT, not an override: an explicit
+            # `perception_source:=` on the command line still wins, and with
+            # neither set the value is `sim` exactly as before.
+            default_value=EnvironmentVariable("WISEPACK_PERCEPTION_SOURCE",
+                                              default_value="sim"),
+            description=("Where the OBJECT OBSERVATIONS come from: `sim` (the "
+                         "default and unchanged simulated detector) or "
+                         "`harmony_camera` (a real camera through the HARMONY "
+                         "Faster R-CNN detector). Empty resolves it from "
+                         "WISEPACK_PERCEPTION_SOURCE, which defaults to `sim`. "
+                         "This is a THIRD axis: it is neither the dashboard "
+                         "data source nor the execution backend, and every "
+                         "combination of the three is legal.")),
     ]
+    #: The perception SIMULATOR must not run beside a real detector. Two
+    #: perception writers on `/wisepack/waste/detected_count` would make the
+    #: reported count depend on which arrived last — and one of them would be a
+    #: seeded draw over ground truth presented beside real measurements.
+    simulated_perception = PythonExpression(
+        ["'", LaunchConfiguration("perception_source"), "' == 'sim'"])
     with_anomaly = LaunchConfiguration("with_anomaly")
+    perception_source = LaunchConfiguration("perception_source")
 
     orchestrator = Node(
         package="wisepack_orchestration",
@@ -106,6 +130,7 @@ def generate_launch_description() -> LaunchDescription:
             "tick_period_s": 0.7,
             "execution_backend": execution_backend,
             "robot": robot,
+            "perception_source": perception_source,
         }],
         output="screen",
     )
@@ -116,7 +141,11 @@ def generate_launch_description() -> LaunchDescription:
         name="wisepack_perception_sim",
         parameters=[{"seed": seed_param}],
         output="screen",
-        condition=IfCondition(with_perception),
+        # Started only when perception is SIMULATED. With a real perception
+        # source the detector is the authority and this node is not launched at
+        # all — see `simulated_perception` above.
+        condition=IfCondition(PythonExpression(
+            [with_perception, " and ", simulated_perception])),
     )
 
     twin = Node(

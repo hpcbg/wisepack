@@ -22,8 +22,9 @@
 
 schema: wisepack-isaac-robots/1.0
 
+
 # The default when nothing else selects one (panda or xarm7).
-default_robot: xarm7
+default_robot: panda
 
 robots:
   # ------------------------------------------------------------------------ #

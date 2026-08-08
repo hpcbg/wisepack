@@ -40,6 +40,10 @@ from .events import (
 )
 from .execution import ExecutionBackend
 from .generator import build_scenario, inject_item
+from .perception import (
+    ObservationBatch, PerceptionSource, ProxyGeometry, WorkAreaFrame,
+    is_stale, observation_age_s,
+)
 from .kpi import ExecutionStats, KPIReport, compute_kpis
 from .packing import (
     OptimizerConfig, STRATEGY_WEIGHTS, pack_baseline, pack_optimized, select_plan,
@@ -53,6 +57,17 @@ class ApprovalRequired(RuntimeError):
 
 class AnomalyHold(RuntimeError):
     """Raised when execution is attempted while an anomaly holds the workflow."""
+
+
+class PerceptionUnavailable(RuntimeError):
+    """Raised when a REAL perception source could not deliver observations.
+
+    Deliberately NOT caught-and-substituted anywhere. §15 forbids a failed
+    camera scan from silently falling back to simulated detections while the
+    interface still claims `harmony_camera`, so a physical perception failure
+    stops the run and shows itself. Switching back to the simulator is an
+    explicit configuration change by the operator, never an automatic one.
+    """
 
 
 class WorkflowError(RuntimeError):
@@ -108,6 +123,17 @@ class WorkflowConfig:
     #: physical outcome. Planning, validation and the approval gate are identical
     #: either way — see wisepack_core.execution.
     execution_backend: ExecutionBackend = ExecutionBackend.SIMULATED
+    #: WHERE THE OBJECT OBSERVATIONS COME FROM. Orthogonal to
+    #: `execution_backend` above and to the dashboard's data source: a camera is
+    #: not a way of executing and not a way of reading state. SIM is the default
+    #: and its behaviour is byte-identical to before this field existed.
+    perception_source: PerceptionSource = PerceptionSource.SIM
+    #: The KNOWN dimensions of the physical proxy cylinders. Used only when
+    #: `perception_source` is physical — a detector measures position, not size,
+    #: so the geometry the packer needs is declared rather than invented.
+    proxy_geometry: ProxyGeometry = field(default_factory=ProxyGeometry)
+    #: How the detector's calibrated plane maps onto the WISEPACK work area.
+    work_area: WorkAreaFrame = field(default_factory=WorkAreaFrame)
     #: WHICH ROBOT executes, by id from config/isaac_robots.yaml. Meaningful
     #: only for the Isaac backend — a simulated run has no robot, and the
     #: dashboard shows "Logical workflow simulator" rather than a robot name.
@@ -123,6 +149,7 @@ class WorkflowConfig:
         # YAML and from the dashboard.
         self.strategy = Strategy(self.strategy)
         self.execution_backend = ExecutionBackend(self.execution_backend)
+        self.perception_source = PerceptionSource(self.perception_source)
         self.robot_id = str(self.robot_id or "").strip().lower()
 
 
@@ -218,6 +245,19 @@ class WorkflowEngine:
         # re-seeding the RNG and hoping its next draw lands below the failure
         # threshold — that was not actually deterministic.
         self._force_pick_failure = False
+        # -- physical perception ------------------------------------------- #
+        #: HOW A PHYSICAL BATCH IS FETCHED. Injected rather than imported: the
+        #: engine is ROS-free and transport-free by design, so it must not know
+        #: whether the observations arrive over HTTP from the detector service
+        #: or over DDS from the adapter node. Called with no arguments and must
+        #: return an ObservationBatch (a FAILED one, not an exception, when the
+        #: detector is unhappy). None while the perception source is `sim`.
+        self.observation_provider: Optional[Callable[[], ObservationBatch]] = None
+        #: THE CURRENT physical observation. Singular on purpose: a re-detection
+        #: REPLACES it, so stale objects cannot accumulate (§6).
+        self.observation_batch: Optional[ObservationBatch] = None
+        self.observation_batches_applied = 0
+
         # The whole-process layer (cut-aware planning + container inventory +
         # simulated logistics). Held here but self-contained in whole_process.py
         # so the core packing workflow above is untouched.
@@ -281,6 +321,26 @@ class WorkflowEngine:
     # ------------------------------------------------------------------ #
 
     def scan_and_detect(self) -> Dict[str, float]:
+        """Acquire the object observations this run will plan from.
+
+        ONE SEAM, TWO SOURCES, selected by ``config.perception_source``:
+
+          sim             the existing simulated detector — unchanged, still the
+                          default, still labelled `simulated` everywhere.
+          harmony_camera  a real camera frame through the HARMONY Faster R-CNN
+                          detector, adapted into domain-neutral observations.
+
+        Everything after this method is identical in both cases: the planner,
+        the validator, the approval gate and the execution backend cannot tell
+        which one ran, which is exactly the property §10 asks for.
+        """
+        if self.scenario is None:
+            raise WorkflowError("scan_and_detect before a scenario was loaded")
+        if self.config.perception_source.is_physical:
+            return self._scan_physical()
+        return self._scan_simulated()
+
+    def _scan_simulated(self) -> Dict[str, float]:
         """SIMULATED perception. Publishes ground truth with a confidence label.
 
         There is no image, no model and no sensor. Each item is "detected" with
@@ -289,8 +349,6 @@ class WorkflowEngine:
         ``simulated`` so nothing downstream can mistake this for perception
         performance.
         """
-        if self.scenario is None:
-            raise WorkflowError("scan_and_detect before a scenario was loaded")
         watch = Stopwatch()
         self._set_stage(Stage.SCAN_SOURCE_BIN)
         self._emit(Stage.SCAN_SOURCE_BIN, "scan_bin", Actor.PERCEPTION_SIM,
@@ -321,6 +379,163 @@ class WorkflowEngine:
                                                  cfg.detection_confidence_max],
                             "note": "simulated perception — no vision model exists"})
         return detected
+
+    # ------------------------------------------------------------------ #
+    # Stage 2/3 — physical perception
+    # ------------------------------------------------------------------ #
+
+    def _scan_physical(self) -> Dict[str, float]:
+        """REAL perception: request one detection and adopt what it returns.
+
+        DETERMINISTIC ONE-SHOT (§6). Inference runs once per request, not
+        continuously: a Faster R-CNN pass is expensive, and a plan built from a
+        frame that keeps changing under it is not reproducible. The operator
+        asks; the detector answers; that answer is the batch.
+        """
+        watch = Stopwatch()
+        self._set_stage(Stage.SCAN_SOURCE_BIN)
+        source = self.config.perception_source
+        self._emit(Stage.SCAN_SOURCE_BIN, "scan_bin", Actor.PERCEPTION_CAMERA,
+                   duration_ms=watch.lap(), source=Source.MEASURED,
+                   message=f"physical work-area scan requested "
+                           f"({source.value})",
+                   details={"perception_source": source.value,
+                            "frame_id": self.config.work_area.frame_id})
+
+        if self.observation_provider is None:
+            batch = ObservationBatch.failed(
+                batch_id=f"batch-{self.observation_batches_applied + 1:03d}",
+                source=source.value,
+                error=("no perception provider is connected — "
+                       f"{source.value} was selected but nothing is wired to "
+                       "fetch detections. Start the HARMONY perception service "
+                       "and check WISEPACK_HARMONY_SERVICE_URL."))
+        else:
+            try:
+                batch = self.observation_provider()
+            except Exception as exc:                        # noqa: BLE001
+                # A provider that raises is a failed scan, not a crashed
+                # workflow: §5 requires camera or model failure not to take
+                # unrelated WISEPACK components down with it.
+                batch = ObservationBatch.failed(
+                    batch_id=f"batch-{self.observation_batches_applied + 1:03d}",
+                    source=source.value,
+                    error=f"perception provider failed: {exc}")
+        return self.apply_observation_batch(batch, _watch=watch)
+
+    def apply_observation_batch(self, batch: ObservationBatch,
+                                _watch: Optional[Stopwatch] = None
+                                ) -> Dict[str, float]:
+        """Adopt one physical observation batch as the batch WISEPACK plans from.
+
+        REPLACEMENT, NOT ACCUMULATION (§6). The scenario's item list is rebuilt
+        wholesale from this batch, so detecting again after moving the objects
+        yields exactly the objects now on the table — never those plus the ones
+        that used to be there. The container specification and `max_containers`
+        still come from the preset: those describe the packaging target, which
+        no camera observes.
+
+        A FAILED batch is recorded and raised. It never becomes an empty
+        successful scan and it never falls back to the simulator.
+        """
+        if self.scenario is None:
+            raise WorkflowError("observation batch before a scenario was loaded")
+        watch = _watch or Stopwatch()
+        self._set_stage(Stage.DETECT_ITEMS)
+        # Recorded BEFORE the failure check: the dashboard has to be able to
+        # render why the last scan failed, which means the failed batch must be
+        # the current state rather than something that was thrown away.
+        self.observation_batch = batch
+
+        if not batch.ok:
+            self._emit(Stage.DETECT_ITEMS, "detect_items", Actor.PERCEPTION_CAMERA,
+                       result=Result.FAILED, duration_ms=watch.ms,
+                       source=Source.MEASURED,
+                       message=f"physical detection failed: {batch.error}",
+                       details={"perception_source": batch.source,
+                                "error": batch.error,
+                                "calibration_status": batch.calibration_status,
+                                "detector": batch.detector,
+                                "note": ("no fallback to simulated detections — "
+                                         "the perception source is unchanged "
+                                         "and reports failure")})
+            raise PerceptionUnavailable(batch.error)
+
+        items = batch.to_waste_items(
+            geometry=self.config.proxy_geometry,
+            permitted_axes=("x", "y"))
+        self.scenario.items = items
+        self.observation_batches_applied += 1
+        self._bump_scenario_revision()
+
+        detected: Dict[str, float] = {}
+        for item in items:
+            confidence = item.observation.confidence if item.observation else None
+            # An observation without a confidence is still an observation. It is
+            # recorded as detected with no confidence figure rather than being
+            # assigned an invented one.
+            if confidence is not None:
+                detected[item.item_id] = round(confidence, 3)
+        self.detected = detected
+        # DELIBERATELY NOT `detectable_items = len(items)`. The denominator of a
+        # detection rate is how many objects were ACTUALLY THERE, and no camera
+        # knows that — only a ground-truth trial does. Leaving it at 0 is what
+        # makes kpi.py report KPI1 as "not measured" instead of a fabricated
+        # 100%. See §12.
+        self.stats.detectable_items = 0
+        self.stats.detected_items = len(items)
+
+        self._emit(Stage.DETECT_ITEMS, "detect_items", Actor.PERCEPTION_CAMERA,
+                   duration_ms=watch.ms, source=Source.MEASURED,
+                   message=f"{len(items)} physical objects detected "
+                           f"({batch.source})",
+                   details={
+                       "perception_source": batch.source,
+                       "batch_id": batch.batch_id,
+                       "detected": len(items),
+                       "status": batch.status.value,
+                       "detector": batch.detector,
+                       "model_id": batch.model_id,
+                       "frame_id": batch.frame_id,
+                       "calibration_status": batch.calibration_status,
+                       "captured_at": batch.captured_at,
+                       "scenario_revision": self.scenario_revision,
+                       "proxy_geometry": self.config.proxy_geometry.to_dict(),
+                       # Mean of the detector's own confidences. NOT a detection
+                       # rate and never reported as one.
+                       "mean_confidence": batch.mean_confidence,
+                       "note": ("real detector output; physical bottles are "
+                                "proxies for cylindrical workpieces. Detector "
+                                "confidence is not a measured detection rate."),
+                   })
+        return detected
+
+    def perception_state(self) -> Dict[str, Any]:
+        """The current perception state, for the dashboard and diagnostics.
+
+        Always answers, in every mode. In `sim` it says so plainly rather than
+        rendering an empty physical panel.
+        """
+        source = self.config.perception_source
+        batch = self.observation_batch
+        payload: Dict[str, Any] = {
+            "perception_source": source.value,
+            "perception_source_label": source.label,
+            "perception_source_detail": source.detail,
+            "physical": source.is_physical,
+            "batch": batch.to_dict() if batch else None,
+            "batches_applied": self.observation_batches_applied,
+            "scene_objects": batch.scene_objects() if batch and batch.ok else [],
+            "proxy_geometry": (self.config.proxy_geometry.to_dict()
+                               if source.is_physical else None),
+            "work_area": (self.config.work_area.to_dict()
+                          if source.is_physical else None),
+            "provider_connected": self.observation_provider is not None,
+        }
+        age = observation_age_s(batch)
+        payload["observation_age_s"] = None if age is None else round(age, 1)
+        payload["observation_stale"] = is_stale(batch)
+        return payload
 
     # ------------------------------------------------------------------ #
     # Stage 4/5/6 — planning and Digital Twin validation
@@ -1485,7 +1700,11 @@ class WorkflowEngine:
         return compute_kpis(self._comparison_scenario or self.scenario,
                             self.baseline, self.optimized,
                             self.selected, self.stats, self.log,
-                            latency_p50_ms, self.run_id)
+                            latency_p50_ms, self.run_id,
+                            perception_source=self.config.perception_source.value,
+                            perception_mean_confidence=(
+                                self.observation_batch.mean_confidence
+                                if self.observation_batch else None))
 
     def snapshot(self) -> Dict[str, Any]:
         """Complete state for the dashboard's REST initial render."""

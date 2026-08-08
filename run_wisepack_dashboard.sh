@@ -65,6 +65,18 @@
 set -u
 
 REPO="$(cd "$(dirname "$(realpath "$0")")" && pwd)"
+
+# HOST-SPECIFIC SETTINGS, from config/local.env (git-ignored, allowlist-parsed,
+# never sourced — see scripts/lib_local_env.sh). Loaded HERE and not only in the
+# Isaac launcher because the perception settings — which camera is plugged in,
+# where the detector weights live, how big the printed calibration board and the
+# physical objects are — are needed by THIS process and by the container it
+# starts. A documented variable that silently does nothing is worse than an
+# undocumented one. An explicit export always wins over the file.
+# shellcheck source=scripts/lib_local_env.sh
+. "$REPO/scripts/lib_local_env.sh"
+wisepack_load_local_env "$REPO"
+
 IMAGE="${WISEPACK_IMAGE:-wisepack:jazzy}"
 ROS_DOMAIN_ID="${ROS_DOMAIN_ID:-0}"
 PORT="${PORT:-8080}"
@@ -224,6 +236,8 @@ if [ "$MODE" = "sim" ]; then
         --name wisepack-dashboard-sim \
         --net=host \
         -e "WISEPACK_DASH_PORT=$PORT" -e "WISEPACK_PRESET=$PRESET" -e "WISEPACK_SEED=$SEED" \
+        -e WISEPACK_PERCEPTION_SOURCE -e WISEPACK_HARMONY_SERVICE_URL \
+        -e WISEPACK_PHYSICAL_PROXY_DIAMETER_MM -e WISEPACK_PHYSICAL_PROXY_LENGTH_MM \
         -v "$REPO:$REPO" -w "$REPO" \
         "$IMAGE" \
         bash -lc 'exec python3 web/app.py --source sim --port "${WISEPACK_DASH_PORT}" \
@@ -559,6 +573,7 @@ fi
 
 echo "[dashboard] live mode ($SOURCE) — WISEPACK ROS 2/DDS stack + dashboard"
 echo "[dashboard] execution backend: $EXECUTION_BACKEND"
+echo "[dashboard] perception source: ${WISEPACK_PERCEPTION_SOURCE:-sim}"
 echo "[dashboard] open $URL   (Ctrl-C to stop everything)"
 open_browser
 
@@ -583,6 +598,9 @@ DOCKER_RUN=(docker run --rm -i $([ -t 1 ] && echo -t) \
     -e "WISEPACK_MODE=$MODE" \
     -e WISEPACK_SKIP_BUILD \
     -e ORION \
+    -e WISEPACK_PERCEPTION_SOURCE -e WISEPACK_HARMONY_SERVICE_URL \
+    -e WISEPACK_PHYSICAL_PROXY_DIAMETER_MM -e WISEPACK_PHYSICAL_PROXY_LENGTH_MM \
+    -e WISEPACK_PHYSICAL_WORKAREA_WIDTH_MM -e WISEPACK_PHYSICAL_WORKAREA_DEPTH_MM \
     -v "$REPO:$REPO" \
     "${HOST_STATUS_MOUNT[@]}" \
     "${CONTROL_MOUNT[@]}" \
@@ -645,7 +663,8 @@ DOCKER_RUN=(docker run --rm -i $([ -t 1 ] && echo -t) \
         # up" and started the dashboard against nothing. That is the whole IDLE
         # regression: an empty string in a shell expansion.
         LAUNCH_ARGS=(preset:="${WISEPACK_PRESET}" seed:="${WISEPACK_SEED}"
-                     execution_backend:="${WISEPACK_EXECUTION_BACKEND}")
+                     execution_backend:="${WISEPACK_EXECUTION_BACKEND}"
+                     perception_source:="${WISEPACK_PERCEPTION_SOURCE:-sim}")
         if [ -n "${WISEPACK_ISAAC_ROBOT:-}" ]; then
             LAUNCH_ARGS+=(robot:="${WISEPACK_ISAAC_ROBOT}")
         fi

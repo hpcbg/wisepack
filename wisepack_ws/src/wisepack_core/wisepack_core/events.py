@@ -123,6 +123,12 @@ class Actor(str, Enum):
 
     TASK_GENERATOR = "task_generator"
     PERCEPTION_SIM = "perception_simulator"
+    #: A REAL perception source: a camera frame through a real detector.
+    #: Deliberately distinct from PERCEPTION_SIM for the same reason ISAAC_SIM is
+    #: distinct from ROBOT_SIM — both produce "detections", but one is a seeded
+    #: draw over ground truth and the other is a measurement, and an audit trail
+    #: that cannot tell them apart cannot support either claim.
+    PERCEPTION_CAMERA = "perception_camera"
     OPTIMIZER = "packing_optimizer"
     DIGITAL_TWIN = "digital_twin_validator"
     ORCHESTRATOR = "hitl_orchestrator"

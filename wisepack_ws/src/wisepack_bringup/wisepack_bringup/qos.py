@@ -267,6 +267,20 @@ def qos_for(topic: str) -> QoSProfile:
     if topic == T.EXECUTION_PROGRESS_PCT:
         # Genuinely high-rate: a lost sample is replaced 700 ms later.
         return telemetry_qos()
+    if topic in (T.PERCEPTION_OBJECTS, T.PERCEPTION_STATUS):
+        # The current physical observation is STATE, not a stream: there is
+        # exactly one current batch and a re-detection replaces it. Latched, so
+        # an orchestrator or dashboard that attaches after the operator ran a
+        # detection sees the objects that are on the table rather than waiting
+        # for the next scan that may never come.
+        return state_qos()
+    if topic == T.HARMONY_DETECTION_COMMAND:
+        # HARMONY's inbound trigger. Deliberately NOT latched: a transient-local
+        # START would be redelivered every time the detector re-subscribed, and
+        # each redelivery would run an unrequested inference.
+        return QoSProfile(history=HistoryPolicy.KEEP_LAST, depth=10,
+                          reliability=ReliabilityPolicy.RELIABLE,
+                          durability=DurabilityPolicy.VOLATILE)
     if topic.startswith("/wisepack/kpi/"):
         # KPIs are STATE, not telemetry. Latched, so a dashboard attaching
         # mid-run renders the current values instead of "not measured".

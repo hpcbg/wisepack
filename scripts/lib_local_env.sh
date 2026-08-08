@@ -60,6 +60,28 @@ wisepack_load_local_env() {
                 [ -n "${WISEPACK_ISAAC_STREAM_HOST:-}" ] \
                     || export WISEPACK_ISAAC_STREAM_HOST="$value"
                 ;;
+            # -- PHYSICAL PERCEPTION (README §15a) -----------------------
+            # Host-specific by nature: which camera is plugged in, where the
+            # weights live, how big the printed calibration board is, and how
+            # big the objects on this table actually are. Listed here for the
+            # same reason as the two above — an allowlisted key is honoured,
+            # and a key that is NOT listed is silently ignored, which would
+            # make a documented variable quietly do nothing.
+            WISEPACK_PERCEPTION_SOURCE|WISEPACK_HARMONY_SERVICE_URL|\
+            WISEPACK_HARMONY_PATH|WISEPACK_HARMONY_CAMERA|\
+            WISEPACK_HARMONY_MODEL_PATH|WISEPACK_HARMONY_RUNTIME_DIR|\
+            WISEPACK_HARMONY_CORNER_MARKERS|WISEPACK_HARMONY_CORNER_EXTENT_MM|\
+            WISEPACK_PHYSICAL_PROXY_DIAMETER_MM|WISEPACK_PHYSICAL_PROXY_LENGTH_MM|\
+            WISEPACK_PHYSICAL_PROXY_WALL_MM|WISEPACK_PHYSICAL_PROXY_MATERIAL|\
+            WISEPACK_PHYSICAL_PROXY_GROUP|WISEPACK_PHYSICAL_FRAME_ID|\
+            WISEPACK_PHYSICAL_WORKAREA_WIDTH_MM|WISEPACK_PHYSICAL_WORKAREA_DEPTH_MM)
+                # An explicit export always wins over the file, exactly as above.
+                # INDIRECT EXPANSION, not eval: `$key` has already been matched
+                # against the literal allowlist above, but `${!key}` keeps the
+                # promise made at the top of this function — the file is parsed,
+                # never executed, in every branch.
+                [ -n "${!key:-}" ] || export "$key=$value"
+                ;;
         esac
     done < "$file"
 }

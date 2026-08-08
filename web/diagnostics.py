@@ -19,7 +19,7 @@ from __future__ import annotations
 import json
 import os
 import time
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 RESULTS_DIR = os.path.join(REPO, "results")
@@ -47,12 +47,23 @@ COMPONENTS = [
     ("mongo", "Mongo-DDS", "external", "Orion-LD datastore"),
 ]
 
-#: The simulated / unavailable / future interfaces table (Section 6.6). This is
-#: the honesty surface: deliberate simulation must never read as a failure.
-INTERFACES = [
-    ("RGB-D camera frames", "future interface", "No physical camera in the demo"),
-    ("Object detections", "simulated source", "Generated from scenario ground truth"),
-    ("6D pose estimates", "simulated source", "Not produced by a real CV backend"),
+# The simulated / unavailable / future interfaces table (Section 6.6). This is
+# THE HONESTY SURFACE: deliberate simulation must never read as a failure, and
+# equally, a real interface must never still be described as simulated.
+
+#: Interfaces whose status does NOT depend on the perception source.
+#:
+#: `RGB-D camera frames` STAYS A FUTURE INTERFACE even with a real camera
+#: attached, and that is not an oversight. The WISEPACK proposal's perception
+#: pipeline is RGB-D (depth + YOLOv12-OBB + SAM2 + FPFH/ICP); the HARMONY
+#: detector is a 2-D RGB camera positioned by an ArUco homography on a known
+#: plane. Marking the proposal's interface "live" because a different, simpler
+#: one exists would be exactly the overclaim this table is here to prevent.
+_FIXED_INTERFACES = [
+    ("RGB-D camera frames", "future interface",
+     "The proposal's depth-based pipeline is not implemented. The HARMONY "
+     "perception source is a 2-D RGB camera on a calibrated plane — see the "
+     "rows above — not a depth sensor"),
     ("Robot joint states", "simulated source", "No physical robot"),
     ("MoveIt2 trajectory", "future interface", "Not implemented in the interview demo"),
     ("Cutting anomaly detector", "simulated adapter", "Architecture demonstration only"),
@@ -60,6 +71,57 @@ INTERFACES = [
     ("Digital Twin validator", "measured software", "Real independent validator"),
     ("FIWARE event mapping", "live", "Real DDS-to-Orion-LD path"),
 ]
+
+#: The three perception rows, per source. These used to be unconditional
+#: ("No physical camera in the demo"), which stopped being true the moment a
+#: real perception source existed — and a diagnostics page that denies the
+#: camera it is reporting on is worse than one that omits it. §17.
+_PERCEPTION_INTERFACES = {
+    "sim": [
+        ("2-D camera frames", "future interface",
+         "No physical camera in this perception mode"),
+        ("Object detections", "simulated source",
+         "Generated from scenario ground truth"),
+        ("6D pose estimates", "simulated source",
+         "Not produced by a real CV backend"),
+    ],
+    "harmony_camera": [
+        ("2-D camera frames", "live",
+         "Real camera, owned by the HARMONY perception service"),
+        ("Object detections", "measured source",
+         "HARMONY Faster R-CNN on a real frame. Detector confidence is NOT a "
+         "measured detection rate — no ground-truth trial has been run"),
+        ("6D pose estimates", "partial measured source",
+         "PLANAR ONLY: x/y/yaw measured on the ArUco-calibrated plane; z, roll "
+         "and pitch are assumed flat-on-table, not measured. Object geometry "
+         "is configured proxy dimensions, also not measured"),
+    ],
+}
+
+
+def interfaces(perception_source: str = "sim",
+               reachable: Optional[bool] = None) -> List[Tuple[str, str, str]]:
+    """The interface honesty table for the ACTIVE perception source.
+
+    ``reachable`` is whether the detector service is actually answering.
+    CONFIGURED IS NOT THE SAME AS LIVE: a table that says "live" beside a
+    detector that is not running is the precise kind of overclaim this table
+    exists to prevent, so a known-unreachable service downgrades the rows to
+    "configured, unavailable" rather than leaving them green. ``None`` means the
+    reachability was not checked, which is neither claim.
+    """
+    rows = list(_PERCEPTION_INTERFACES.get(str(perception_source or "sim"),
+                                           _PERCEPTION_INTERFACES["sim"]))
+    if str(perception_source or "sim") != "sim" and reachable is False:
+        rows = [(name, "configured, unavailable",
+                 f"{meaning} — THE DETECTOR SERVICE IS NOT ANSWERING, so this "
+                 "interface is selected but not currently delivering")
+                for name, _state, meaning in rows]
+    return rows + list(_FIXED_INTERFACES)
+
+
+#: Backwards-compatible name: the simulated table, which is what it always was.
+INTERFACES = interfaces("sim")
 
 
 # --------------------------------------------------------------------------- #
@@ -317,8 +379,16 @@ def _runtime_status() -> Optional[Dict[str, Any]]:
 # --------------------------------------------------------------------------- #
 
 def build(snap, mode: str, mirror: Optional[Dict[str, Any]],
-          latency_artifact: Optional[Dict[str, Any]]) -> Dict[str, Any]:
-    """Assemble the diagnostics report from allowlisted, read-only sources."""
+          latency_artifact: Optional[Dict[str, Any]],
+          perception: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """Assemble the diagnostics report from allowlisted, read-only sources.
+
+    ``perception`` is the payload `/api/perception` serves. Optional and
+    defaulting to simulated, so every existing caller is unchanged.
+    """
+    perception = perception or {"perception_source": "sim", "physical": False}
+    perception_source = str(perception.get("perception_source", "sim"))
+    perception_reachable = (perception.get("health") or {}).get("service_reachable")
     mapped = _mapped_topics()
     analytics = snap.to_analytics()
     scenario = snap.scenario or {}
@@ -536,7 +606,12 @@ def build(snap, mode: str, mirror: Optional[Dict[str, Any]],
         "startup_processes": startup["processes"],
         "topics": _topic_statuses(mode, mirror, mapped),
         "interfaces": [
-            {"interface": i, "state": s, "meaning": m} for i, s, m in INTERFACES],
+            {"interface": i, "state": s, "meaning": m}
+            for i, s, m in interfaces(perception_source, perception_reachable)],
+        # The perception source, its health and its current observation batch.
+        # Present in EVERY mode: in `sim` it states plainly that perception is
+        # simulated, which is a different and more useful answer than absence.
+        "perception": perception,
         "fiware_mappings": _fiware_mappings(),
         "timing": timing,
         "runtime_status": rt,

@@ -60,6 +60,10 @@ from wisepack_core.artifacts import (                              # noqa: E402
 )
 from wisepack_core.domain import Strategy                          # noqa: E402
 from wisepack_core.execution import physical_presets              # noqa: E402
+from wisepack_core.perception import (                             # noqa: E402
+    PerceptionConfigError, PerceptionSource, ProxyGeometry, WorkAreaFrame,
+    resolve_perception_source,
+)
 from wisepack_core.events import (                                 # noqa: E402
     DynamicEvent, DynamicEventType, Stage,
 )
@@ -68,8 +72,8 @@ from wisepack_bringup.topics import OPERATOR_COMMANDS              # noqa: E402
 from wisepack_core.kpi import compare_strategies                   # noqa: E402
 from wisepack_core.packing import OptimizerConfig                  # noqa: E402
 from wisepack_core.workflow import (                               # noqa: E402
-    AnomalyHold, ApprovalRequired, RobotSimConfig, WorkflowConfig, WorkflowEngine,
-    WorkflowError,
+    AnomalyHold, ApprovalRequired, PerceptionUnavailable, RobotSimConfig,
+    WorkflowConfig, WorkflowEngine, WorkflowError,
 )
 from wisepack_core.whole_process import WholeProcessError          # noqa: E402
 from wisepack_core.inventory import InvalidTransition             # noqa: E402
@@ -79,6 +83,17 @@ from snapshot import (                                             # noqa: E402
 
 SOURCE = os.environ.get("WISEPACK_SOURCE", "sim")
 ORION = os.environ.get("ORION", "http://localhost:1026").rstrip("/")
+
+# THE PERCEPTION SOURCE. A THIRD, INDEPENDENT AXIS — not a data source (SOURCE
+# above) and not an execution backend. Resolved once at import so an unknown
+# value fails loudly at start-up instead of silently running the simulator while
+# the header claims a camera. Unset == `sim`, so nothing existing changes.
+try:
+    PERCEPTION_SOURCE = resolve_perception_source()
+    PERCEPTION_CONFIG_ERROR = ""
+except PerceptionConfigError as _exc:
+    PERCEPTION_SOURCE = PerceptionSource.SIM
+    PERCEPTION_CONFIG_ERROR = str(_exc)
 
 #: Seconds between execution steps in sim mode. Slow enough to watch, fast
 #: enough that a 40-item scenario finishes inside a demo slot.
@@ -108,6 +123,9 @@ class DemoState:
         #: Populated by ros_observer in live mode: the latest value seen on each
         #: canonical topic. None in sim mode, where there is no ROS.
         self.ros_mirror: Optional[Dict[str, Any]] = None
+        #: The perception-service client, built on first use. None in `sim`
+        #: perception mode, where there is no service to talk to.
+        self.perception_client = None
         self.fiware_connected: Optional[bool] = None
         self.fiware_last_error = ""
         self.notice = ""
@@ -213,6 +231,12 @@ def build_engine(settings: Dict[str, Any]) -> WorkflowEngine:
     config = WorkflowConfig(
         preset=preset,
         seed=seed,
+        # PERCEPTION SOURCE AND EXECUTION BACKEND ARE SET INDEPENDENTLY. This
+        # engine is the LOGICAL execution backend either way; selecting a camera
+        # changes where the OBJECTS come from and nothing else.
+        perception_source=PERCEPTION_SOURCE,
+        proxy_geometry=ProxyGeometry.from_env(),
+        work_area=WorkAreaFrame.from_env(),
         strategy=Strategy(settings.get("strategy", "max_density")),
         optimizer=OptimizerConfig(seed=seed, restarts=6, time_budget_ms=4000.0),
         robot=RobotSimConfig(
@@ -224,15 +248,41 @@ def build_engine(settings: Dict[str, Any]) -> WorkflowEngine:
         generator_overrides=overrides,
         auto_approve=False)
     engine = WorkflowEngine(config)
+    if PERCEPTION_SOURCE.is_physical:
+        # THE ONLY PLACE THE DASHBOARD LEARNS HOW OBSERVATIONS ARRIVE. The
+        # engine stays transport-free; it calls a callable and gets a batch.
+        from perception_client import make_observation_provider   # noqa: PLC0415
+        engine.observation_provider = make_observation_provider(
+            perception_client())
     engine.log.add_sink(STATE.sink)
     return engine
 
 
+def perception_client():
+    """The one shared client for the perception service. Built lazily."""
+    from perception_client import PerceptionClient                # noqa: PLC0415
+    with STATE.lock:
+        if STATE.perception_client is None:
+            STATE.perception_client = PerceptionClient()
+        return STATE.perception_client
+
+
 def start_run(settings: Dict[str, Any]) -> WorkflowEngine:
-    """Plan a fresh run and stop at the approval gate. Never auto-executes."""
+    """Plan a fresh run and stop at the approval gate. Never auto-executes.
+
+    IN PHYSICAL PERCEPTION MODE THIS MAY LEGITIMATELY STOP EARLY. If the camera
+    or the detector cannot deliver a batch there is nothing to plan, and §15
+    forbids substituting simulated detections. The engine is returned in its
+    failed-perception state — the run exists, the Physical Perception panel
+    shows why it has no objects, and the operator retries after fixing the cause.
+    """
     engine = build_engine(settings)
     engine.generate_or_load_scenario()
-    engine.scan_and_detect()
+    try:
+        engine.scan_and_detect()
+    except PerceptionUnavailable as exc:
+        STATE.notice = f"physical perception unavailable: {exc}"
+        return engine
     engine.generate_plans()
     engine.digital_twin_validate()
     engine.request_approval()
@@ -689,6 +739,16 @@ def api_state():
         "strategies": [s.value for s in Strategy],
         "topology_status": topology_status(snap),
         "commands": list(OPERATOR_COMMANDS),
+        # THE THIRD AXIS, reported beside the other two and never folded into
+        # either. The frontend shows the Physical Perception panel from this and
+        # from nothing else.
+        "perception": {
+            "source": PERCEPTION_SOURCE.value,
+            "label": PERCEPTION_SOURCE.label,
+            "detail": PERCEPTION_SOURCE.detail,
+            "physical": PERCEPTION_SOURCE.is_physical,
+            "config_error": PERCEPTION_CONFIG_ERROR,
+        },
         "ts": time.time(),
     })
     return payload
@@ -759,7 +819,20 @@ def api_analytics():
 
 @app.get("/api/topology")
 def api_topology():
-    return {**TOPOLOGY, "status": topology_status(_provider().snapshot())}
+    """The node graph, with the perception node naming the ACTIVE source.
+
+    The graph is otherwise unchanged: a camera replaces the perception
+    simulator in place rather than adding a branch, because that is exactly
+    what it does — one node, two possible implementations, the same edges.
+    """
+    topology = {**TOPOLOGY, "nodes": [dict(n) for n in TOPOLOGY["nodes"]]}
+    if PERCEPTION_SOURCE.is_physical:
+        for node in topology["nodes"]:
+            if node["id"] == "perception":
+                node["label"] = "HARMONY camera detector"
+                node["kind"] = "Faster R-CNN"
+                node["role"] = "sensor"
+    return {**topology, "status": topology_status(_provider().snapshot())}
 
 
 @app.get("/api/execution")
@@ -797,6 +870,102 @@ def api_execution():
         "max_position_error_mm": round(max(errors), 1) if errors else None,
     }
     return payload
+
+
+# --------------------------------------------------------------------------- #
+# Physical perception (§9)
+# --------------------------------------------------------------------------- #
+
+
+def _perception_payload() -> Dict[str, Any]:
+    """Everything the Physical Perception panel renders, in every mode.
+
+    ALWAYS ANSWERS, including in `sim` perception mode, where it says plainly
+    that perception is simulated rather than returning an empty physical panel
+    that could be read as a broken camera.
+    """
+    payload: Dict[str, Any] = {
+        "perception_source": PERCEPTION_SOURCE.value,
+        "perception_source_label": PERCEPTION_SOURCE.label,
+        "perception_source_detail": PERCEPTION_SOURCE.detail,
+        "physical": PERCEPTION_SOURCE.is_physical,
+        "config_error": PERCEPTION_CONFIG_ERROR,
+        # THE PROXY DISCLOSURE (§9). Unobtrusive, but always present in the
+        # payload so the panel cannot render real detections without it.
+        "proxy_note": (
+            "Physical bottles are used as proxies for the cylindrical "
+            "workpieces WISEPACK packages. Their detected position and "
+            "orientation become domain-neutral object observations."),
+        # THE §12 GUARD, carried with the data rather than left to the frontend.
+        "confidence_note": (
+            "Detector confidence is not a detection rate. Vision detection "
+            "rate: not measured — real detector active; no ground-truth trial."),
+        # EXECUTION IS A SEPARATE AXIS and the panel says so, so nobody reads
+        # "camera perception" as "physical robot".
+        "independent_of_execution_backend": True,
+    }
+    if not PERCEPTION_SOURCE.is_physical:
+        payload["health"] = {"source": PERCEPTION_SOURCE.value,
+                             "service_reachable": None}
+        payload["batch"] = None
+        payload["scene_objects"] = []
+        return payload
+
+    client = perception_client()
+    payload["health"] = client.health()
+    payload["live_url"] = client.live_url
+    payload["annotated_url"] = "/api/perception/image/annotated"
+    payload["raw_url"] = "/api/perception/image/raw"
+
+    # THE ENGINE'S VIEW WINS when it has one: the panel must describe the batch
+    # WISEPACK is actually planning from, not a later one the service happens to
+    # hold. Those differ the moment a detection fails — and showing the
+    # service's newest success beside a plan built from an older batch is
+    # precisely the confusion §15 is about.
+    state = None
+    with STATE.lock:
+        engine = STATE.engine
+        if engine is not None:
+            state = engine.perception_state()
+    if state is not None:
+        payload.update({k: v for k, v in state.items()
+                        if k not in ("perception_source",
+                                     "perception_source_label",
+                                     "perception_source_detail", "physical")})
+    else:
+        batch = client.last_detection()
+        payload["batch"] = batch.to_dict() if batch else None
+        payload["scene_objects"] = (batch.scene_objects()
+                                    if batch and batch.ok else [])
+    return payload
+
+
+@app.get("/api/perception")
+def api_perception():
+    """Physical perception status, the current observation batch and its poses."""
+    return _perception_payload()
+
+
+@app.get("/api/perception/image/{kind}")
+def api_perception_image(kind: str):
+    """Proxy the detector's images so the browser needs no second origin.
+
+    A PROXY, NOT A CACHE. The dashboard never stores or re-encodes a frame; it
+    forwards the bytes the detector produced, so what the operator sees is what
+    the detector saw.
+    """
+    from fastapi.responses import Response                        # noqa: PLC0415
+    if kind not in ("annotated", "raw", "snapshot"):
+        raise HTTPException(status_code=404, detail=f"unknown image {kind!r}")
+    if not PERCEPTION_SOURCE.is_physical:
+        raise HTTPException(
+            status_code=409,
+            detail=("perception source is `sim` — there is no camera. Start "
+                    "with WISEPACK_PERCEPTION_SOURCE=harmony_camera."))
+    image, error = perception_client().image(kind)
+    if image is None:
+        raise HTTPException(status_code=503, detail=error)
+    return Response(image, media_type="image/jpeg")
 
 
 @app.post("/api/draft")
@@ -884,7 +1053,8 @@ def api_diagnostics():
     with STATE.lock:
         mirror = STATE.ros_mirror
     return diagnostics.build(
-        snap, SOURCE, mirror, latest_artifact("dds-fiware-latency", RESULTS_DIR))
+        snap, SOURCE, mirror, latest_artifact("dds-fiware-latency", RESULTS_DIR),
+        perception=_perception_payload())
 
 
 @app.get("/api/inspector")
@@ -1105,6 +1275,35 @@ def _apply_command_locked(engine: WorkflowEngine, command: str,
         engine.acknowledge_anomaly(str(args.get("operator", "dashboard operator")))
         return {"ok": True}
 
+    if command == "detect_physical_objects":
+        # REFUSED, NOT SILENTLY SIMULATED, when there is no physical source.
+        # Running the simulator behind a button labelled "Detect physical
+        # objects" is the exact deception §15 forbids.
+        if not PERCEPTION_SOURCE.is_physical:
+            raise ValueError(
+                "perception source is `sim` — there is no camera to detect "
+                "with. Restart with WISEPACK_PERCEPTION_SOURCE=harmony_camera.")
+        STATE.auto_step = False
+        batch = perception_client().detect()
+        try:
+            engine.apply_observation_batch(batch)
+        except PerceptionUnavailable as exc:
+            # 409 with the detector's own reason. The observation batch is
+            # already recorded on the engine, so the panel renders the failure.
+            raise ValueError(str(exc)) from exc
+        # A NEW BATCH IS A NEW BATCH REVISION, so the plan is rebuilt and the
+        # approval gate is re-entered. `apply_observation_batch` already revoked
+        # any outstanding approval; re-planning here is what makes the workflow
+        # actually use the objects now on the table (§10).
+        engine.generate_plans()
+        engine.digital_twin_validate()
+        engine.request_approval()
+        return {"ok": True, "batch_id": batch.batch_id, "detected": batch.count,
+                "calibration_status": batch.calibration_status,
+                "scenario_revision": engine.scenario_revision,
+                "containers": (engine.selected.containers_required
+                               if engine.selected else None)}
+
     if command == "pause":
         STATE.auto_step = False
         return {"ok": True, "auto_step": False}
@@ -1264,11 +1463,25 @@ if __name__ == "__main__":
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--preset", default=None)
     parser.add_argument("--seed", type=int, default=None)
+    # THE PERCEPTION SOURCE IS ITS OWN FLAG. Not a `--source` value: `--source`
+    # selects where the dashboard READS state from, and a camera is not a way of
+    # reading state. Conflating them is what §-architecture forbids.
+    parser.add_argument("--perception-source",
+                        choices=[s.value for s in PerceptionSource],
+                        default=None,
+                        help=("where object observations come from. `sim` "
+                              "(default, unchanged) or `harmony_camera` (a real "
+                              "camera through the HARMONY detector). "
+                              "INDEPENDENT of --source and of the execution "
+                              "backend."))
     args = parser.parse_args()
 
     os.environ["WISEPACK_SOURCE"] = args.source
     SOURCE = args.source
     STATE.source = args.source
+    if args.perception_source:
+        os.environ["WISEPACK_PERCEPTION_SOURCE"] = args.perception_source
+        PERCEPTION_SOURCE = resolve_perception_source(args.perception_source)
     if args.preset:
         STATE.settings["preset"] = args.preset
     if args.seed is not None:

@@ -65,6 +65,37 @@ SCENARIO_STATE = "/wisepack/scenario/state"            # String: JSON scenario s
 WASTE_ITEMS = "/wisepack/waste/items"                  # String: JSON item list
 WASTE_DETECTED_COUNT = "/wisepack/waste/detected_count"  # Int32
 
+# --- physical perception (OPTIONAL — only with a real perception source) ------
+# These are the WISEPACK-DOMAIN view of whatever detector is running. They carry
+# `wisepack_core.perception.ObservationBatch`: generic cylindrical objects with
+# a pose, a confidence and detector provenance. Nothing that subscribes to them
+# learns which detector produced them, and nothing has to parse a detector's own
+# schema — that translation happens once, in `wisepack_core.harmony_adapter`.
+#
+# HARMONY'S OWN TOPICS ARE NOT DUPLICATED HERE. `/bottle_detection/command`,
+# `/bottle_detection/status_json`, `/bottle_detection/bottle_count`,
+# `/bottle_detection/pick_pose_json` and `/bottle_detection/result_json` remain
+# HARMONY's contract, published by HARMONY's own node (see
+# perception/harmony_perception_service.py, which instantiates it rather than
+# reimplementing it). WISEPACK triggers a detection on HARMONY's inbound
+# command topic, exactly as HARMONY documents.
+#
+# KEPT OUT OF `all_topics()`, for the same reason the Isaac channel is: that
+# function is the contract with a publisher in EVERY run, and these two have one
+# only when `WISEPACK_PERCEPTION_SOURCE=harmony_camera`. Listing them there
+# would make an ordinary simulated run look broken.
+#
+# SINGLE WRITER: the perception service. The orchestrator only reads them, so
+# the world state keeps one authority — the observation batch is whatever the
+# detector last reported, and no second process rewrites it.
+PERCEPTION_STATUS = "/wisepack/perception/status_json"   # String: JSON health/status
+PERCEPTION_OBJECTS = "/wisepack/perception/objects_json"  # String: JSON ObservationBatch
+
+#: HARMONY's inbound command topic — the trigger WISEPACK publishes `START` on.
+#: Named here so the orchestrator and the tests share one spelling, and marked
+#: as EXTERNAL so nobody mistakes it for a WISEPACK-owned name.
+HARMONY_DETECTION_COMMAND = "/bottle_detection/command"   # String: START
+
 # --- planning -----------------------------------------------------------------
 # Plan topics carry the COMPLETE PackingPlan.to_dict() — every placement's
 # position, size, axis and validation status. A dashboard cannot draw a
@@ -241,6 +272,10 @@ OPERATOR_COMMANDS = (
     "compare_strategies",       # decision support: run + validate every strategy
     "inject_anomaly",           # SIMULATED Topic #2 anomaly (deterministic)
     "acknowledge_anomaly",      # operator acknowledges the held anomaly
+    # -- physical perception (§6). Rejected with a reason when the perception
+    # source is `sim`, rather than quietly doing nothing or quietly running the
+    # simulator and calling it a scan.
+    "detect_physical_objects",  # one-shot real detection -> replaces observations
     # -- cut-aware HITL controls (brief §6) --
     "compare_cut_aware",        # generate the no-cut vs cut-aware comparison
     "select_cut_alternative",   # choose a specific cut alternative
@@ -329,6 +364,30 @@ INBOUND_TOPICS = (OPERATOR_APPROVAL, OPERATOR_COMMAND, CUTTING_APPROVAL,
                   INVENTORY_REQUEST)
 
 
+def perception_topics() -> dict:
+    """The optional physical-perception channel: topic -> message type.
+
+    Kept out of ``all_topics()`` on purpose (see the declarations above), and
+    exposed separately so the tests can assert the same two invariants every
+    WISEPACK topic must satisfy — standard scalar ``std_msgs`` only, and no
+    reserved ``status`` leaf — without claiming the channel is always present.
+    """
+    return {
+        PERCEPTION_STATUS: "std_msgs/String",
+        PERCEPTION_OBJECTS: "std_msgs/String",
+    }
+
+
+#: Single-writer discipline across the perception channel. The detector service
+#: writes the observations; WISEPACK writes only the trigger on HARMONY's own
+#: inbound topic. Stated as data so a test can check it.
+PERCEPTION_WRITERS = {
+    PERCEPTION_STATUS: "harmony_perception_service",
+    PERCEPTION_OBJECTS: "harmony_perception_service",
+    HARMONY_DETECTION_COMMAND: "wisepack_orchestration",
+}
+
+
 def isaac_topics() -> dict:
     """The optional Isaac execution-backend channel: topic -> message type.
 
@@ -363,5 +422,5 @@ def reserved_leaf_violations() -> list:
     cheap to keep and an unbridgeable topic name is a trap for whoever decides
     to bridge it later.
     """
-    return [t for t in {**all_topics(), **isaac_topics()}
+    return [t for t in {**all_topics(), **isaac_topics(), **perception_topics()}
             if t.rsplit("/", 1)[-1] == "status"]
