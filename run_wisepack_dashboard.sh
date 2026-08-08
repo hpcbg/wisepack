@@ -77,6 +77,14 @@ REPO="$(cd "$(dirname "$(realpath "$0")")" && pwd)"
 . "$REPO/scripts/lib_local_env.sh"
 wisepack_load_local_env "$REPO"
 
+# ONE cleanup mechanism for every host child this launcher owns — Isaac Sim and
+# the perception service — because two `trap ... EXIT` installations would
+# silently replace one another and leak whichever was registered first.
+# shellcheck source=scripts/lib_host_processes.sh
+. "$REPO/scripts/lib_host_processes.sh"
+# shellcheck source=scripts/lib_perception_service.sh
+. "$REPO/scripts/lib_perception_service.sh"
+
 IMAGE="${WISEPACK_IMAGE:-wisepack:jazzy}"
 ROS_DOMAIN_ID="${ROS_DOMAIN_ID:-0}"
 PORT="${PORT:-8080}"
@@ -208,6 +216,34 @@ if ss -ltn 2>/dev/null | grep -q ":${PORT} "; then
     exit 1
 fi
 
+# ---- optional physical perception ------------------------------------------
+#
+# A THIRD AXIS, independent of the mode above and of the execution backend. With
+# `WISEPACK_PERCEPTION_SOURCE=sim` — the default, and the value when the variable
+# is absent — NOTHING below happens: no interpreter is resolved, no process is
+# started, no HARMONY path is even looked at.
+#
+# Done HERE, before every `exec` path, so all five modes get it: `sim` execs the
+# dashboard a few lines down, and the live modes exec Docker at the end of the
+# script. Starting the detector after either of those would orphan it.
+#
+# THE SERVICE IS THE SAME IN EVERY MODE. It speaks HTTP only and needs no
+# middleware on the host: `sim` reaches it from the dashboard, and the live modes
+# reach it from the orchestrator inside the CONTAINERIZED Vulcanexus stack, which
+# is where the WISEPACK-domain perception topics are published. Nothing here
+# installs or sources a host ROS 2.
+if [ "${WISEPACK_PERCEPTION_SOURCE:-sim}" = "camera" ]; then
+    if ! perception_ensure_service "$REPO"; then
+        echo "[perception] ABORTING: camera perception was requested and no" >&2
+        echo "[perception]           detector is available. WISEPACK will not" >&2
+        echo "[perception]           start with simulated perception instead —" >&2
+        echo "[perception]           that would claim a camera it does not have." >&2
+        echo "[perception]           Use WISEPACK_PERCEPTION_SOURCE=sim to run" >&2
+        echo "[perception]           the simulated demonstrator." >&2
+        exit 6
+    fi
+fi
+
 # ---- sim mode: no ROS, and no Docker if the host can run it directly --------
 if [ "$MODE" = "sim" ]; then
     # No colcon build here on purpose: sim mode imports wisepack_core straight
@@ -220,7 +256,10 @@ if [ "$MODE" = "sim" ]; then
 
     if python3 -c 'import fastapi, uvicorn' >/dev/null 2>&1; then
         open_browser
-        exec python3 "$REPO/web/app.py" --source sim --port "$PORT" \
+        # `host_run_foreground`, not `exec`: with a launcher-owned detector this
+        # shell has to survive the dashboard so its EXIT trap can stop it. With
+        # no host child it still execs, exactly as before.
+        host_run_foreground python3 "$REPO/web/app.py" --source sim --port "$PORT" \
             --preset "$PRESET" --seed "$SEED"
     fi
 
@@ -232,16 +271,26 @@ if [ "$MODE" = "sim" ]; then
         docker build -f "$REPO/Dockerfile.wisepack" -t "$IMAGE" "$REPO" || exit 1
     fi
     open_browser
-    exec docker run --rm -i $([ -t 1 ] && echo -t) \
-        --name wisepack-dashboard-sim \
-        --net=host \
-        -e "WISEPACK_DASH_PORT=$PORT" -e "WISEPACK_PRESET=$PRESET" -e "WISEPACK_SEED=$SEED" \
-        -e WISEPACK_PERCEPTION_SOURCE -e WISEPACK_HARMONY_SERVICE_URL \
-        -e WISEPACK_PHYSICAL_PROXY_DIAMETER_MM -e WISEPACK_PHYSICAL_PROXY_LENGTH_MM \
-        -v "$REPO:$REPO" -w "$REPO" \
-        "$IMAGE" \
+    # Built as an ARRAY so the container command can be handed to
+    # host_run_foreground, which decides between `exec` and foreground+cleanup.
+    # `--net=host` is what lets the containerised dashboard reach the detector
+    # on the HOST at 127.0.0.1 — the service is never moved into the container.
+    SIM_DOCKER=(docker run --rm -i)
+    [ -t 1 ] && SIM_DOCKER+=(-t)
+    SIM_DOCKER+=(
+        --name wisepack-dashboard-sim
+        --net=host
+        -e "WISEPACK_DASH_PORT=$PORT" -e "WISEPACK_PRESET=$PRESET" -e "WISEPACK_SEED=$SEED"
+        -e WISEPACK_PERCEPTION_SOURCE -e WISEPACK_PERCEPTION_SERVICE_URL
+        -e WISEPACK_PHYSICAL_PROXY_DIAMETER_MM -e WISEPACK_PHYSICAL_PROXY_LENGTH_MM
+        -e WISEPACK_PHYSICAL_PROXY_WALL_MM -e WISEPACK_PHYSICAL_PROXY_MATERIAL
+        -e WISEPACK_PHYSICAL_PROXY_GROUP -e WISEPACK_PHYSICAL_FRAME_ID
+        -e WISEPACK_PHYSICAL_WORKAREA_WIDTH_MM -e WISEPACK_PHYSICAL_WORKAREA_DEPTH_MM
+        -v "$REPO:$REPO" -w "$REPO"
+        "$IMAGE"
         bash -lc 'exec python3 web/app.py --source sim --port "${WISEPACK_DASH_PORT}" \
-                    --preset "${WISEPACK_PRESET}" --seed "${WISEPACK_SEED}"'
+                    --preset "${WISEPACK_PRESET}" --seed "${WISEPACK_SEED}"')
+    host_run_foreground "${SIM_DOCKER[@]}"
 fi
 
 
@@ -423,7 +472,11 @@ isaac_cleanup() {
 }
 
 if [ "$EXECUTION_BACKEND" = "isaac" ]; then
-    trap 'isaac_cleanup' EXIT INT TERM
+    # REGISTERED, not trapped directly. A bare `trap 'isaac_cleanup' EXIT` here
+    # would replace the trap the perception service installs when the launcher
+    # owns one, and camera+Isaac mode would leak the detector on Ctrl-C. The
+    # registry runs both hooks under one trap; each stops only what it owns.
+    host_register_cleanup isaac_cleanup
 
     # THE LAUNCHER NO LONGER STARTS ISAAC DIRECTLY.
     #
@@ -598,8 +651,10 @@ DOCKER_RUN=(docker run --rm -i $([ -t 1 ] && echo -t) \
     -e "WISEPACK_MODE=$MODE" \
     -e WISEPACK_SKIP_BUILD \
     -e ORION \
-    -e WISEPACK_PERCEPTION_SOURCE -e WISEPACK_HARMONY_SERVICE_URL \
+    -e WISEPACK_PERCEPTION_SOURCE -e WISEPACK_PERCEPTION_SERVICE_URL \
     -e WISEPACK_PHYSICAL_PROXY_DIAMETER_MM -e WISEPACK_PHYSICAL_PROXY_LENGTH_MM \
+    -e WISEPACK_PHYSICAL_PROXY_WALL_MM -e WISEPACK_PHYSICAL_PROXY_MATERIAL \
+    -e WISEPACK_PHYSICAL_PROXY_GROUP -e WISEPACK_PHYSICAL_FRAME_ID \
     -e WISEPACK_PHYSICAL_WORKAREA_WIDTH_MM -e WISEPACK_PHYSICAL_WORKAREA_DEPTH_MM \
     -v "$REPO:$REPO" \
     "${HOST_STATUS_MOUNT[@]}" \
@@ -746,14 +801,8 @@ DOCKER_RUN=(docker run --rm -i $([ -t 1 ] && echo -t) \
 python3 "$REPO/scripts/startup_status.py" proc --out "$HOST_STATUS" \
     --name wisepack-container --expected 1 --running 1 2>/dev/null || true
 
-if [ "$EXECUTION_BACKEND" = "isaac" ]; then
-    # Foreground, not exec: the EXIT trap installed above has to run when the
-    # container stops, so that Ctrl-C takes the simulator down with the stack.
-    "${DOCKER_RUN[@]}"
-    STATUS=$?
-    isaac_cleanup
-    trap - EXIT INT TERM
-    exit "$STATUS"
-fi
-
-exec "${DOCKER_RUN[@]}"
+# Foreground when this shell owns a host child — Isaac Sim, the HARMONY
+# perception service, or both — so the EXIT trap runs when the container stops
+# and Ctrl-C takes every owned process down with the stack. Plain `exec` when it
+# owns nothing, which is what every mode did before either existed.
+host_run_foreground "${DOCKER_RUN[@]}"

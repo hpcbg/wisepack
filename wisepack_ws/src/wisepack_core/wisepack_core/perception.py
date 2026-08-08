@@ -7,7 +7,7 @@ mistake this module exists to prevent:
                        sim | ros | fiware.            (see web/snapshot.py)
 
     PERCEPTION SOURCE  where the OBJECT OBSERVATIONS come from.
-                       sim | harmony_camera.          (this module)
+                       sim | camera.                  (this module)
 
     EXECUTION BACKEND  what performs the pick-and-place the operator approved.
                        simulated | isaac.             (see execution.py)
@@ -20,22 +20,26 @@ Selecting a real camera must therefore never touch the execution backend, and
 
 WHAT FLOWS BETWEEN THEM
 -----------------------
-    <any physical detector>
-            |
-            v
-    perception adapter          (harmony_adapter.py — the only detector-aware code)
-            |
-            v
+    WISEPACK PERCEPTION
+          |
+          +-- simulated provider
+          |
+          +-- physical camera
+                  |
+                  +-- perception provider   (perception/providers/*.py)
+                  |     the ONLY detector-aware code in the system
+                  v
     ObservationBatch of PhysicalObservation   <- DOMAIN-NEUTRAL, this module
-            |
-            +--> WasteItem batch --> packing / workflow / validation
-            +--> scene_objects() --> (future) Isaac scene synchronizer
+                  |
+                  +--> WasteItem batch --> packing / workflow / validation
+                  +--> scene_objects() --> (future) Isaac scene synchronizer
 
-Nothing downstream of `ObservationBatch` knows what a bottle is, and nothing
-downstream of it knows which detector ran. That is the whole point: the planning
-and workflow layers consume real perception data without acquiring a dependency
-on the perception vendor, and a future Isaac synchronizer reads `scene_objects()`
-rather than parsing any detector's JSON.
+WISEPACK OWNS PERCEPTION. A provider is an implementation detail behind this
+boundary, and swapping one for another — a different RGB detector, YOLO/OBB,
+RGB-D, 6-DoF pose estimation, segmentation — changes nothing above it. Nothing
+downstream of `ObservationBatch` knows which provider ran, what it detects, or
+who wrote it; a future Isaac synchronizer reads `scene_objects()` rather than
+parsing any detector's JSON.
 
 GEOMETRY IS CONFIGURED, NOT INFERRED
 ------------------------------------
@@ -71,10 +75,12 @@ class PerceptionSource(str, Enum):
     #: detector; ground truth is republished with a simulated confidence. THE
     #: DEFAULT, and its behaviour is unchanged by this module's existence.
     SIM = "sim"
-    #: The HARMONY Faster R-CNN detector looking at a real camera. Physical
-    #: bottles stand in for the cylindrical workpieces WISEPACK handles; their
-    #: measured position and orientation become domain-neutral observations.
-    HARMONY_CAMERA = "harmony_camera"
+    #: A REAL CAMERA, through whichever detector provider is configured. The
+    #: source answers "where do observations come from", never "which neural
+    #: network processed the image" — that is `PERCEPTION_DETECTOR_ENV`, so a
+    #: second provider (YOLO/OBB, RGB-D pose, segmentation) can be added without
+    #: inventing a second perception source or renaming this one.
+    CAMERA = "camera"
 
     @property
     def is_physical(self) -> bool:
@@ -84,18 +90,17 @@ class PerceptionSource(str, Enum):
     def label(self) -> str:
         """Dashboard badge text. Never claims more than the source is."""
         return {"sim": "SIMULATED PERCEPTION",
-                "harmony_camera": "HARMONY CAMERA"}[self.value]
+                "camera": "PHYSICAL CAMERA"}[self.value]
 
     @property
     def detail(self) -> str:
         return {
             "sim": ("object observations are the generated ground truth with a "
                     "seeded confidence — no camera, no image, no detector"),
-            "harmony_camera": (
-                "object observations are produced by the HARMONY Faster R-CNN "
-                "detector from a real camera frame, positioned by ArUco "
-                "homography; physical bottles are proxies for cylindrical "
-                "workpieces"),
+            "camera": (
+                "object observations are measured from a real camera frame by "
+                "the configured detector provider and positioned on a "
+                "calibrated plane"),
         }[self.value]
 
 
@@ -103,6 +108,40 @@ class PerceptionSource(str, Enum):
 #: same convention as `WISEPACK_EXECUTION_BACKEND`. Unset == `sim`, so every
 #: existing invocation keeps its exact behaviour.
 PERCEPTION_SOURCE_ENV = "WISEPACK_PERCEPTION_SOURCE"
+
+#: WHICH PROVIDER processes the camera image. A SEPARATE axis from the source:
+#: `camera` says observations are measured from a real frame, this says how. One
+#: provider exists today; the variable exists so the second one is a
+#: configuration change rather than a rename of everything above it.
+PERCEPTION_DETECTOR_ENV = "WISEPACK_PERCEPTION_DETECTOR"
+
+#: The provider used when none is named. A Faster R-CNN detector that locates
+#: bottles on an ArUco-calibrated plane, reusing the implementation developed in
+#: HARMONY. Bottles are PHYSICAL PROXIES for cylindrical workpieces — that is a
+#: property of the objects on the table, not of this architecture.
+DEFAULT_DETECTOR = "fasterrcnn_bottle"
+
+#: Providers this build can run. Names describe the METHOD, never its origin, so
+#: nothing downstream has to be renamed when a provider is added.
+KNOWN_DETECTORS = (DEFAULT_DETECTOR,)
+
+
+def resolve_detector(value: Optional[str] = None) -> str:
+    """Resolve the camera provider: explicit argument, then env, then default.
+
+    An unknown provider is an error for the same reason an unknown perception
+    source is: quietly running a different detector than the one that was asked
+    for produces measurements nobody can interpret.
+    """
+    raw = value if value is not None else os.environ.get(PERCEPTION_DETECTOR_ENV, "")
+    raw = str(raw or "").strip().lower()
+    if not raw:
+        return DEFAULT_DETECTOR
+    if raw not in KNOWN_DETECTORS:
+        raise PerceptionConfigError(
+            f"unknown perception detector {raw!r}; known: "
+            + ", ".join(KNOWN_DETECTORS))
+    return raw
 
 
 class PerceptionConfigError(ValueError):
@@ -113,7 +152,7 @@ def resolve_perception_source(value: Optional[str] = None) -> PerceptionSource:
     """Resolve the perception source: explicit argument, then env, then `sim`.
 
     An UNRECOGNISED value is an error, never a silent fall back to `sim`. A
-    typo in `WISEPACK_PERCEPTION_SOURCE=harmony-camera` that quietly ran the
+    typo in `WISEPACK_PERCEPTION_SOURCE=kamera` that quietly ran the
     simulator while the operator believed a camera was live is exactly the
     failure §15 forbids.
     """
@@ -545,7 +584,7 @@ def resolve_model_path(configured: Optional[str] = None,
                        exists=os.path.exists) -> ModelResolution:
     """Find the detector weights, in the documented order (§4).
 
-        1. an explicitly configured path (`WISEPACK_HARMONY_MODEL_PATH`)
+        1. an explicitly configured path (`WISEPACK_PERCEPTION_MODEL_PATH`)
         2. /data/arise/models/best_model.pth, if present
         3. the local HARMONY cache (`<harmony>/models/best_model.pth`) — the
            exact destination HARMONY's own installer downloads into
@@ -560,7 +599,7 @@ def resolve_model_path(configured: Optional[str] = None,
     env = os.environ if env is None else env
     configured = (configured
                   if configured is not None
-                  else env.get("WISEPACK_HARMONY_MODEL_PATH", ""))
+                  else env.get("WISEPACK_PERCEPTION_MODEL_PATH", ""))
     configured = str(configured or "").strip()
 
     searched: List[str] = []
@@ -574,7 +613,7 @@ def resolve_model_path(configured: Optional[str] = None,
         # that were asked for is worse than reporting the miss.
         return ModelResolution(
             None, "absent", False, searched,
-            message=(f"WISEPACK_HARMONY_MODEL_PATH={configured!r} does not "
+            message=(f"WISEPACK_PERCEPTION_MODEL_PATH={configured!r} does not "
                      "exist. Correct it or unset it to use the default search "
                      "order."))
 
@@ -599,7 +638,7 @@ def resolve_model_path(configured: Optional[str] = None,
               "(`python3 setup.py` in the HARMONY repository, which downloads "
               f"{HUGGINGFACE_REPO}), or directly:\n"
               f"    curl -L --fail -o {hint} {HUGGINGFACE_MODEL_URL}\n"
-              "or point WISEPACK_HARMONY_MODEL_PATH at an existing copy. "
+              "or point WISEPACK_PERCEPTION_MODEL_PATH at an existing copy. "
               "The weights are ~159 MB and are never committed to this "
               "repository."))
 
@@ -704,7 +743,8 @@ def _parse_iso_epoch(text: str) -> Optional[float]:
 
 __all__ = [
     "PerceptionSource", "PERCEPTION_SOURCE_ENV", "PerceptionConfigError",
-    "resolve_perception_source", "ProxyGeometry", "DEFAULT_PROXY_DIAMETER_MM",
+    "resolve_perception_source", "PERCEPTION_DETECTOR_ENV", "DEFAULT_DETECTOR",
+    "KNOWN_DETECTORS", "resolve_detector", "ProxyGeometry", "DEFAULT_PROXY_DIAMETER_MM",
     "DEFAULT_PROXY_LENGTH_MM", "WorkAreaFrame", "WORKAREA_FRAME_ID",
     "BatchStatus", "ObservationBatch", "ModelResolution", "resolve_model_path",
     "ARISE_MODEL_PATH", "HUGGINGFACE_REPO", "HUGGINGFACE_MODEL_URL",

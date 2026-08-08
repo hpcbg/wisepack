@@ -1371,12 +1371,29 @@ def test_isaac_cleanup_never_uses_a_broad_pattern(script):
 
 
 def test_the_dashboard_stops_only_the_isaac_process_it_started():
-    """By SESSION now: the supervisor owns every Isaac generation it started."""
+    """By SESSION: the supervisor owns every Isaac generation it started.
+
+    The wiring to EXIT/INT/TERM is now a REGISTRATION rather than a bare
+    `trap 'isaac_cleanup' ...`, because the launcher can own a second host
+    process — the HARMONY perception service — and a second `trap` would have
+    silently replaced this one, leaking whichever subsystem registered first.
+    The guarantee is unchanged and is asserted below: Isaac cleanup runs on
+    EXIT, INT and TERM. See scripts/lib_host_processes.sh.
+    """
     text = _read(DASHBOARD)
     assert 'kill -TERM "$ISAAC_SUPERVISOR_PID"' in text
     assert 'kill -KILL "-$ISAAC_SUPERVISOR_PGID"' in text
     assert "isaac_cleanup" in text
-    assert "trap 'isaac_cleanup' EXIT INT TERM" in text
+    assert "host_register_cleanup isaac_cleanup" in text
+    # Registration is what installs the trap, so the signals are still covered.
+    registry = _read(os.path.join(REPO, "scripts", "lib_host_processes.sh"))
+    assert "trap 'host_cleanup' EXIT INT TERM" in registry
+    # The registry's CODE must stay subsystem-agnostic. Its comments name both
+    # hooks as the usage example, which is documentation, not coupling.
+    registry_code = "\n".join(line for line in registry.splitlines()
+                              if not line.lstrip().startswith("#"))
+    assert "isaac_cleanup" not in registry_code, \
+        "the generic registry must not name a specific subsystem"
 
 
 def test_the_dashboard_does_not_block_on_isaac_but_still_fails_loudly():

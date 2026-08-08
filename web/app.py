@@ -84,14 +84,16 @@ SOURCE = os.environ.get("WISEPACK_SOURCE", "sim")
 ORION = os.environ.get("ORION", "http://localhost:1026").rstrip("/")
 
 # THE PERCEPTION SOURCE. A THIRD, INDEPENDENT AXIS — not a data source (SOURCE
-# above) and not an execution backend. Unset == `sim`, so nothing existing
-# changes.
+# above) and not an execution backend. `sim` | `camera`; unset == `sim`, so
+# nothing existing changes. WHICH detector processes a camera frame is a
+# separate setting again (WISEPACK_PERCEPTION_DETECTOR) and is the perception
+# service's business, not the dashboard's.
 #
 # AN UNRECOGNISED VALUE RAISES HERE AND THE PROCESS DOES NOT START. This is
 # deliberately NOT caught. It was, once: the exception was swallowed, the source
 # was downgraded to `sim`, and the reason was put in a `config_error` field that
-# the only renderer never reached — so `WISEPACK_PERCEPTION_SOURCE=harmony-camera`
-# (a hyphen instead of an underscore) started a dashboard that quietly produced
+# the only renderer never reached — so a bad `WISEPACK_PERCEPTION_SOURCE`
+# (an old or misspelled value) started a dashboard that quietly produced
 # SIMULATED detections for an operator who had asked for a camera. A silent
 # downgrade of a perception source is precisely the failure this repository
 # refuses to allow.
@@ -257,7 +259,8 @@ def build_engine(settings: Dict[str, Any]) -> WorkflowEngine:
     if PERCEPTION_SOURCE.is_physical:
         # THE ONLY PLACE THE DASHBOARD LEARNS HOW OBSERVATIONS ARRIVE. The
         # engine stays transport-free; it calls a callable and gets a batch.
-        from perception_client import make_observation_provider   # noqa: PLC0415
+        from wisepack_core.perception_client import (              # noqa: PLC0415
+            make_observation_provider)
         engine.observation_provider = make_observation_provider(
             perception_client())
     engine.log.add_sink(STATE.sink)
@@ -266,7 +269,7 @@ def build_engine(settings: Dict[str, Any]) -> WorkflowEngine:
 
 def perception_client():
     """The one shared client for the perception service. Built lazily."""
-    from perception_client import PerceptionClient                # noqa: PLC0415
+    from wisepack_core.perception_client import PerceptionClient  # noqa: PLC0415
     with STATE.lock:
         if STATE.perception_client is None:
             STATE.perception_client = PerceptionClient()
@@ -834,8 +837,8 @@ def api_topology():
     if PERCEPTION_SOURCE.is_physical:
         for node in topology["nodes"]:
             if node["id"] == "perception":
-                node["label"] = "HARMONY camera detector"
-                node["kind"] = "Faster R-CNN"
+                node["label"] = "Physical perception"
+                node["kind"] = "Camera + detector"
                 node["role"] = "sensor"
     return {**topology, "status": topology_status(_provider().snapshot())}
 
@@ -897,7 +900,7 @@ def _perception_payload() -> Dict[str, Any]:
         # THE PROXY DISCLOSURE (§9). Unobtrusive, but always present in the
         # payload so the panel cannot render real detections without it.
         "proxy_note": (
-            "Physical bottles are used as proxies for the cylindrical "
+            "Physical bottles are currently used as proxies for the cylindrical "
             "workpieces WISEPACK packages. Their detected position and "
             "orientation become domain-neutral object observations."),
         # THE §12 GUARD, carried with the data rather than left to the frontend.
@@ -965,7 +968,7 @@ def api_perception_image(kind: str):
         raise HTTPException(
             status_code=409,
             detail=("perception source is `sim` — there is no camera. Start "
-                    "with WISEPACK_PERCEPTION_SOURCE=harmony_camera."))
+                    "with WISEPACK_PERCEPTION_SOURCE=camera."))
     image, error = perception_client().image(kind)
     if image is None:
         raise HTTPException(status_code=503, detail=error)
@@ -1286,7 +1289,7 @@ def _apply_command_locked(engine: WorkflowEngine, command: str,
         if not PERCEPTION_SOURCE.is_physical:
             raise ValueError(
                 "perception source is `sim` — there is no camera to detect "
-                "with. Restart with WISEPACK_PERCEPTION_SOURCE=harmony_camera.")
+                "with. Restart with WISEPACK_PERCEPTION_SOURCE=camera.")
         STATE.auto_step = False
         batch = perception_client().detect()
         try:
@@ -1474,10 +1477,10 @@ if __name__ == "__main__":
                         choices=[s.value for s in PerceptionSource],
                         default=None,
                         help=("where object observations come from. `sim` "
-                              "(default, unchanged) or `harmony_camera` (a real "
-                              "camera through the HARMONY detector). "
-                              "INDEPENDENT of --source and of the execution "
-                              "backend."))
+                              "(default, unchanged) or `camera` (measured from "
+                              "a real camera frame by the configured perception "
+                              "provider). INDEPENDENT of --source and of the "
+                              "execution backend."))
     args = parser.parse_args()
 
     os.environ["WISEPACK_SOURCE"] = args.source

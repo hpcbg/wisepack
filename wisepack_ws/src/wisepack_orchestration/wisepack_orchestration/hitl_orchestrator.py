@@ -32,6 +32,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+import threading
 from typing import Any, Dict, Optional
 
 import rclpy
@@ -51,10 +52,10 @@ from wisepack_core.execution import ExecutionBackend, parse_backend
 from wisepack_core.packing import OptimizerConfig
 from wisepack_core.anomaly import AnomalyEvent
 from wisepack_core.correlation import RunCorrelation
-from wisepack_core.harmony_adapter import parse_harmony_json
 from wisepack_core.perception import (
     ObservationBatch, ProxyGeometry, WorkAreaFrame, resolve_perception_source,
 )
+from wisepack_core.perception_client import PerceptionClient
 from wisepack_core.workflow import (
     AnomalyHold, ApprovalRequired, PerceptionUnavailable, RobotSimConfig,
     WorkflowConfig, WorkflowEngine, WorkflowError,
@@ -349,9 +350,10 @@ class HitLOrchestrator(Node):
         #: its predecessor completely (§6).
         self._pending_observation: Optional[ObservationBatch] = None
         self._perception_status: Dict[str, Any] = {}
-        #: True once a WISEPACK-domain batch has been seen, after which
-        #: HARMONY's raw `result_json` is ignored — see `_on_harmony_result`.
-        self._saw_wisepack_observations = False
+        #: Guards against a second detection being queued behind the first:
+        #: two concurrent requests would fight over one camera and one CUDA
+        #: context in the service.
+        self._detection_in_flight = False
 
         events = []
         if bool(self.get_parameter("dynamic_events").value):
@@ -467,34 +469,26 @@ class HitLOrchestrator(Node):
 
         # -- physical perception (OPTIONAL channel) ---------------------------
         # Created only for a physical perception source. In `sim` there is no
-        # detector to subscribe to and no trigger to publish, so the topic graph
+        # perception service to reach and no topic to publish, so the topic graph
         # of an ordinary run is exactly what it was.
         #
-        # SINGLE AUTHORITY PRESERVED. The perception service owns the
-        # observation; the orchestrator only reads it and adopts it into the
-        # batch the planner sees. The trigger goes out on HARMONY's OWN inbound
-        # command topic — reusing its contract rather than inventing a parallel
-        # one (§7).
-        self.p_detect_command = None
+        # THE ORCHESTRATOR IS THE DDS AUTHORITY FOR PERCEPTION. The service runs
+        # on the HOST — it owns the camera, the GPU and torch — and speaks HTTP
+        # only. This node, inside the container, is where the validated
+        # Vulcanexus / Fast DDS runtime lives, so it fetches batches over HTTP
+        # and PUBLISHES them on the WISEPACK-domain topics itself. That keeps one
+        # writer per topic, keeps the NGSI-LD path on the runtime whose
+        # TypeObject propagation Orion-LD's DDS Enabler needs, and requires no
+        # middleware on the host at all.
+        self.p_perception_objects = None
+        self.p_perception_status = None
+        self.perception_client = None
         if self.perception_source.is_physical:
-            self.create_subscription(
-                String, T.PERCEPTION_OBJECTS, self._on_perception_objects,
-                qos_for(T.PERCEPTION_OBJECTS))
-            self.create_subscription(
-                String, T.PERCEPTION_STATUS, self._on_perception_status,
-                qos_for(T.PERCEPTION_STATUS))
-            # ALSO ACCEPT AN UNMODIFIED HARMONY DETECTOR. `AI_BACKEND=ros2
-            # AI_DETECTION_MODE=real ./run.sh` publishes only HARMONY's own
-            # `result_json`; adapting it here means WISEPACK works against a
-            # stock HARMONY checkout with no WISEPACK service in front of it.
-            # The WISEPACK-domain topic WINS whenever both are present — see
-            # `_on_harmony_result` — so there is still one authority.
-            self.create_subscription(
-                String, "/bottle_detection/result_json",
-                self._on_harmony_result, qos_for(T.PERCEPTION_OBJECTS))
-            self.p_detect_command = self.create_publisher(
-                String, T.HARMONY_DETECTION_COMMAND,
-                qos_for(T.HARMONY_DETECTION_COMMAND))
+            self.p_perception_objects = self.create_publisher(
+                String, T.PERCEPTION_OBJECTS, qos_for(T.PERCEPTION_OBJECTS))
+            self.p_perception_status = self.create_publisher(
+                String, T.PERCEPTION_STATUS, qos_for(T.PERCEPTION_STATUS))
+            self.perception_client = PerceptionClient()
 
         # Every action event goes out on DDS the moment it is recorded. This is
         # the audit path; nothing batches it and nothing bypasses it.
@@ -560,6 +554,14 @@ class HitLOrchestrator(Node):
                 self.isaac.poll_switch(self.engine)
             except Exception as exc:                    # noqa: BLE001
                 self.get_logger().error(f"robot switch poll failed: {exc}")
+        # A batch fetched by the perception worker is adopted HERE, on the
+        # thread that owns the engine — never from the worker itself, which
+        # would mutate the scenario and re-plan underneath a tick in progress.
+        if self.perception_client is not None:
+            try:
+                self.adopt_pending_observation()
+            except Exception as exc:                    # noqa: BLE001
+                self.get_logger().error(f"observation adoption failed: {exc}")
         try:
             self.tree.tick_once()
         except Exception as exc:                        # noqa: BLE001
@@ -733,61 +735,80 @@ class HitLOrchestrator(Node):
             batch_id="batch-pending",
             source=self.perception_source.value,
             error=("no physical observation has been received yet — trigger a "
-                   "detection (operator command `detect_physical_objects`, or "
-                   "publish START on /bottle_detection/command) and make sure "
-                   "the perception service is running on this ROS_DOMAIN_ID"))
+                   "detection (operator command `detect_physical_objects`) and "
+                   "make sure the perception service is running and reachable "
+                   "at WISEPACK_PERCEPTION_SERVICE_URL"))
 
     def request_physical_detection(self) -> bool:
-        """Ask the detector for one scan, over HARMONY's own command topic."""
-        if self.p_detect_command is None:
+        """Ask the perception service for one scan, over HTTP, off the tick.
+
+        RUN ON A WORKER THREAD. A detection takes seconds — tens of seconds on
+        the first request, while the provider loads its model — and blocking a
+        DDS callback for that long would stall the heartbeat and make the whole
+        stack look dead. The result is parked and adopted on the next tick,
+        which is the same path a first scan already takes.
+        """
+        if self.perception_client is None:
             return False
-        self.p_detect_command.publish(String(data="START"))
-        self.get_logger().info(
-            f"requested a physical detection on {T.HARMONY_DETECTION_COMMAND}")
+        if self._detection_in_flight:
+            self.get_logger().info("a detection is already in flight — ignoring")
+            return True
+        self._detection_in_flight = True
+
+        def worker() -> None:
+            try:
+                batch = self.perception_client.detect()
+            except Exception as exc:                        # noqa: BLE001
+                # The client does not raise, but a worker thread that dies
+                # silently would leave the flag set forever.
+                batch = ObservationBatch.failed(
+                    batch_id="batch-error",
+                    source=self.perception_source.value,
+                    error=f"perception request failed: {exc}")
+            finally:
+                self._detection_in_flight = False
+            self._pending_observation = batch
+            self.publish_observation_batch(batch)
+
+        threading.Thread(target=worker, daemon=True,
+                         name="wisepack-perception").start()
+        self.get_logger().info("requested a physical detection over HTTP")
         return True
 
-    def _on_perception_objects(self, msg: String) -> None:
-        """A WISEPACK-domain observation batch. The PREFERRED source."""
-        self._saw_wisepack_observations = True
-        try:
-            batch = ObservationBatch.from_dict(json.loads(msg.data))
-        except Exception as exc:                            # noqa: BLE001
-            # A malformed ROS message is one of §15's failures. Recorded as a
-            # failed batch so it renders, never raised out of a DDS callback
-            # where it would only reach a log nobody is reading.
-            batch = ObservationBatch.failed(
-                batch_id="batch-malformed",
-                source=self.perception_source.value,
-                error=f"malformed perception message on {T.PERCEPTION_OBJECTS}: {exc}")
-        self._adopt_observation(batch)
+    def publish_observation_batch(self, batch: ObservationBatch) -> None:
+        """Publish the WISEPACK-domain view of one batch on DDS.
 
-    def _on_harmony_result(self, msg: String) -> None:
-        """HARMONY's own `result_json`, adapted. Used only as a FALLBACK.
-
-        Ignored once a WISEPACK-domain batch has been seen: with the WISEPACK
-        perception service running, both topics carry the same detection, and
-        adopting both would apply one scan twice and bump the batch revision
-        twice. One authority over the world state, exactly as elsewhere.
+        THIS NODE IS THE SINGLE WRITER of both perception topics. The host
+        service speaks HTTP only and publishes nothing, so there is exactly one
+        DDS authority for the observation — and it is inside the containerized
+        Vulcanexus runtime, which is the path Orion-LD's DDS Enabler is
+        validated against.
         """
-        if getattr(self, "_saw_wisepack_observations", False):
+        if self.p_perception_objects is None:
             return
-        self._adopt_observation(parse_harmony_json(
-            msg.data,
-            batch_id=f"batch-h{self.engine.observation_batches_applied + 1:03d}",
-            geometry=self.proxy_geometry,
-            frame=self.work_area,
-            source=self.perception_source.value))
+        try:
+            self.p_perception_objects.publish(
+                String(data=json.dumps(batch.to_dict(), default=str)))
+            self.p_perception_status.publish(String(data=json.dumps({
+                "status": batch.status.value,
+                "source": batch.source,
+                "count": batch.count,
+                "calibration_status": batch.calibration_status,
+                "captured_at": batch.captured_at,
+                "requested_at": batch.requested_at,
+                "error": batch.error,
+            })))
+        except Exception as exc:                            # noqa: BLE001
+            self.get_logger().error(f"perception publish failed: {exc}")
 
-    def _adopt_observation(self, batch: ObservationBatch) -> None:
-        """Make ``batch`` the observation WISEPACK plans from, and re-plan.
+    def adopt_pending_observation(self) -> None:
+        """Adopt a fetched batch as the objects WISEPACK plans from, and re-plan.
 
-        This is where a real detection becomes the object batch every downstream
-        stage consumes (§10). If the workflow has not yet scanned, the batch is
-        parked and the tree picks it up on its next tick; if it has, the batch
-        REPLACES the previous objects and planning restarts from them.
+        Called from the tick, not from the worker: applying a batch mutates the
+        engine and re-plans, and that must happen on the thread that owns it.
         """
-        self._pending_observation = batch
-        self.publish_perception()
+        if self._pending_observation is None:
+            return
         if self.engine.scenario is None or not self.engine.detected:
             return                      # ScanAndDetect will consume it on tick
         try:
@@ -805,20 +826,11 @@ class HitLOrchestrator(Node):
         self.publish_detection()
         self.publish_plans()
 
-    def _on_perception_status(self, msg: String) -> None:
-        try:
-            self._perception_status = json.loads(msg.data)
-        except (TypeError, ValueError):
-            self._perception_status = {"status": "error",
-                                       "error": "malformed perception status"}
-
     def publish_perception(self) -> None:
-        """Republish the engine's perception view onto the scenario projection.
+        """Stamp the engine's adoption of a batch onto the scenario projection.
 
-        Deliberately NOT a new authority: the observation batch is published by
-        the detector service, and this only stamps the ENGINE's adoption of it
-        into the existing scenario state so the audit trail records which batch
-        a plan was built from.
+        The batch itself goes out on the perception topics; this records which
+        batch a plan was built from in the existing audit trail.
         """
         self.publish_correlation("scenario")
 
@@ -1128,11 +1140,12 @@ class HitLOrchestrator(Node):
                     "with perception_source:=harmony_camera (or "
                     "WISEPACK_PERCEPTION_SOURCE=harmony_camera).")
             if not self.request_physical_detection():
-                raise ValueError("no perception command publisher is available")
-            # The batch arrives asynchronously on the perception topic and is
-            # adopted in `_adopt_observation`. Returning here keeps the command
-            # path non-blocking: a Faster R-CNN pass takes seconds, and holding
-            # the orchestrator's callback for it would stall the heartbeat.
+                raise ValueError("no perception service client is available")
+            # The batch arrives on a worker thread and is adopted on the next
+            # tick by `adopt_pending_observation`. Returning here keeps the
+            # command path non-blocking: an inference pass takes seconds, and
+            # holding the orchestrator's callback for it would stall the
+            # heartbeat.
             self.auto_step = False
 
         elif command == "acknowledge_anomaly":

@@ -1,10 +1,17 @@
-"""Dashboard-side client for the HARMONY perception service.
+"""Client for the WISEPACK perception service.
 
-The dashboard does NOT open the camera and does NOT import torch. It asks the
-perception service (`perception/harmony_perception_service.py`), which is the
-single camera owner, and renders what comes back. That split is what lets the
-dashboard keep running when the camera is unplugged, the weights are missing or
-the detector process is not started at all — §5 requires exactly that.
+Used by BOTH consumers of the host perception service:
+
+  * the dashboard, which renders health and images;
+  * `wisepack_orchestration.hitl_orchestrator`, inside the container, which
+    fetches batches and republishes them on `/wisepack/perception/*` over the
+    validated Vulcanexus / Fast DDS runtime.
+
+Neither opens the camera and neither imports torch. They ask the service
+(`perception/perception_service.py`), which is the single camera owner, and use
+what comes back. That split is what lets both keep running when the camera is
+unplugged, the weights are missing, or the detector process was never started —
+§5 requires exactly that.
 
 EVERY METHOD ANSWERS. None of them raise for an unreachable service: a
 perception failure is a state to render, not an exception to propagate into a
@@ -19,20 +26,11 @@ from __future__ import annotations
 
 import json
 import os
-import sys
 import urllib.error
 import urllib.request
 from typing import Any, Dict, Optional, Tuple
 
-HERE = os.path.dirname(os.path.abspath(__file__))
-REPO = os.path.dirname(HERE)
-_CORE = os.path.join(REPO, "wisepack_ws", "src", "wisepack_core")
-if _CORE not in sys.path:
-    sys.path.insert(0, _CORE)
-
-from wisepack_core.perception import (                             # noqa: E402
-    ObservationBatch, PerceptionHealth, PerceptionSource,
-)
+from .perception import ObservationBatch, PerceptionHealth, PerceptionSource
 
 #: Where the perception service listens. A DOCUMENTED DEFAULT for the ordinary
 #: single-host demo, overridable for a detector on the machine the camera is
@@ -41,7 +39,7 @@ DEFAULT_SERVICE_URL = "http://127.0.0.1:22101"
 
 
 def service_url() -> str:
-    return os.environ.get("WISEPACK_HARMONY_SERVICE_URL",
+    return os.environ.get("WISEPACK_PERCEPTION_SERVICE_URL",
                           DEFAULT_SERVICE_URL).rstrip("/")
 
 
@@ -106,7 +104,7 @@ class PerceptionClient:
         # UNREACHABLE IS NOT THE SAME AS BROKEN, and the tri-state fields say so:
         # `camera_available=None` means "not known from here", never "no camera".
         health = PerceptionHealth(
-            source=PerceptionSource.HARMONY_CAMERA.value,
+            source=PerceptionSource.CAMERA.value,
             service_url=self.url,
             service_reachable=False,
             last_error=error or "perception service did not answer",
@@ -114,7 +112,7 @@ class PerceptionClient:
         health["note"] = (
             "The HARMONY perception service is not answering. Start it with "
             "`python3 perception/harmony_perception_service.py`, or point "
-            "WISEPACK_HARMONY_SERVICE_URL at the host running it.")
+            "WISEPACK_PERCEPTION_SERVICE_URL at the host running it.")
         return health
 
     def detect(self) -> ObservationBatch:
@@ -164,12 +162,12 @@ class PerceptionClient:
             except Exception as exc:                         # noqa: BLE001
                 return ObservationBatch.failed(
                     batch_id="batch-error",
-                    source=PerceptionSource.HARMONY_CAMERA.value,
+                    source=PerceptionSource.CAMERA.value,
                     error=("the perception service returned a document this "
                            f"build cannot read: {exc}"))
         return ObservationBatch.failed(
             batch_id="batch-error",
-            source=PerceptionSource.HARMONY_CAMERA.value,
+            source=PerceptionSource.CAMERA.value,
             error=error or f"perception service returned HTTP {status}")
 
 

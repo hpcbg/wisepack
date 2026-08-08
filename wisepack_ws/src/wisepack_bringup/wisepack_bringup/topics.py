@@ -66,35 +66,32 @@ WASTE_ITEMS = "/wisepack/waste/items"                  # String: JSON item list
 WASTE_DETECTED_COUNT = "/wisepack/waste/detected_count"  # Int32
 
 # --- physical perception (OPTIONAL — only with a real perception source) ------
-# These are the WISEPACK-DOMAIN view of whatever detector is running. They carry
+# The WISEPACK-DOMAIN view of whatever perception provider is running. They carry
 # `wisepack_core.perception.ObservationBatch`: generic cylindrical objects with
 # a pose, a confidence and detector provenance. Nothing that subscribes to them
-# learns which detector produced them, and nothing has to parse a detector's own
-# schema — that translation happens once, in `wisepack_core.harmony_adapter`.
+# learns which provider produced them, and nothing has to parse a detector's own
+# schema — that translation happens once, inside the provider itself (see
+# `perception/providers/`).
 #
-# HARMONY'S OWN TOPICS ARE NOT DUPLICATED HERE. `/bottle_detection/command`,
-# `/bottle_detection/status_json`, `/bottle_detection/bottle_count`,
-# `/bottle_detection/pick_pose_json` and `/bottle_detection/result_json` remain
-# HARMONY's contract, published by HARMONY's own node (see
-# perception/harmony_perception_service.py, which instantiates it rather than
-# reimplementing it). WISEPACK triggers a detection on HARMONY's inbound
-# command topic, exactly as HARMONY documents.
+# WHERE THEY ARE PUBLISHED FROM, and why it matters. The perception service runs
+# on the HOST, because the host owns the camera, the GPU and torch — and it
+# speaks HTTP only. It publishes no DDS. The ORCHESTRATOR fetches batches from it
+# over HTTP and publishes these two topics from INSIDE the container, on the
+# Vulcanexus / Fast DDS runtime the Orion-LD DDS Enabler is validated against.
+#
+# That is deliberate: publishing from the host would have required a second,
+# unvalidated middleware installation there, and plain host ROS 2 is NOT
+# equivalent to Vulcanexus for the TypeObject propagation the Enabler needs.
 #
 # KEPT OUT OF `all_topics()`, for the same reason the Isaac channel is: that
 # function is the contract with a publisher in EVERY run, and these two have one
-# only when `WISEPACK_PERCEPTION_SOURCE=harmony_camera`. Listing them there
-# would make an ordinary simulated run look broken.
+# only when `WISEPACK_PERCEPTION_SOURCE=camera`. Listing them there would make
+# an ordinary simulated run look broken.
 #
-# SINGLE WRITER: the perception service. The orchestrator only reads them, so
-# the world state keeps one authority — the observation batch is whatever the
-# detector last reported, and no second process rewrites it.
+# SINGLE WRITER: the orchestrator. One authority over the observation, on one
+# middleware, exactly as with every other WISEPACK topic.
 PERCEPTION_STATUS = "/wisepack/perception/status_json"   # String: JSON health/status
 PERCEPTION_OBJECTS = "/wisepack/perception/objects_json"  # String: JSON ObservationBatch
-
-#: HARMONY's inbound command topic — the trigger WISEPACK publishes `START` on.
-#: Named here so the orchestrator and the tests share one spelling, and marked
-#: as EXTERNAL so nobody mistakes it for a WISEPACK-owned name.
-HARMONY_DETECTION_COMMAND = "/bottle_detection/command"   # String: START
 
 # --- planning -----------------------------------------------------------------
 # Plan topics carry the COMPLETE PackingPlan.to_dict() — every placement's
@@ -378,13 +375,11 @@ def perception_topics() -> dict:
     }
 
 
-#: Single-writer discipline across the perception channel. The detector service
-#: writes the observations; WISEPACK writes only the trigger on HARMONY's own
-#: inbound topic. Stated as data so a test can check it.
+#: Single-writer discipline across the perception channel. Stated as data so a
+#: test can check it rather than trusting the comment.
 PERCEPTION_WRITERS = {
-    PERCEPTION_STATUS: "harmony_perception_service",
-    PERCEPTION_OBJECTS: "harmony_perception_service",
-    HARMONY_DETECTION_COMMAND: "wisepack_orchestration",
+    PERCEPTION_STATUS: "wisepack_orchestration",
+    PERCEPTION_OBJECTS: "wisepack_orchestration",
 }
 
 

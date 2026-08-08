@@ -55,13 +55,13 @@ COMPONENTS = [
 #:
 #: `RGB-D camera frames` STAYS A FUTURE INTERFACE even with a real camera
 #: attached, and that is not an oversight. The WISEPACK proposal's perception
-#: pipeline is RGB-D (depth + YOLOv12-OBB + SAM2 + FPFH/ICP); the HARMONY
-#: detector is a 2-D RGB camera positioned by an ArUco homography on a known
+#: pipeline is RGB-D (depth + YOLOv12-OBB + SAM2 + FPFH/ICP); the provider in
+#: use today is a 2-D RGB camera positioned by an ArUco homography on a known
 #: plane. Marking the proposal's interface "live" because a different, simpler
 #: one exists would be exactly the overclaim this table is here to prevent.
 _FIXED_INTERFACES = [
     ("RGB-D camera frames", "future interface",
-     "The proposal's depth-based pipeline is not implemented. The HARMONY "
+     "The proposal's depth-based pipeline is not implemented. The camera "
      "perception source is a 2-D RGB camera on a calibrated plane — see the "
      "rows above — not a depth sensor"),
     ("Robot joint states", "simulated source", "No physical robot"),
@@ -70,6 +70,13 @@ _FIXED_INTERFACES = [
     ("Packing optimizer", "measured software", "Real algorithm"),
     ("Digital Twin validator", "measured software", "Real independent validator"),
     ("FIWARE event mapping", "live", "Real DDS-to-Orion-LD path"),
+    # STATED ACCURATELY. Vulcanexus is a CONTAINER component in this project, so
+    # its absence from /opt on the host says nothing about the WISEPACK stack —
+    # reading it as "Vulcanexus unavailable" would be simply wrong.
+    ("Vulcanexus / Fast DDS runtime", "containerized",
+     "Not installed on the host; WISEPACK uses the containerized Vulcanexus "
+     "runtime, which is where the WISEPACK ROS 2 nodes and the Orion-LD DDS "
+     "Enabler path run"),
 ]
 
 #: The three perception rows, per source. These used to be unconditional
@@ -85,12 +92,13 @@ _PERCEPTION_INTERFACES = {
         ("6D pose estimates", "simulated source",
          "Not produced by a real CV backend"),
     ],
-    "harmony_camera": [
+    "camera": [
         ("2-D camera frames", "live",
-         "Real camera, owned by the HARMONY perception service"),
+         "Real camera, owned by the WISEPACK perception service on the host"),
         ("Object detections", "measured source",
-         "HARMONY Faster R-CNN on a real frame. Detector confidence is NOT a "
-         "measured detection rate — no ground-truth trial has been run"),
+         "The configured perception provider on a real frame. Detector "
+         "confidence is NOT a measured detection rate — no ground-truth trial "
+         "has been run"),
         ("6D pose estimates", "partial measured source",
          "PLANAR ONLY: x/y/yaw measured on the ArUco-calibrated plane; z, roll "
          "and pitch are assumed flat-on-table, not measured. Object geometry "

@@ -71,7 +71,7 @@ PROPOSAL_TARGETS: Sequence[ProposalTarget] = (
         note=("Not measured in either perception mode, for two different "
               "reasons. With simulated perception there is no vision model at "
               "all and the figure reflects the configured simulator "
-              "confidence. With the real HARMONY camera detector there IS a "
+              "confidence. With a real camera detector there IS a "
               "vision model, but a detection RATE needs a ground-truth trial — "
               "how many objects were actually on the table — and detector "
               "confidence is a different quantity that must never be "

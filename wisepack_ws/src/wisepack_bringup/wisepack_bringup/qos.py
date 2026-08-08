@@ -274,13 +274,6 @@ def qos_for(topic: str) -> QoSProfile:
         # detection sees the objects that are on the table rather than waiting
         # for the next scan that may never come.
         return state_qos()
-    if topic == T.HARMONY_DETECTION_COMMAND:
-        # HARMONY's inbound trigger. Deliberately NOT latched: a transient-local
-        # START would be redelivered every time the detector re-subscribed, and
-        # each redelivery would run an unrequested inference.
-        return QoSProfile(history=HistoryPolicy.KEEP_LAST, depth=10,
-                          reliability=ReliabilityPolicy.RELIABLE,
-                          durability=DurabilityPolicy.VOLATILE)
     if topic.startswith("/wisepack/kpi/"):
         # KPIs are STATE, not telemetry. Latched, so a dashboard attaching
         # mid-run renders the current values instead of "not measured".

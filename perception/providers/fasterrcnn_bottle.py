@@ -1,15 +1,22 @@
-"""HARMONY bottle detector -> generic WISEPACK perception observations.
+"""`fasterrcnn_bottle` — a WISEPACK perception provider.
 
-THIS IS THE ONLY MODULE IN `wisepack_core` THAT KNOWS WHAT A BOTTLE IS, and it
-knows it for exactly one reason: to stop knowing it. HARMONY detects bottles
-because a bottle is a convenient physical proxy for the cylindrical workpieces
-WISEPACK handles. Everything downstream of this file sees a
-``PhysicalObservation`` of a ``cylindrical_proxy`` and nothing else.
+THE ONLY MODULE IN WISEPACK THAT KNOWS WHAT A BOTTLE IS, and it knows it for
+exactly one reason: to stop knowing it. Everything on the WISEPACK side of this
+file sees a ``PhysicalObservation`` of a ``cylindrical_proxy`` and nothing else.
 
-    HARMONY result JSON  ->  [this adapter]  ->  ObservationBatch
-                                                      |
-                                        packing / workflow / validation
-                                        (future) Isaac scene synchronizer
+    camera frame -> [Faster R-CNN + ArUco] -> [this provider] -> ObservationBatch
+                                                                      |
+                                                    packing / workflow / validation
+                                                    (future) Isaac scene synchronizer
+
+PROVENANCE, NOT ARCHITECTURE. The detector implementation is the bottle detector
+developed in HARMONY (`ai-bottle-detector-fiware`), reused rather than rewritten.
+WISEPACK owns perception; HARMONY contributes one provider behind this boundary.
+A second provider — YOLO/OBB, RGB-D pose, segmentation — is a sibling file, not
+a change to anything above.
+
+BOTTLES ARE PHYSICAL PROXIES for the cylindrical workpieces WISEPACK packages.
+That is a fact about the objects on the table, and it stops at this file.
 
 WHAT HARMONY ACTUALLY PRODUCES (verified against the repository, not assumed)
 ----------------------------------------------------------------------------
@@ -46,14 +53,38 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Mapping, Optional, Sequence
 
-from .perception import (
+import os
+import sys
+
+# `wisepack_core` is the DOMAIN, imported from the workspace source tree exactly
+# as the ROS nodes and the dashboard import it. The provider depends on the core;
+# the core has no idea this file exists.
+_REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+_CORE = os.path.join(_REPO, "wisepack_ws", "src", "wisepack_core")
+if _CORE not in sys.path:
+    sys.path.insert(0, _CORE)
+
+from wisepack_core.perception import (                             # noqa: E402
     BatchStatus, ObservationBatch, PerceptionSource, ProxyGeometry,
     WORKAREA_FRAME_ID, WorkAreaFrame,
 )
-from .domain import PhysicalObservation
+from wisepack_core.domain import PhysicalObservation                # noqa: E402
 
-#: Identifies the detector in every observation's provenance (§11).
-HARMONY_DETECTOR = "harmony_bottle_detector/fasterrcnn_resnet50_fpn"
+#: The provider's own identity, as selected by WISEPACK_PERCEPTION_DETECTOR.
+PROVIDER_NAME = "fasterrcnn_bottle"
+
+#: Where this implementation came from. Diagnostics and provenance only — it is
+#: never an architectural label and never appears in an operator-facing
+#: description of the perception subsystem.
+IMPLEMENTATION_ORIGIN = "HARMONY"
+
+#: What the operator sees when the dashboard names the detector.
+DISPLAY_NAME = "Faster R-CNN"
+
+#: Identifies the detector in every observation's provenance (§11). Specific
+#: enough to reproduce a result years later; carried as DATA, never as a type.
+DETECTOR_ID = "fasterrcnn_resnet50_fpn/bottle"
+
 
 #: The HARMONY class label the observations were derived from. Kept as
 #: provenance so a later analyst can tell what physically stood on the table,
@@ -63,10 +94,6 @@ HARMONY_DETECTOR_CLASS = "bottle"
 #: The coordinate HARMONY's `pipeline.py` substitutes when the ArUco homography
 #: is unavailable. Not a position — a marker for "calibration missing".
 UNCALIBRATED_SENTINEL = (1.0, 1.0)
-
-
-class HarmonyAdapterError(ValueError):
-    """Raised when a HARMONY payload cannot be interpreted at all."""
 
 
 def _objects_of(payload: Any) -> Optional[Sequence[Any]]:
@@ -146,7 +173,7 @@ def observations_from_harmony(
         frame: Optional[WorkAreaFrame] = None,
         calibration_status: Optional[str] = None,
         calibration_revision: str = "",
-        source: str = PerceptionSource.HARMONY_CAMERA.value,
+        source: str = PerceptionSource.CAMERA.value,
 ) -> ObservationBatch:
     """Convert one HARMONY detector result into a domain-neutral batch.
 
@@ -168,7 +195,7 @@ def observations_from_harmony(
             batch_id=batch_id, source=source, error=reason,
             frame_id=frame.frame_id, captured_at=captured_at,
             requested_at=requested_at,
-            detector=HARMONY_DETECTOR, model_id=model_id,
+            detector=DETECTOR_ID, model_id=model_id,
             calibration_status=calibration_status or "unknown",
             calibration_revision=calibration_revision,
             detector_status=_detector_status(payload))
@@ -218,7 +245,7 @@ def observations_from_harmony(
             object_type="cylindrical_proxy",
             source=source,
             frame_id=frame.frame_id,
-            detector=HARMONY_DETECTOR,
+            detector=DETECTOR_ID,
             model_id=model_id,
             detector_class=str(entry.get("class") or HARMONY_DETECTOR_CLASS),
             detector_object_index=index,
@@ -274,7 +301,7 @@ def observations_from_harmony(
         frame_id=frame.frame_id,
         captured_at=captured_at,
         requested_at=requested_at,
-        detector=HARMONY_DETECTOR,
+        detector=DETECTOR_ID,
         model_id=model_id,
         calibration_status=resolved_calibration,
         calibration_revision=calibration_revision,
@@ -295,14 +322,15 @@ def parse_harmony_json(text: str, **kwargs: Any) -> ObservationBatch:
         batch_id = str(kwargs.get("batch_id", "batch-0"))
         return ObservationBatch.failed(
             batch_id=batch_id,
-            source=str(kwargs.get("source", PerceptionSource.HARMONY_CAMERA.value)),
+            source=str(kwargs.get("source", PerceptionSource.CAMERA.value)),
             error=f"malformed HARMONY message: not valid JSON ({exc})",
-            detector=HARMONY_DETECTOR,
+            detector=DETECTOR_ID,
             frame_id=WORKAREA_FRAME_ID)
     return observations_from_harmony(payload, **kwargs)
 
 
 __all__ = [
-    "HARMONY_DETECTOR", "HARMONY_DETECTOR_CLASS", "UNCALIBRATED_SENTINEL",
-    "HarmonyAdapterError", "observations_from_harmony", "parse_harmony_json",
+    "PROVIDER_NAME", "IMPLEMENTATION_ORIGIN", "DISPLAY_NAME", "DETECTOR_ID",
+    "HARMONY_DETECTOR_CLASS", "UNCALIBRATED_SENTINEL",
+    "observations_from_harmony", "parse_harmony_json",
 ]

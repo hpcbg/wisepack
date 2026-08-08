@@ -315,7 +315,7 @@ class PhysicalObservation:
     z_mm: float = 0.0
     confidence: Optional[float] = None
     object_type: str = "cylindrical_proxy"
-    source: str = "unknown"                 # perception source id, e.g. harmony_camera
+    source: str = "unknown"                 # perception source id, e.g. camera
     frame_id: str = "wisepack_workarea"
     #: -- provenance (§11): enough to debug or re-analyse this detection later --
     detector: str = ""                      # detector/model family identification

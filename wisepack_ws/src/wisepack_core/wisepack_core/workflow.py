@@ -64,7 +64,7 @@ class PerceptionUnavailable(RuntimeError):
 
     Deliberately NOT caught-and-substituted anywhere. §15 forbids a failed
     camera scan from silently falling back to simulated detections while the
-    interface still claims `harmony_camera`, so a physical perception failure
+    interface still claims a real camera, so a physical perception failure
     stops the run and shows itself. Switching back to the simulator is an
     explicit configuration change by the operator, never an automatic one.
     """
@@ -325,10 +325,10 @@ class WorkflowEngine:
 
         ONE SEAM, TWO SOURCES, selected by ``config.perception_source``:
 
-          sim             the existing simulated detector — unchanged, still the
-                          default, still labelled `simulated` everywhere.
-          harmony_camera  a real camera frame through the HARMONY Faster R-CNN
-                          detector, adapted into domain-neutral observations.
+          sim     the existing simulated detector — unchanged, still the
+                  default, still labelled `simulated` everywhere.
+          camera  a real camera frame, measured by whichever perception
+                  provider is configured, as domain-neutral observations.
 
         Everything after this method is identical in both cases: the planner,
         the validator, the approval gate and the execution backend cannot tell
@@ -408,8 +408,8 @@ class WorkflowEngine:
                 source=source.value,
                 error=("no perception provider is connected — "
                        f"{source.value} was selected but nothing is wired to "
-                       "fetch detections. Start the HARMONY perception service "
-                       "and check WISEPACK_HARMONY_SERVICE_URL."))
+                       "fetch detections. Start the WISEPACK perception service "
+                       "and check WISEPACK_PERCEPTION_SERVICE_URL."))
         else:
             try:
                 batch = self.observation_provider()
@@ -504,9 +504,10 @@ class WorkflowEngine:
                        # Mean of the detector's own confidences. NOT a detection
                        # rate and never reported as one.
                        "mean_confidence": batch.mean_confidence,
-                       "note": ("real detector output; physical bottles are "
-                                "proxies for cylindrical workpieces. Detector "
-                                "confidence is not a measured detection rate."),
+                       "note": ("real detector output; the observed objects are "
+                                "physical proxies for cylindrical workpieces. "
+                                "Detector confidence is not a measured "
+                                "detection rate."),
                    })
         return detected
 

@@ -1,27 +1,37 @@
 #!/usr/bin/env python3
-"""WISEPACK HARMONY perception service — the single owner of the camera.
+"""WISEPACK perception service — the host process that owns the camera.
 
-WHAT THIS IS, AND WHY IT EXISTS AT ALL
---------------------------------------
-It runs HARMONY's detector. It does not reimplement it. `camera.Camera`,
-`pipeline.process_frame` (Faster R-CNN + ArUco homography + bottle/cap matching
-+ position/yaw), and — when ROS 2 is available — `ros2_backend`'s node and its
-four topics are all imported from the HARMONY repository and used as they are.
-Nothing in this file computes a position, an angle or a confidence.
+WHAT THIS IS
+------------
+The WISEPACK-owned perception service. It is generic: it captures frames,
+answers health, runs one-shot detections, keeps the raw and annotated images,
+and returns `ObservationBatch` documents. It knows nothing about neural
+networks, bottles, or where any detector came from.
 
-What it adds is the seam WISEPACK needs and HARMONY does not have:
+Everything detector-specific lives behind the PROVIDER boundary in
+`perception/providers/`. Today that is `fasterrcnn_bottle`, which reuses the
+Faster R-CNN + ArUco implementation developed in HARMONY rather than rewriting
+it. Selecting a different provider — YOLO/OBB, RGB-D pose, segmentation — is
+`WISEPACK_PERCEPTION_DETECTOR`, and changes nothing in this file.
 
-  * HARMONY's DDS-native backend (`AI_BACKEND=ros2`) has NO image preview. Its
-    preview endpoints live only in `main.py`, which is the legacy NGSI-v2
-    FastAPI service — and §8 forbids requiring that stack merely to see a
-    picture. Running both would also mean TWO PROCESSES OPENING THE SAME
-    CAMERA, which `cv2.VideoCapture` does not survive.
-  * So: one process owns the camera, and serves both interfaces from it. The
-    smallest clean preview service §8 asks for, plus HARMONY's own ROS 2 topics
-    published from the same frames.
+WHY IT RUNS ON THE HOST
+-----------------------
+The host owns the camera, the GPU, torch, torchvision, OpenCV and the model
+weights. The WISEPACK ROS 2 / Vulcanexus / Fast DDS stack runs in its CONTAINER,
+where none of those exist. So perception is a host process and the container
+reaches it over HTTP at `WISEPACK_PERCEPTION_SERVICE_URL`.
 
-  * It converts detections into domain-neutral WISEPACK observations before
-    they leave, so nothing outside this directory ever parses bottle JSON.
+HTTP ONLY, DELIBERATELY. This service publishes no DDS and imports no rclpy: it
+would otherwise need a host ROS 2 installation, and WISEPACK's validated
+middleware is the CONTAINERIZED Vulcanexus runtime — the one whose TypeObject
+propagation the Orion-LD DDS Enabler depends on. Duplicating middleware on the
+host to publish from here would create a second, unvalidated path. The
+orchestrator (inside the container, on Vulcanexus) fetches batches over HTTP and
+publishes `/wisepack/perception/*` itself, so the DDS/NGSI-LD contract is
+unchanged and still travels the validated route.
+
+ONE OWNER OF THE CAMERA. `cv2.VideoCapture` does not survive two processes on
+one device, so this is the only process that opens it. The dashboard never does.
 
 INTERFACES
 ----------
@@ -33,20 +43,15 @@ INTERFACES
     GET  /api/v1/detection/image/annotated  the detector's annotated result
     GET  /api/v1/detection/image/raw        the exact frame that was analysed
 
-    ROS 2 (optional, only when rclpy is importable):
-      subscribe  /bottle_detection/command        HARMONY's own trigger (START)
-      publish    /bottle_detection/{status_json,bottle_count,pick_pose_json,
-                                    result_json}          HARMONY's own contract
-      publish    /wisepack/perception/{status_json,objects_json}
-                                                          the WISEPACK adapter
-
-INFERENCE IS ONE-SHOT (§6). The MJPEG preview is raw frames only; Faster R-CNN
+INFERENCE IS ONE-SHOT (§6). The MJPEG preview is raw frames only; the detector
 runs when someone asks for a detection and not otherwise. A 50 ms preview loop
 driving a half-second inference would produce a plan that changes under the
 operator while they read it.
 
-    WISEPACK_PERCEPTION_SOURCE=harmony_camera \\
-    python3 perception/harmony_perception_service.py --port 22101
+    <detector-python> perception/perception_service.py --port 22101
+
+Normally you do not run this by hand: the launcher starts it when
+`WISEPACK_PERCEPTION_SOURCE=camera`.
 """
 
 from __future__ import annotations
@@ -64,19 +69,19 @@ from typing import Any, Dict, Optional
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(HERE)
 
-for _pkg in ("wisepack_core",):
-    _path = os.path.join(REPO, "wisepack_ws", "src", _pkg)
+for _path in (os.path.join(REPO, "wisepack_ws", "src", "wisepack_core"), HERE):
     if _path not in sys.path:
         sys.path.insert(0, _path)
 
 from wisepack_core.events import utc_now_iso                       # noqa: E402
-from wisepack_core.harmony_adapter import (                        # noqa: E402
-    HARMONY_DETECTOR, observations_from_harmony,
-)
 from wisepack_core.perception import (                             # noqa: E402
     ObservationBatch, PerceptionHealth, PerceptionSource, ProxyGeometry,
-    WorkAreaFrame, resolve_model_path,
+    WorkAreaFrame, resolve_detector, resolve_model_path,
 )
+# THE ONLY detector-aware import in this file. One provider exists today; when a
+# second is added this becomes a lookup on `resolve_detector()` and nothing else
+# in the service changes.
+from providers import fasterrcnn_bottle as PROVIDER                 # noqa: E402
 
 #: Where the HARMONY checkout lives. A DOCUMENTED DEFAULT for the ARISE
 #: demonstrator host, overridable, and never assumed to exist: absence is
@@ -164,12 +169,12 @@ def build_harmony_config(model_path: Optional[str] = None,
     """HARMONY's configuration for THIS run: its template + WISEPACK overrides.
 
     NO CAMERA DEVICE IS HARDCODED beyond the template's documented default —
-    `WISEPACK_HARMONY_CAMERA` (or HARMONY's own `AI_CAMERA`, honoured so an
+    `WISEPACK_PERCEPTION_CAMERA` (or HARMONY's own `AI_CAMERA`, honoured so an
     operator's existing habit keeps working) selects it.
     """
     env = os.environ if env is None else env
     config = _template_config(harmony_path())
-    camera = (env.get("WISEPACK_HARMONY_CAMERA")
+    camera = (env.get("WISEPACK_PERCEPTION_CAMERA")
               or env.get("AI_CAMERA")
               or "").strip()
     if camera:
@@ -178,8 +183,8 @@ def build_harmony_config(model_path: Optional[str] = None,
         # Absolute, so HARMONY's relative-path resolution is bypassed and the
         # weights that get loaded are unambiguously the ones we resolved.
         config["MODEL_PATH"] = os.path.abspath(model_path)
-    for key, name in (("WIDTH", "WISEPACK_HARMONY_WIDTH"),
-                      ("HEIGHT", "WISEPACK_HARMONY_HEIGHT")):
+    for key, name in (("WIDTH", "WISEPACK_PERCEPTION_WIDTH"),
+                      ("HEIGHT", "WISEPACK_PERCEPTION_HEIGHT")):
         raw = str(env.get(name, "") or "").strip()
         if raw.isdigit():
             config[key] = int(raw)
@@ -253,6 +258,9 @@ class DetectorRuntime:
         self._process_frame = None
         self._pipeline = None
         self._batch_counter = 0
+        # WHICH PROVIDER. Resolved once, so an unknown name fails at start-up
+        # rather than at the first detection.
+        self.detector = resolve_detector()
         self.model = resolve_model_path(harmony_dir=harmony_path())
         self.config = build_harmony_config(self.model.path)
         self.work_area = work_area_from_config(self.config)
@@ -390,7 +398,7 @@ class DetectorRuntime:
         with self._lock:
             self._batch_counter += 1
             batch_id = f"batch-{self._batch_counter:03d}"
-            source = PerceptionSource.HARMONY_CAMERA.value
+            source = PerceptionSource.CAMERA.value
             # TWO DIFFERENT INSTANTS, AND THEY ARE NOT INTERCHANGEABLE.
             #
             # `requested_at` is now. `captured_at` is whenever the camera
@@ -412,7 +420,7 @@ class DetectorRuntime:
                     # NO capture time: no frame was acquired. Inventing one would
                     # assert a measurement that never happened.
                     captured_at="", requested_at=requested_at,
-                    detector=HARMONY_DETECTOR,
+                    detector=PROVIDER.DETECTOR_ID,
                     frame_id=self.work_area.frame_id)
 
             frame = self.frame()
@@ -421,7 +429,7 @@ class DetectorRuntime:
                     batch_id=batch_id, source=source,
                     error=self.last_error or "no camera frame available",
                     captured_at="", requested_at=requested_at,
-                    detector=HARMONY_DETECTOR,
+                    detector=PROVIDER.DETECTOR_ID,
                     model_id=self.model.path or "", frame_id=self.work_area.frame_id)
 
             # THE FRAME IS IN HAND — this is the measurement instant. Stamped
@@ -436,7 +444,7 @@ class DetectorRuntime:
                 return ObservationBatch.failed(
                     batch_id=batch_id, source=source, error=self.last_error,
                     captured_at=captured_at, requested_at=requested_at,
-                    detector=HARMONY_DETECTOR,
+                    detector=PROVIDER.DETECTOR_ID,
                     model_id=self.model.path or "",
                     frame_id=self.work_area.frame_id)
 
@@ -448,7 +456,7 @@ class DetectorRuntime:
             self.last_raw = self.jpeg(frame)
             self.last_inference_at = captured_at
 
-            batch = observations_from_harmony(
+            batch = PROVIDER.observations_from_harmony(
                 result,
                 batch_id=batch_id,
                 captured_at=captured_at,
@@ -468,7 +476,7 @@ class DetectorRuntime:
     def health(self) -> Dict[str, Any]:
         batch = self.last_batch
         health = PerceptionHealth(
-            source=PerceptionSource.HARMONY_CAMERA.value,
+            source=PerceptionSource.CAMERA.value,
             service_reachable=True,
             camera_configured=self.config.get("CAMERA") is not None,
             camera_available=self.camera_available,
@@ -480,19 +488,27 @@ class DetectorRuntime:
             last_inference_at=self.last_inference_at,
             last_error=self.last_error,
             detected_objects=(batch.count if batch and batch.ok else None),
-            detector=HARMONY_DETECTOR,
+            detector=PROVIDER.DETECTOR_ID,
         ).to_dict()
         health.update({
-            "harmony_path": harmony_path(),
-            "harmony_available": os.path.isdir(harmony_path()),
+            # THE PROVIDER, named generically. `implementation_origin` is
+            # provenance for diagnostics — it is never the architectural
+            # identity of the perception subsystem, and the dashboard shows the
+            # display name rather than this.
+            "provider": self.detector,
+            "detector_display_name": PROVIDER.DISPLAY_NAME,
+            "implementation_origin": PROVIDER.IMPLEMENTATION_ORIGIN,
+            "provider_path": harmony_path(),
+            "provider_available": os.path.isdir(harmony_path()),
             "model": self.model.to_dict(),
             "proxy_geometry": self.geometry.to_dict(),
             "work_area": self.work_area.to_dict(),
             "camera": self.config.get("CAMERA"),
             "last_batch_status": (batch.status.value if batch else "none"),
             "batches": self._batch_counter,
-            "note": ("Physical bottles are used as proxies for cylindrical "
-                     "workpieces. Detector confidence is not a detection rate."),
+            "note": ("Physical bottles are currently used as proxies for "
+                     "cylindrical workpieces. Detector confidence is not a "
+                     "detection rate."),
         })
         return health
 
@@ -504,189 +520,49 @@ class DetectorRuntime:
 
 
 # --------------------------------------------------------------------------- #
-# Optional ROS 2 bridge
+# No middleware here — on purpose
 # --------------------------------------------------------------------------- #
-
-#: The WISEPACK-domain perception topics. Declared here AND in
-#: `wisepack_bringup.topics`; a test asserts the two agree, because a service
-#: that cannot import the ROS contract (it runs outside the ROS container) still
-#: must not be able to drift from it.
-WISEPACK_PERCEPTION_STATUS = "/wisepack/perception/status_json"
-WISEPACK_PERCEPTION_OBJECTS = "/wisepack/perception/objects_json"
-
-
-class RosBridge:
-    """Publishes HARMONY's own topics AND the WISEPACK adapter topics.
-
-    HARMONY's `Ros2DetectorBackend` is INSTANTIATED, NOT COPIED: its node, its
-    four publishers, its `/bottle_detection/command` subscription and its
-    START handling are HARMONY's code running here. Only its camera and its
-    pipeline are replaced — with this service's, so the camera has exactly one
-    owner (§8).
-
-    Absent rclpy is not an error. The HTTP interface is complete on its own, and
-    a perception service that refused to start outside a ROS container would be
-    unusable in the dashboard's `sim` mode.
-    """
-
-    def __init__(self, runtime: DetectorRuntime) -> None:
-        self.runtime = runtime
-        self.available = False
-        self.error = ""
-        self._backend = None
-        self._node = None
-        self._status_pub = None
-        self._objects_pub = None
-        self._thread: Optional[threading.Thread] = None
-        self._stop = threading.Event()
-
-    def start(self) -> None:
-        try:
-            # `rclpy` is an AVAILABILITY PROBE, not a use: HARMONY's own backend
-            # calls `rclpy.init()` itself, and this import is here so an absent
-            # ROS 2 becomes the reported state below rather than a traceback out
-            # of the FastAPI startup hook.
-            import rclpy                     # noqa: F401,PLC0415
-            from std_msgs.msg import String  # noqa: PLC0415
-        except ImportError as exc:
-            self.error = (f"ROS 2 not available ({exc}); the HTTP interface is "
-                          "unaffected")
-            return
-        harmony = harmony_path()
-        if harmony not in sys.path:
-            sys.path.insert(0, harmony)
-        try:
-            from ros2_backend import Ros2DetectorBackend      # noqa: PLC0415
-        except ImportError as exc:
-            self.error = f"HARMONY ros2_backend not importable: {exc}"
-            return
-
-        backend = Ros2DetectorBackend(detection_mode="real")
-        # THE CAMERA INJECTION. `_ensure_pipeline` would otherwise open a second
-        # `cv2.VideoCapture` on the same device. Setting both attributes makes it
-        # a no-op, so HARMONY's publish path runs unchanged over OUR frames.
-        backend._camera = _SharedCamera(self.runtime)
-        backend._process_frame = self._process_frame_for_harmony
-        self._backend = backend
-        self._node = backend._node
-        self._status_pub = self._node.create_publisher(
-            String, WISEPACK_PERCEPTION_STATUS, 10)
-        self._objects_pub = self._node.create_publisher(
-            String, WISEPACK_PERCEPTION_OBJECTS, 10)
-        self.available = True
-        self._thread = threading.Thread(target=self._spin, daemon=True)
-        self._thread.start()
-
-    def _process_frame_for_harmony(self, frame) -> Dict[str, Any]:
-        """Run the shared detection and hand HARMONY back its own result shape.
-
-        The detection itself goes through `DetectorRuntime.detect`, so a DDS
-        `START` and an HTTP POST produce the SAME batch, update the SAME preview
-        images and increment the SAME counter. Two trigger paths, one authority
-        over the physical observation — §7's "no duplicate authorities".
-        """
-        batch = self.runtime.detect()
-        self.publish_batch(batch)
-        bottles = [
-            {"x": obs.x_mm, "y": obs.y_mm, "yaw": obs.yaw_deg,
-             "conf": obs.confidence, "selected": index == 0}
-            for index, obs in enumerate(batch.observations)
-        ]
-        pick_pose = ({"x": bottles[0]["x"], "y": bottles[0]["y"],
-                      "rotation": bottles[0]["yaw"]} if bottles else {})
-        return {"bottles": bottles, "pick_pose": pick_pose,
-                "ai_processed_image": None, "processed_image": None}
-
-    def publish_batch(self, batch: ObservationBatch) -> None:
-        """Publish the WISEPACK-domain view of one batch. Never raises."""
-        if not self.available:
-            return
-        try:
-            from std_msgs.msg import String                   # noqa: PLC0415
-            objects = String()
-            objects.data = json.dumps(batch.to_dict())
-            self._objects_pub.publish(objects)
-            status = String()
-            status.data = json.dumps({
-                "status": batch.status.value,
-                "source": batch.source,
-                "count": batch.count,
-                "calibration_status": batch.calibration_status,
-                "captured_at": batch.captured_at,
-                "error": batch.error,
-            })
-            self._status_pub.publish(status)
-        except Exception as exc:                             # noqa: BLE001
-            self.error = f"ROS publish failed: {exc}"
-
-    def _spin(self) -> None:
-        import rclpy                                          # noqa: PLC0415
-        while not self._stop.is_set():
-            with contextlib.suppress(Exception):
-                rclpy.spin_once(self._node, timeout_sec=0.2)
-
-    def stop(self) -> None:
-        self._stop.set()
-        if self._backend is not None:
-            # The backend's own camera is ours; drop the reference first so its
-            # close() cannot release a camera the HTTP side is still serving.
-            self._backend._camera = None
-            with contextlib.suppress(Exception):
-                self._backend.close()
-
-
-class _SharedCamera:
-    """Adapts `DetectorRuntime` to the tiny surface HARMONY's backend expects."""
-
-    def __init__(self, runtime: DetectorRuntime) -> None:
-        self._runtime = runtime
-
-    def get_frame(self):
-        return self._runtime.frame(timeout_s=0.5)
-
-    def release(self) -> None:      # the runtime owns the lifetime, not HARMONY
-        pass
-
+#
+# THIS SERVICE PUBLISHES NO DDS AND IMPORTS NO rclpy.
+#
+# An earlier revision started a ROS 2 node here and sourced a ROS environment
+# for the subprocess. That was wrong for this deployment: WISEPACK's validated
+# middleware is the CONTAINERIZED Vulcanexus / Fast DDS runtime, the one the
+# Orion-LD DDS Enabler needs for TypeObject propagation. Publishing from the
+# host would have required a SECOND middleware installation there and would have
+# created a parallel, unvalidated path to the same NGSI-LD attributes — and
+# plain host ROS 2 is not equivalent to Vulcanexus for that purpose.
+#
+# So the WISEPACK-domain topics are published where the validated stack already
+# lives: `wisepack_orchestration.hitl_orchestrator`, inside the container, reads
+# batches from this service over HTTP and publishes
+# `/wisepack/perception/objects_json` and `/wisepack/perception/status_json`
+# itself. One authority, one middleware, unchanged DDS contract.
+#
+# It also means `./run_wisepack_dashboard.sh sim` needs no ROS anywhere.
 
 # --------------------------------------------------------------------------- #
 # HTTP application
 # --------------------------------------------------------------------------- #
 
 
-def create_app(runtime: Optional[DetectorRuntime] = None,
-               with_ros: Optional[bool] = None):
+def create_app(runtime: Optional[DetectorRuntime] = None):
     """Build the FastAPI application. FastAPI is imported HERE, not at module
     scope, so the helpers above stay importable (and testable) without it."""
     from fastapi import FastAPI, HTTPException                # noqa: PLC0415
     from fastapi.responses import Response, StreamingResponse  # noqa: PLC0415
 
     runtime = runtime or DetectorRuntime()
-    bridge = RosBridge(runtime)
-    if with_ros is None:
-        with_ros = str(os.environ.get("WISEPACK_HARMONY_ROS", "1")).strip() != "0"
 
-    app = FastAPI(title="WISEPACK HARMONY perception service")
-
-    @app.on_event("startup")
-    def _startup() -> None:
-        if with_ros:
-            bridge.start()
-        else:
-            # DISABLED ON PURPOSE is not the same as FAILED TO START, and
-            # `available: false` with an empty reason reads like a silent
-            # failure. Say which one it is.
-            bridge.error = "ROS publishing disabled (--no-ros)"
+    app = FastAPI(title="WISEPACK perception service")
 
     @app.on_event("shutdown")
     def _shutdown() -> None:
-        bridge.stop()
         runtime.close()
 
     @app.get("/health")
     def health() -> Dict[str, Any]:
-        payload = runtime.health()
-        payload["ros"] = {"available": bridge.available, "error": bridge.error}
-        return payload
+        return runtime.health()
 
     @app.get("/api/v1/camera/snapshot")
     def snapshot():
@@ -727,9 +603,7 @@ def create_app(runtime: Optional[DetectorRuntime] = None,
         calibration sheet is out of frame" is exactly as useful as a list of
         objects. An HTTP 500 would lose it.
         """
-        batch = runtime.detect()
-        bridge.publish_batch(batch)
-        return batch.to_dict()
+        return runtime.detect().to_dict()
 
     @app.get("/api/v1/camera/last-detection")
     def last_detection() -> Dict[str, Any]:
@@ -757,9 +631,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=int(
-        os.environ.get("WISEPACK_HARMONY_SERVICE_PORT", DEFAULT_PORT)))
-    parser.add_argument("--no-ros", action="store_true",
-                        help="do not publish the ROS 2 / DDS topics")
+        os.environ.get("WISEPACK_PERCEPTION_SERVICE_PORT", DEFAULT_PORT)))
     parser.add_argument("--check", action="store_true",
                         help="print the resolved configuration and exit")
     args = parser.parse_args()
@@ -774,8 +646,8 @@ def main() -> None:
         print(f"[perception] WARNING: {runtime.model.message}", file=sys.stderr)
 
     import uvicorn                                            # noqa: PLC0415
-    uvicorn.run(create_app(runtime, with_ros=not args.no_ros),
-                host=args.host, port=args.port, log_level="warning")
+    uvicorn.run(create_app(runtime), host=args.host, port=args.port,
+                log_level="warning")
 
 
 if __name__ == "__main__":

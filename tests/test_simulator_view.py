@@ -515,10 +515,18 @@ def test_cleanup_never_touches_unrelated_services(script):
     checks for the ACTIONS rather than for the words.
     """
     code = _code(script)
-    for reckless in ("pkill", "killall", "systemctl", "service ",
-                     "kill -9 $(pgrep"):
+    for reckless in ("pkill", "killall", "systemctl", "kill -9 $(pgrep"):
         assert reckless not in code.lower(), \
             f"{os.path.basename(script)} uses {reckless!r}"
+    # `service` is checked as a COMMAND, not as a substring. A bare
+    # `"service "` also matched ordinary identifiers such as
+    # `harmony_ensure_service "$REPO"` and operator-facing text like
+    # "detector service : ready" — neither of which acts on anything. The rule
+    # this test enforces is about invoking `service <name> <verb>`.
+    import re as _re
+    for line in code.splitlines():
+        assert not _re.match(r'\s*(sudo\s+)?service\s+\S', line), \
+            f"{os.path.basename(script)} invokes `service`: {line.strip()}"
     # And no signal is ever sent to a process the launcher did not start: every
     # kill targets a RECORDED pid/group variable, never a name or a pattern.
     import re as _re

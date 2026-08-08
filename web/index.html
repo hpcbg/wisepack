@@ -1733,7 +1733,14 @@ async function refreshPerception() {
 
   const h = doc.health || {};
   const b = doc.batch;
-  $("#percep-source").textContent = `Source: ${doc.perception_source_label || ""}`;
+  // GENERIC ARCHITECTURE, SPECIFIC PROVENANCE. The source names what WISEPACK
+  // is doing ("PHYSICAL CAMERA"); the detector names the method actually in use.
+  // Neither is the name of whoever wrote the implementation — that is
+  // provenance and lives in Diagnostics.
+  const detector = h.detector_display_name || h.detector || "";
+  $("#percep-source").textContent =
+    `Source: ${doc.perception_source_label || ""}` +
+    (detector ? ` · Detector: ${detector}` : "");
   const badge = $("#percep-badge");
   // The badge tracks the CAMERA, not the panel's existence: a panel that always
   // says "CAMERA" while the camera is unplugged is worse than no badge.
@@ -1743,6 +1750,7 @@ async function refreshPerception() {
 
   const bits = [];
   bits.push("Camera: " + percepTri(h.camera_available, "connected", "unavailable", "unknown"));
+  if (h.provider) bits.push("Provider: " + h.provider);
   bits.push("Model: " + percepTri(h.model_loaded, "loaded",
     percepTri(h.model_available, "available, not loaded", "unavailable", "unknown"), "unknown"));
   bits.push("Calibration: " + (h.calibration_valid ? "VALID"

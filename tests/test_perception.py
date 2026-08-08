@@ -35,15 +35,18 @@ for _extra in (os.path.join(REPO, "web"), os.path.join(REPO, "perception")):
 
 from wisepack_core.domain import PhysicalObservation, WasteItem   # noqa: E402
 from wisepack_core.execution import ExecutionBackend              # noqa: E402
-from wisepack_core.harmony_adapter import (                       # noqa: E402
-    HARMONY_DETECTOR, UNCALIBRATED_SENTINEL, observations_from_harmony,
+# THE PROVIDER, imported from `perception/providers/` — the only detector-aware
+# code in the system. `wisepack_core` deliberately no longer contains it.
+from providers.fasterrcnn_bottle import (                          # noqa: E402
+    DETECTOR_ID, UNCALIBRATED_SENTINEL, observations_from_harmony,
     parse_harmony_json,
 )
 from wisepack_core.packing import OptimizerConfig                 # noqa: E402
 from wisepack_core.perception import (                            # noqa: E402
-    ARISE_MODEL_PATH, BatchStatus, HUGGINGFACE_REPO, ObservationBatch,
-    PerceptionConfigError, PerceptionSource, ProxyGeometry, WorkAreaFrame,
-    is_stale, resolve_model_path, resolve_perception_source,
+    ARISE_MODEL_PATH, BatchStatus, DEFAULT_DETECTOR, HUGGINGFACE_REPO,
+    KNOWN_DETECTORS, ObservationBatch, PerceptionConfigError, PerceptionSource,
+    ProxyGeometry, WorkAreaFrame, is_stale, resolve_detector, resolve_model_path,
+    resolve_perception_source,
 )
 from wisepack_core.workflow import (                              # noqa: E402
     PerceptionUnavailable, WorkflowConfig, WorkflowEngine,
@@ -76,6 +79,33 @@ def _batch(payload=None, **kw) -> ObservationBatch:
         HARMONY_RESULT if payload is None else payload, **kw)
 
 
+def _code_without_prose(text: str) -> str:
+    """Source with comment lines AND docstrings removed.
+
+    Docstrings are located with `ast` rather than by matching quotes, so a
+    triple quote inside an ordinary string cannot confuse it. Needed because
+    these modules DOCUMENT the rule they obey — `domain.py` says in prose that
+    nothing there names a bottle or a detector — and a substring check that
+    could not tell a prohibition from the thing prohibited would forbid writing
+    the rule down.
+    """
+    import ast
+    lines = text.splitlines()
+    drop = set()
+    for node in ast.walk(ast.parse(text)):
+        if not isinstance(node, (ast.Module, ast.ClassDef, ast.FunctionDef,
+                                 ast.AsyncFunctionDef)):
+            continue
+        body = getattr(node, "body", None)
+        if (body and isinstance(body[0], ast.Expr)
+                and isinstance(body[0].value, ast.Constant)
+                and isinstance(body[0].value.value, str)):
+            doc = body[0].value
+            drop.update(range(doc.lineno - 1, (doc.end_lineno or doc.lineno)))
+    return "\n".join(line for i, line in enumerate(lines)
+                      if i not in drop and not line.lstrip().startswith("#"))
+
+
 def _engine(**kw) -> WorkflowEngine:
     """A fast engine. `isaac_cylinders_smoke` keeps the optimizer sub-second."""
     config = WorkflowConfig(
@@ -99,13 +129,13 @@ def test_default_perception_source_is_simulated(monkeypatch):
 
 
 def test_perception_source_selected_from_environment(monkeypatch):
-    monkeypatch.setenv("WISEPACK_PERCEPTION_SOURCE", "harmony_camera")
-    assert resolve_perception_source() is PerceptionSource.HARMONY_CAMERA
-    assert PerceptionSource.HARMONY_CAMERA.is_physical
+    monkeypatch.setenv("WISEPACK_PERCEPTION_SOURCE", "camera")
+    assert resolve_perception_source() is PerceptionSource.CAMERA
+    assert PerceptionSource.CAMERA.is_physical
 
 
 def test_explicit_argument_overrides_environment(monkeypatch):
-    monkeypatch.setenv("WISEPACK_PERCEPTION_SOURCE", "harmony_camera")
+    monkeypatch.setenv("WISEPACK_PERCEPTION_SOURCE", "camera")
     assert resolve_perception_source("sim") is PerceptionSource.SIM
 
 
@@ -118,7 +148,7 @@ def test_unknown_perception_source_is_an_error_not_a_silent_fallback():
     """A typo must NOT quietly run the simulator behind a camera label."""
     with pytest.raises(PerceptionConfigError) as exc:
         resolve_perception_source("harmony-camera")
-    assert "harmony_camera" in str(exc.value)      # names the valid spelling
+    assert "camera" in str(exc.value)      # names the valid spelling
 
 
 def test_the_dashboard_never_downgrades_an_invalid_source_to_sim():
@@ -127,7 +157,7 @@ def test_the_dashboard_never_downgrades_an_invalid_source_to_sim():
     It caught the exception, set the source to `sim`, and put the reason in a
     `config_error` field whose only renderer sits behind an early return that a
     non-physical source never passes. Net effect:
-    `WISEPACK_PERCEPTION_SOURCE=harmony-camera` (hyphen, not underscore) started
+    an unrecognised `WISEPACK_PERCEPTION_SOURCE` started
     a dashboard producing SIMULATED detections for an operator who had asked for
     a camera, with nothing on screen to say so.
 
@@ -172,7 +202,7 @@ def test_dashboard_and_orchestrator_resolve_the_source_identically():
 
 @pytest.mark.parametrize("value,expected", [
     ("sim", PerceptionSource.SIM),
-    ("harmony_camera", PerceptionSource.HARMONY_CAMERA),
+    ("camera", PerceptionSource.CAMERA),
 ])
 def test_valid_sources_are_accepted_from_the_environment(monkeypatch, value,
                                                          expected):
@@ -184,8 +214,8 @@ def test_valid_sources_are_accepted_from_the_environment(monkeypatch, value,
 
 
 @pytest.mark.parametrize("bad", [
-    "harmony-camera",       # the reported typo: hyphen instead of underscore
-    "harmony", "camera", "HARMONY_CAM", "real", "true", "1",
+    "harmony_camera",       # the value this branch used before the refactor
+    "harmony-camera", "cam", "kamera", "physical", "real", "true", "1",
 ])
 def test_an_invalid_source_never_resolves_to_sim(monkeypatch, bad):
     """The core contract the dashboard now relies on: raise, never downgrade."""
@@ -194,7 +224,7 @@ def test_an_invalid_source_never_resolves_to_sim(monkeypatch, bad):
         resolve_perception_source()
     message = str(exc.value)
     assert bad.lower() in message.lower()       # names what was wrong
-    assert "harmony_camera" in message          # names the valid spelling
+    assert "known: sim, camera" in message      # names the valid spellings
 
 
 def test_an_invalid_source_stops_the_dashboard_process(monkeypatch):
@@ -206,15 +236,15 @@ def test_an_invalid_source_stops_the_dashboard_process(monkeypatch):
     pytest.importorskip("fastapi",
                         reason="the dashboard needs FastAPI to start")
     import subprocess
-    env = {**os.environ, "WISEPACK_PERCEPTION_SOURCE": "harmony-camera"}
+    env = {**os.environ, "WISEPACK_PERCEPTION_SOURCE": "harmony_camera"}
     proc = subprocess.run(
         [sys.executable, os.path.join(REPO, "web", "app.py"),
          "--source", "sim", "--port", "0"],
         capture_output=True, text=True, timeout=120, env=env, cwd=REPO)
     assert proc.returncode != 0, "the dashboard started despite an invalid source"
     combined = proc.stdout + proc.stderr
-    assert "harmony-camera" in combined and "harmony_camera" in combined, (
-        "the failure must name both the bad value and the valid spelling")
+    assert "harmony_camera" in combined and "known: sim, camera" in combined, (
+        "the failure must name both the bad value and the valid spellings")
     assert "SIMULATED PERCEPTION" not in combined
 
 
@@ -238,7 +268,7 @@ def test_harmony_result_becomes_generic_observations():
     batch = _batch()
     assert batch.status is BatchStatus.OK
     assert batch.count == 3
-    assert batch.source == PerceptionSource.HARMONY_CAMERA.value
+    assert batch.source == PerceptionSource.CAMERA.value
     for obs in batch.observations:
         assert isinstance(obs, PhysicalObservation)
         # DOMAIN-NEUTRAL: the object type says cylinder, not bottle.
@@ -269,8 +299,8 @@ def test_detector_provenance_is_retained():
     """§11: enough to debug or re-analyse a detection months later."""
     batch = _batch()
     obs = batch.observations[0]
-    assert obs.source == "harmony_camera"
-    assert obs.detector == HARMONY_DETECTOR
+    assert obs.source == "camera"
+    assert obs.detector == DETECTOR_ID
     assert obs.model_id.endswith("best_model.pth")
     assert obs.captured_at == "2026-08-08T10:00:00.000Z"
     assert obs.detector_object_index == 0
@@ -506,7 +536,7 @@ def test_a_failed_batch_must_carry_a_reason():
 
 def test_physical_observations_become_the_batch_wisepack_plans_from():
     """§10: the rest of the system does not know where the objects came from."""
-    engine = _engine(perception_source=PerceptionSource.HARMONY_CAMERA)
+    engine = _engine(perception_source=PerceptionSource.CAMERA)
     engine.observation_provider = _batch
     engine.generate_or_load_scenario()
     detected = engine.scan_and_detect()
@@ -524,7 +554,7 @@ def test_physical_observations_become_the_batch_wisepack_plans_from():
 
 def test_repeated_detection_replaces_and_never_accumulates():
     """§6, the requirement that makes the batch atomic rather than incremental."""
-    engine = _engine(perception_source=PerceptionSource.HARMONY_CAMERA)
+    engine = _engine(perception_source=PerceptionSource.CAMERA)
     engine.observation_provider = _batch
     engine.generate_or_load_scenario()
     engine.scan_and_detect()
@@ -547,7 +577,7 @@ def test_repeated_detection_replaces_and_never_accumulates():
 
 def test_a_new_batch_revokes_an_outstanding_approval():
     """An approval is a decision about one batch. The objects moved; it lapses."""
-    engine = _engine(perception_source=PerceptionSource.HARMONY_CAMERA)
+    engine = _engine(perception_source=PerceptionSource.CAMERA)
     engine.observation_provider = _batch
     engine.generate_or_load_scenario()
     engine.scan_and_detect()
@@ -563,9 +593,9 @@ def test_a_new_batch_revokes_an_outstanding_approval():
 
 def test_a_failed_scan_never_falls_back_to_simulated_detections():
     """§15's headline rule, asserted directly."""
-    engine = _engine(perception_source=PerceptionSource.HARMONY_CAMERA)
+    engine = _engine(perception_source=PerceptionSource.CAMERA)
     engine.observation_provider = lambda: ObservationBatch.failed(
-        batch_id="b", source="harmony_camera", error="camera disconnected")
+        batch_id="b", source="camera", error="camera disconnected")
     engine.generate_or_load_scenario()
     with pytest.raises(PerceptionUnavailable) as exc:
         engine.scan_and_detect()
@@ -581,7 +611,7 @@ def test_a_provider_that_raises_is_a_failed_scan_not_a_crash():
     def explode():
         raise ConnectionRefusedError("HARMONY service unavailable")
 
-    engine = _engine(perception_source=PerceptionSource.HARMONY_CAMERA)
+    engine = _engine(perception_source=PerceptionSource.CAMERA)
     engine.observation_provider = explode
     engine.generate_or_load_scenario()
     with pytest.raises(PerceptionUnavailable) as exc:
@@ -590,15 +620,15 @@ def test_a_provider_that_raises_is_a_failed_scan_not_a_crash():
 
 
 def test_a_missing_provider_says_what_to_start():
-    engine = _engine(perception_source=PerceptionSource.HARMONY_CAMERA)
+    engine = _engine(perception_source=PerceptionSource.CAMERA)
     engine.generate_or_load_scenario()
     with pytest.raises(PerceptionUnavailable) as exc:
         engine.scan_and_detect()
-    assert "WISEPACK_HARMONY_SERVICE_URL" in str(exc.value)
+    assert "WISEPACK_PERCEPTION_SERVICE_URL" in str(exc.value)
 
 
 def test_an_empty_physical_batch_plans_nothing_without_claiming_failure():
-    engine = _engine(perception_source=PerceptionSource.HARMONY_CAMERA)
+    engine = _engine(perception_source=PerceptionSource.CAMERA)
     engine.observation_provider = lambda: observations_from_harmony(
         {"status": "DONE", "bottles": []}, batch_id="b")
     engine.generate_or_load_scenario()
@@ -656,7 +686,7 @@ def _runtime(monkeypatch, clock, *, frame=_StubFrame(), calibrated=True,
     the three seams stubbed here, which is what makes the timestamp semantics
     testable in ordinary CI.
     """
-    import harmony_perception_service as svc
+    import perception_service as svc
     monkeypatch.setattr(svc, "utc_now_iso", lambda: next(clock))
     rt = svc.DetectorRuntime()
 
@@ -799,7 +829,7 @@ def test_an_unstamped_batch_is_not_reported_stale():
 
 def test_detector_confidence_never_becomes_a_detection_rate():
     """0.94 confidence must NOT surface as "vision detection rate = 94%"."""
-    engine = _engine(perception_source=PerceptionSource.HARMONY_CAMERA)
+    engine = _engine(perception_source=PerceptionSource.CAMERA)
     engine.observation_provider = _batch
     engine.generate_or_load_scenario()
     engine.scan_and_detect()
@@ -850,7 +880,7 @@ def test_every_perception_and_backend_combination_is_configurable(perception,
 
 def test_selecting_a_camera_does_not_change_the_execution_backend():
     assert WorkflowConfig(
-        perception_source=PerceptionSource.HARMONY_CAMERA
+        perception_source=PerceptionSource.CAMERA
     ).execution_backend is ExecutionBackend.SIMULATED
 
 
@@ -861,10 +891,10 @@ def test_selecting_isaac_does_not_change_the_perception_source():
 
 
 def test_the_engine_reports_both_axes_separately():
-    engine = _engine(perception_source=PerceptionSource.HARMONY_CAMERA,
+    engine = _engine(perception_source=PerceptionSource.CAMERA,
                      execution_backend=ExecutionBackend.ISAAC)
     state = engine.perception_state()
-    assert state["perception_source"] == "harmony_camera"
+    assert state["perception_source"] == "camera"
     assert state["physical"] is True
     # Nothing in the perception payload names or implies an execution backend.
     assert "isaac" not in json.dumps(state).lower()
@@ -966,11 +996,20 @@ def test_perception_channel_is_not_in_the_always_present_contract():
     assert T.PERCEPTION_STATUS not in T.all_topics()
 
 
-def test_the_detection_command_reuses_harmonys_own_topic():
-    """§7: trigger over HARMONY's contract rather than inventing a parallel one."""
+def test_the_orchestrator_is_the_single_dds_writer_for_perception():
+    """The host service publishes NO DDS; the container does.
+
+    The perception service speaks HTTP only, because WISEPACK's validated
+    middleware is the CONTAINERIZED Vulcanexus / Fast DDS runtime. Publishing
+    from the host would have needed a second, unvalidated middleware install
+    there. So the orchestrator — inside the container, on Vulcanexus — fetches
+    over HTTP and owns both perception topics.
+    """
     from wisepack_bringup import topics as T
-    assert T.HARMONY_DETECTION_COMMAND == "/bottle_detection/command"
-    assert T.PERCEPTION_WRITERS[T.HARMONY_DETECTION_COMMAND] == "wisepack_orchestration"
+    assert set(T.PERCEPTION_WRITERS) == {T.PERCEPTION_STATUS, T.PERCEPTION_OBJECTS}
+    assert set(T.PERCEPTION_WRITERS.values()) == {"wisepack_orchestration"}
+    assert not hasattr(T, "HARMONY_DETECTION_COMMAND"), (
+        "the WISEPACK contract must not name a provider's own topic")
 
 
 def test_detect_physical_objects_is_in_the_operator_vocabulary():
@@ -978,12 +1017,40 @@ def test_detect_physical_objects_is_in_the_operator_vocabulary():
     assert "detect_physical_objects" in T.OPERATOR_COMMANDS
 
 
-def test_the_service_and_the_contract_agree_on_the_topic_names():
-    """The service runs outside the ROS container and still cannot drift."""
-    import harmony_perception_service as svc
-    from wisepack_bringup import topics as T
-    assert svc.WISEPACK_PERCEPTION_STATUS == T.PERCEPTION_STATUS
-    assert svc.WISEPACK_PERCEPTION_OBJECTS == T.PERCEPTION_OBJECTS
+def test_the_host_service_contains_no_middleware():
+    """No rclpy, no DDS, no ROS sourcing — see §10/§11.
+
+    An earlier revision started a ROS 2 node in this host process and sourced a
+    ROS environment for it. That required a host middleware installation and
+    created a second, unvalidated path to the same NGSI-LD attributes. The
+    service is HTTP-only now, which is also what lets `sim` + camera run with no
+    ROS anywhere.
+    """
+    import ast
+    service = pathlib.Path(REPO) / "perception" / "perception_service.py"
+    tree = ast.parse(service.read_text())
+    imported = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            imported.update(a.name.split(".")[0] for a in node.names)
+        elif isinstance(node, ast.ImportFrom) and node.module:
+            imported.add(node.module.split(".")[0])
+    # AST, not a text scan: the file EXPLAINS at length why it has no
+    # middleware, and a substring check could not tell the prohibition from the
+    # thing prohibited.
+    for forbidden in ("rclpy", "std_msgs", "rosidl_runtime_py", "ros2_backend"):
+        assert forbidden not in imported, (
+            f"the host perception service imports {forbidden!r} — it must not "
+            "require or duplicate middleware on the host")
+
+    # The launcher must not source a middleware environment for it either.
+    lib = pathlib.Path(REPO) / "scripts" / "lib_perception_service.sh"
+    code = "\n".join(line for line in lib.read_text().splitlines()
+                      if not line.lstrip().startswith("#"))
+    for forbidden in ("/opt/vulcanexus", "/opt/ros", "setup.bash"):
+        assert forbidden not in code, (
+            f"the perception launcher sources {forbidden!r} — the host must "
+            "not need a middleware installation to run the camera")
 
 
 # --------------------------------------------------------------------------- #
@@ -992,23 +1059,23 @@ def test_the_service_and_the_contract_agree_on_the_topic_names():
 
 
 def test_service_config_honours_the_camera_override(monkeypatch):
-    import harmony_perception_service as svc
-    monkeypatch.setenv("WISEPACK_HARMONY_CAMERA", "4")
+    import perception_service as svc
+    monkeypatch.setenv("WISEPACK_PERCEPTION_CAMERA", "4")
     assert svc.build_harmony_config()["CAMERA"] == 4
     # A device path or an RTSP URL stays a string; only a bare index is an int.
-    monkeypatch.setenv("WISEPACK_HARMONY_CAMERA", "/dev/video2")
+    monkeypatch.setenv("WISEPACK_PERCEPTION_CAMERA", "/dev/video2")
     assert svc.build_harmony_config()["CAMERA"] == "/dev/video2"
 
 
 def test_service_config_takes_an_absolute_model_path():
-    import harmony_perception_service as svc
+    import perception_service as svc
     config = svc.build_harmony_config(model_path=ARISE_MODEL_PATH)
     assert config["MODEL_PATH"] == ARISE_MODEL_PATH
 
 
 def test_a_larger_calibration_board_is_configuration_not_code(monkeypatch):
     """§13: make the extent configurable rather than hardcode a new layout."""
-    import harmony_perception_service as svc
+    import perception_service as svc
     monkeypatch.setenv("WISEPACK_HARMONY_CORNER_EXTENT_MM", "600")
     monkeypatch.setenv("WISEPACK_HARMONY_CORNER_MARKERS", "11,10,15,16")
     config = svc.build_harmony_config()
@@ -1020,7 +1087,7 @@ def test_a_larger_calibration_board_is_configuration_not_code(monkeypatch):
 
 def test_the_work_area_frame_follows_harmonys_calibrated_plane():
     """WISEPACK adopts HARMONY's coordinate system; it does not redesign it."""
-    import harmony_perception_service as svc
+    import perception_service as svc
     frame = svc.work_area_from_config(
         {"CORNER_COORDINATES": [[0, 0], [130, 0], [130, 130], [0, 130]]})
     assert (frame.width_mm, frame.depth_mm) == (130, 130)
@@ -1043,7 +1110,7 @@ class _StubClient:
 
 
 def test_client_reports_an_unreachable_service_without_raising():
-    from perception_client import PerceptionClient
+    from wisepack_core.perception_client import PerceptionClient
     client = PerceptionClient(url="http://127.0.0.1:1")
     client._request = _StubClient()._request
 
@@ -1062,7 +1129,7 @@ def test_client_reports_an_unreachable_service_without_raising():
 
 
 def test_client_rejects_an_unreadable_document_rather_than_guessing():
-    from perception_client import PerceptionClient
+    from wisepack_core.perception_client import PerceptionClient
     client = PerceptionClient()
     client._request = lambda *a, **k: (200, {"batch_id": 1, "status": "nonsense"}, "")
     batch = client.detect()
@@ -1071,7 +1138,7 @@ def test_client_rejects_an_unreadable_document_rather_than_guessing():
 
 
 def test_client_parses_a_real_service_response():
-    from perception_client import PerceptionClient
+    from wisepack_core.perception_client import PerceptionClient
     client = PerceptionClient()
     document = _batch().to_dict()
     client._request = lambda *a, **k: (200, document, "")
@@ -1082,14 +1149,14 @@ def test_client_parses_a_real_service_response():
 
 def test_perception_state_serialises_for_the_api():
     """§16: the dashboard payload must be JSON and must carry the poses."""
-    engine = _engine(perception_source=PerceptionSource.HARMONY_CAMERA)
+    engine = _engine(perception_source=PerceptionSource.CAMERA)
     engine.observation_provider = _batch
     engine.generate_or_load_scenario()
     engine.scan_and_detect()
 
     payload = json.loads(json.dumps(engine.perception_state()))
-    assert payload["perception_source"] == "harmony_camera"
-    assert payload["perception_source_label"] == "HARMONY CAMERA"
+    assert payload["perception_source"] == "camera"
+    assert payload["perception_source_label"] == "PHYSICAL CAMERA"
     assert payload["physical"] is True
     assert payload["batch"]["count"] == 3
     assert payload["batch"]["observations"][0]["pose"]["yaw_deg"] == -31.0
@@ -1117,7 +1184,7 @@ def test_diagnostics_describes_both_perception_modes():
     assert sim["2-D camera frames"] == "future interface"
     assert sim["Object detections"] == "simulated source"
 
-    camera = {i: s for i, s, _ in diagnostics.interfaces("harmony_camera")}
+    camera = {i: s for i, s, _ in diagnostics.interfaces("camera")}
     assert camera["2-D camera frames"] == "live"
     assert camera["Object detections"] == "measured source"
 
@@ -1127,7 +1194,7 @@ def test_diagnostics_describes_both_perception_modes():
         assert table["RGB-D camera frames"] == "future interface"
         assert table["Robot joint states"] == "simulated source"
 
-    meanings = {i: m for i, s, m in diagnostics.interfaces("harmony_camera")}
+    meanings = {i: m for i, s, m in diagnostics.interfaces("camera")}
     assert "NOT a measured detection rate" in meanings["Object detections"]
     assert "PLANAR ONLY" in meanings["6D pose estimates"]
 
@@ -1137,7 +1204,7 @@ def test_a_configured_but_dead_detector_is_not_reported_as_live():
     import diagnostics
 
     dead = {i: s for i, s, _ in
-            diagnostics.interfaces("harmony_camera", reachable=False)}
+            diagnostics.interfaces("camera", reachable=False)}
     assert dead["2-D camera frames"] == "configured, unavailable"
     assert dead["Object detections"] == "configured, unavailable"
     # Still not a FAILURE state — the table's other rule.
@@ -1145,7 +1212,7 @@ def test_a_configured_but_dead_detector_is_not_reported_as_live():
         assert "error" not in state.lower() and "fail" not in state.lower()
 
     # Unchecked reachability makes neither claim.
-    unknown = {i: s for i, s, _ in diagnostics.interfaces("harmony_camera")}
+    unknown = {i: s for i, s, _ in diagnostics.interfaces("camera")}
     assert unknown["2-D camera frames"] == "live"
     # ... and `sim` is never downgraded: there is no service to be dead.
     sim = {i: s for i, s, _ in diagnostics.interfaces("sim", reachable=False)}
@@ -1163,3 +1230,120 @@ def test_the_dashboard_panel_stays_domain_neutral():
     # markup never has to name the physical stand-in object at all. That is what
     # keeps the dashboard from becoming detector-specific (§18).
     assert "bottle" not in html.lower()
+
+
+# --------------------------------------------------------------------------- #
+# 14. WISEPACK owns perception; a provider is an implementation detail
+# --------------------------------------------------------------------------- #
+
+
+def test_the_public_perception_sources_are_sim_and_camera():
+    """The source answers WHERE observations come from — never which AI ran."""
+    assert [s.value for s in PerceptionSource] == ["sim", "camera"]
+    assert PerceptionSource.CAMERA.label == "PHYSICAL CAMERA"
+    # No provider, vendor or model name in the public vocabulary.
+    for source in PerceptionSource:
+        blob = f"{source.value} {source.label} {source.detail}".lower()
+        for forbidden in ("harmony", "bottle", "faster", "rcnn", "yolo"):
+            assert forbidden not in blob, (
+                f"{source.value!r} exposes {forbidden!r} as architecture")
+
+
+def test_provider_selection_is_a_separate_axis_from_the_source():
+    """§5: adding a second camera method must not need a second source."""
+    assert DEFAULT_DETECTOR == "fasterrcnn_bottle"
+    assert DEFAULT_DETECTOR in KNOWN_DETECTORS
+    assert resolve_detector() == DEFAULT_DETECTOR
+    # The two are resolved independently, from different variables.
+    from wisepack_core.perception import (PERCEPTION_DETECTOR_ENV,
+                                          PERCEPTION_SOURCE_ENV)
+    assert PERCEPTION_DETECTOR_ENV != PERCEPTION_SOURCE_ENV
+    with pytest.raises(PerceptionConfigError):
+        resolve_detector("no_such_provider")
+
+
+def test_the_core_contains_no_detector_specific_module():
+    """§3: HARMONY-specific parsing lives in the provider, not in the domain."""
+    core = pathlib.Path(REPO) / "wisepack_ws" / "src" / "wisepack_core" / "wisepack_core"
+    assert not (core / "harmony_adapter.py").exists(), (
+        "detector-specific parsing must not live in the domain package")
+    provider = pathlib.Path(REPO) / "perception" / "providers" / "fasterrcnn_bottle.py"
+    assert provider.exists()
+    assert "UNCALIBRATED_SENTINEL" in provider.read_text(), (
+        "the provider must own the detector's quirks")
+
+
+@pytest.mark.parametrize("module", [
+    "packing.py", "workflow.py", "validator.py", "kpi.py", "execution.py",
+    "domain.py", "isaac_contract.py", "isaac_transform.py", "whole_process.py",
+])
+def test_no_planning_or_execution_module_mentions_a_detector(module):
+    """§14: no bottle- or provider-specific dependency downstream.
+
+    EXECUTABLE CODE ONLY — comments and docstrings are stripped. `domain.py`
+    states in prose that nothing there names a bottle or a detector, and a check
+    that could not tell a prohibition from the thing prohibited would forbid
+    writing the rule down.
+    """
+    path = (pathlib.Path(REPO) / "wisepack_ws" / "src" / "wisepack_core"
+            / "wisepack_core" / module)
+    code = _code_without_prose(path.read_text())
+    for forbidden in ("harmony", "bottle", "fasterrcnn", "faster_rcnn"):
+        assert forbidden not in code.lower(), (
+            f"{module} references {forbidden!r} — planning, workflow and "
+            "execution must stay domain-neutral")
+
+
+def test_the_operator_facing_ui_shows_no_provider_architecture_label():
+    """§13: `Source: HARMONY CAMERA` must not be reachable in the panel."""
+    html = (pathlib.Path(REPO) / "web" / "index.html").read_text()
+    assert "harmony" not in html.lower()
+    # The panel names the METHOD, from the service's health document.
+    assert "detector_display_name" in html
+    assert "Physical Perception" in html
+
+
+def test_provenance_is_available_but_is_not_the_architecture():
+    """§13: implementation origin belongs in diagnostics, not in the label."""
+    from providers import fasterrcnn_bottle as provider
+    assert provider.IMPLEMENTATION_ORIGIN == "HARMONY"   # provenance, kept
+    assert provider.PROVIDER_NAME == "fasterrcnn_bottle"  # architecture, generic
+    assert provider.DISPLAY_NAME == "Faster R-CNN"        # method, operator-facing
+    # The observation's own provenance names the METHOD, not the vendor.
+    assert "harmony" not in DETECTOR_ID.lower()
+    assert _batch().observations[0].detector == DETECTOR_ID
+
+
+def test_camera_perception_is_independent_of_the_dashboard_data_source():
+    """§17.4: --source and the perception source are unrelated axes."""
+    text = (pathlib.Path(REPO) / "web" / "app.py").read_text()
+    # The dashboard resolves them from different variables, neither derived
+    # from the other.
+    assert 'SOURCE = os.environ.get("WISEPACK_SOURCE", "sim")' in text
+    assert "PERCEPTION_SOURCE = resolve_perception_source()" in text
+    assert "--perception-source" in text and "--source" in text
+    # Neither is derived from the other: no line both tests the data source and
+    # assigns the perception source, or vice versa.
+    for line in text.splitlines():
+        if "PERCEPTION_SOURCE" in line and "resolve_perception_source" not in line:
+            assert not line.lstrip().startswith("SOURCE ="), line
+        if line.lstrip().startswith("PERCEPTION_SOURCE ="):
+            assert "WISEPACK_SOURCE" not in line, line
+
+
+def test_the_containerized_vulcanexus_stack_is_untouched_by_perception():
+    """§10/§22: perception must not weaken or replace the validated DDS path."""
+    from wisepack_bringup import topics as T
+    # The always-present contract is unchanged: perception is an optional
+    # channel and adds nothing to the topics every run must publish.
+    assert T.PERCEPTION_OBJECTS not in T.all_topics()
+    assert T.PERCEPTION_STATUS not in T.all_topics()
+    # Both perception topics remain bridgeable scalar std_msgs.
+    assert set(T.perception_topics().values()) == {"std_msgs/String"}
+    assert T.reserved_leaf_violations() == []
+
+    launcher = (pathlib.Path(REPO) / "run_wisepack_dashboard.sh").read_text()
+    # The container still sources the CONTAINERIZED Vulcanexus runtime.
+    assert "source /opt/vulcanexus/jazzy/setup.bash" in launcher
+    # ...and the host-side perception block installs nothing.
+    assert "apt install" not in launcher.lower()
