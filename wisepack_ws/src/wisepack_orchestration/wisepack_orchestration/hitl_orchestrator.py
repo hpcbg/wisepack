@@ -1137,8 +1137,8 @@ class HitLOrchestrator(Node):
             if not self.perception_source.is_physical:
                 raise ValueError(
                     "perception source is `sim` — there is no camera. Relaunch "
-                    "with perception_source:=harmony_camera (or "
-                    "WISEPACK_PERCEPTION_SOURCE=harmony_camera).")
+                    "with perception_source:=camera (or "
+                    "WISEPACK_PERCEPTION_SOURCE=camera).")
             if not self.request_physical_detection():
                 raise ValueError("no perception service client is available")
             # The batch arrives on a worker thread and is adopted on the next

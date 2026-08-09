@@ -110,9 +110,10 @@ class PerceptionClient:
             last_error=error or "perception service did not answer",
         ).to_dict()
         health["note"] = (
-            "The HARMONY perception service is not answering. Start it with "
-            "`python3 perception/harmony_perception_service.py`, or point "
-            "WISEPACK_PERCEPTION_SERVICE_URL at the host running it.")
+            "The WISEPACK perception service is not answering. It normally "
+            "starts with the launcher; to run it by hand use "
+            "`.venv-perception/bin/python perception/perception_service.py`, "
+            "or point WISEPACK_PERCEPTION_SERVICE_URL at the host running it.")
         return health
 
     def detect(self) -> ObservationBatch:

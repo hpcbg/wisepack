@@ -2446,10 +2446,11 @@ existing execution-backend selection, the dashboard data source (`sim`/`ros`/
 `fiware`), the packing algorithms, the validator, the approval gate and the
 audit trail are all untouched.
 
-The current camera detector reuses the Faster R-CNN bottle-detection
-implementation developed in HARMONY. In WISEPACK it is isolated behind a generic
-perception-provider interface, and bottles are used only as physical proxies for
-cylindrical workpieces.
+The initial WISEPACK physical-camera provider **adapts** the Faster R-CNN
+bottle-detection pipeline developed in the HARMONY project. The required runtime
+implementation is **included in WISEPACK**, behind its generic
+perception-provider interface; **HARMONY is not a runtime dependency**. Bottles
+are used only as physical proxies for cylindrical workpieces.
 
 > In camera mode, their detected physical position and orientation are
 > transformed into domain-neutral WISEPACK object observations. This allows the
@@ -2482,38 +2483,77 @@ Today's provider is `fasterrcnn_bottle`; select another with
 
 #### The current provider: `fasterrcnn_bottle`
 
-Nothing in the detector is reimplemented. The provider lives in
-`perception/providers/fasterrcnn_bottle.py` and is the **only** detector-aware
-code in the system. From [`hpcbg/harmony`](https://github.com/hpcbg/harmony),
-directory `ai-bottle-detector-fiware/`:
+The provider lives in `perception/providers/fasterrcnn_bottle.py` and is the
+**only** detector-aware code in the system.
 
-| HARMONY component | How WISEPACK uses it |
-|---|---|
-| `camera.py` (`Camera`) | **Imported and used as-is.** Threaded `cv2.VideoCapture` frame grabber. |
-| `pipeline.py` (`process_frame`) | **Imported and used as-is.** Faster R-CNN inference, ArUco homography, bottle/cap matching, position and yaw computation, annotated image rendering. WISEPACK computes no coordinate of its own. |
-| `ros2_backend.py` (`Ros2DetectorBackend`) | **No longer used.** WISEPACK's perception service speaks HTTP only — see *No middleware on the host* below. |
-| `config/config.json.tpl` | Read as the configuration template; WISEPACK generates its own `config.json` from it plus environment overrides, in a machine-local cache. HARMONY's checkout is never written to. |
-| `setup.py` model download | The **destination and the Hugging Face URL** are reused rather than a second downloader being written. See *Model resolution* below. |
-| `A4_calibration_sheet.pdf` | The calibration artefact. WISEPACK adopts HARMONY's coordinate system verbatim. |
+**Its detection pipeline is adapted from the Faster R-CNN bottle detector
+developed in the HARMONY project** ([`hpcbg/harmony`](https://github.com/hpcbg/harmony),
+`ai-bottle-detector-fiware/`, MIT). *Adapted*, not *imported*: the required
+implementation now lives in WISEPACK, behind WISEPACK's generic
+perception-provider interface. **HARMONY is not a runtime dependency** — delete
+the repository from the machine and camera perception is unaffected. See
+[NOTICE](NOTICE) for the attribution, and `tests/test_perception_independence.py`
+for the test that fails if that ever stops being true.
 
-What WISEPACK adds:
+Everything the perception service needs is in this repository:
 
-| New component | Why it was needed |
-|---|---|
-| `perception/perception_service.py` | The **generic, WISEPACK-owned** service: capture, health, one-shot detection, raw and annotated images, provider status. HARMONY's own preview endpoints live only in its legacy NGSI-v2 `main.py`, which §8 forbids requiring merely to see a picture — and running both would mean two processes opening one `cv2.VideoCapture`. |
-| `perception/providers/fasterrcnn_bottle.py` | The **only** detector-aware code in the system. Converts this detector's bottle JSON into domain-neutral observations. |
-| `wisepack_core/perception.py` | The domain-neutral perception model: source selection, `PhysicalObservation`, `ObservationBatch`, proxy geometry, work-area frame, model resolution, staleness. |
-| `web/perception_client.py` | The dashboard's client. The dashboard never opens a camera and never imports torch. |
+| WISEPACK file | What it does | Provenance |
+|---|---|---|
+| `perception/perception_service.py` | The **generic** host service: capture, health, one-shot detection, raw and annotated images, provider status. Knows nothing about neural networks. | WISEPACK |
+| `perception/perception_config.py` | The WISEPACK-owned configuration: camera, resolution, model path, confidence, calibration board. No external template is read. | WISEPACK |
+| `perception/camera.py` | Threaded `cv2.VideoCapture` frame grabber, plus `opened` / `last_error` / bounded `wait_for_frame()`. | adapted from HARMONY `camera.py` |
+| `perception/calibration.py` | ArUco marker detection, ordered corner correspondence, homography, the persistent marker cache, pixel→millimetre projection, overlay drawing. | adapted from HARMONY `pipeline.py` |
+| `perception/providers/fasterrcnn_bottle.py` | Faster R-CNN construction and checkpoint loading, inference, bottle/cap association, yaw derivation, annotated-image rendering — **and** the adapter that turns all of it into domain-neutral observations. | detection adapted from HARMONY `pipeline.py`; the adapter is WISEPACK's |
+| `perception/model_store.py` | Weight resolution, the WISEPACK cache, and the Hugging Face download. | WISEPACK |
+| `perception/requirements.txt` | The dependencies, installed into `.venv-perception/`. | WISEPACK |
+| `scripts/setup_perception.sh` | Creates that environment. Never touches the system Python. | WISEPACK |
+| `scripts/generate_calibration_sheet.py` | Prints WISEPACK's own ArUco calibration sheet. | WISEPACK |
+| `wisepack_core/perception.py` | The domain-neutral model: source selection, `PhysicalObservation`, `ObservationBatch`, proxy geometry, work-area frame, model resolution, staleness. | WISEPACK |
+| `wisepack_core/perception_client.py` | The dashboard's client. The dashboard never opens a camera and never imports torch. | WISEPACK |
+
+**The detector behaviour is unchanged by the port**, and that is verified rather
+than asserted: `tests/test_perception_detector_regression.py` runs the real
+network on a committed reference frame and compares against the measurement the
+pre-port implementation produced from the same frame and the same weights —
+2 objects at (86.782, 83.553) mm / −115.112° and (41.008, 59.853) mm / 24.302°,
+to 0.01 mm and 0.01°.
 
 #### Prerequisites
 
 * a camera reachable by OpenCV (a normal USB webcam is the supported case);
-* `torch`, `torchvision`, `opencv-python`, `opencv-contrib-python` for the
-  **detector service only** - the dashboard and the ROS stack do not need them;
-* the trained weights (see below);
-* the printed ArUco calibration sheet in view of the camera;
-* a HARMONY checkout. Default `/data/arise/harmony/ai-bottle-detector-fiware`,
-  overridable with `WISEPACK_HARMONY_PATH`.
+* the WISEPACK perception environment — **created for you on the first camera
+  start**, or by `./scripts/setup_perception.sh`;
+* the trained weights — **resolved and fetched automatically** (see below);
+* the printed ArUco calibration sheet in view of the camera.
+
+That is the whole list. No HARMONY checkout, no HARMONY installer, no HARMONY
+virtualenv, and nothing installed into the system Python.
+
+#### The perception environment
+
+`torch`, `torchvision`, `opencv-python`, `fastapi` and `uvicorn` are needed by
+the **perception service only** — the dashboard, the ROS 2 nodes and the whole
+containerised Vulcanexus stack run without any of them. They are installed into
+a git-ignored, WISEPACK-owned virtualenv in the working directory:
+
+```bash
+./scripts/setup_perception.sh            # .venv-perception/
+./scripts/setup_perception.sh --check    # is it usable? why not?
+./scripts/setup_perception.sh --model    # ... and pre-fetch the weights
+./scripts/setup_perception.sh --isolated # do not reuse host packages
+```
+
+You do not normally run any of that: with `WISEPACK_PERCEPTION_SOURCE=camera`
+the launcher creates the environment on the first camera start and finds it
+every time after. `WISEPACK_PERCEPTION_AUTO_SETUP=0` turns the bootstrap off and
+turns a missing environment into one printed command instead.
+
+By default the venv is created with `--system-site-packages`, so a host that
+already has a CUDA-matched `torch` keeps it rather than downloading a second
+~2.5 GB copy that may not match its driver. Anything missing is installed
+**into the venv**; nothing is ever installed outside it, and the venv is never
+`activate`d into the launcher's shell — the launcher invokes
+`.venv-perception/bin/python` directly.
 
 #### Model resolution
 
@@ -2521,58 +2561,85 @@ The weights are **never committed to this repository**. They are resolved in
 this order, and the answer is reported by `/health`:
 
 1. `WISEPACK_PERCEPTION_MODEL_PATH`, if set. A configured path that does not exist
-   is an **error**, not a reason to search elsewhere - silently loading
-   different weights than the ones asked for is worse than reporting the miss.
+   is an **error**, not a reason to search elsewhere — and never a reason to
+   download something else instead.
 2. `/data/arise/models/best_model.pth`, if present (the shared ARISE host copy).
-3. `<harmony>/models/best_model.pth` - the exact destination HARMONY's own
-   installer downloads into.
-4. Otherwise **absent**, with a clear diagnostic naming every path searched, the
-   Hugging Face repository and the command to fetch it. There is no cryptic
-   `FileNotFoundError` out of `torch.load`: resolution is a filesystem question
-   answered before torch is imported at all.
+3. `.cache-perception/models/best_model.pth` — the **WISEPACK-owned** cache,
+   git-ignored and safe to delete.
+4. Otherwise **downloaded into (3)** from
+   [`hpcbg/harmony-bottle-detector`](https://huggingface.co/hpcbg/harmony-bottle-detector),
+   the published artefact. The download is atomic and size-checked; a failure is
+   reported as an unavailable model with the reason, never as a
+   `FileNotFoundError` out of `torch.load`.
 
-Fetch them with HARMONY's own installer (`python3 setup.py` in the HARMONY
-repository), or directly:
+`WISEPACK_PERCEPTION_MODEL_DOWNLOAD=0` disables step 4 for an air-gapped host,
+and `WISEPACK_PERCEPTION_MODEL_CACHE` moves step 3.
 
-```bash
-curl -L --fail -o <harmony>/models/best_model.pth \
-  https://huggingface.co/hpcbg/harmony-bottle-detector/resolve/main/best_model.pth
-```
+**Model provenance.** The weights are the bottle detector trained in the HARMONY
+project. `/health` says so, in `model_origin_note`.
 
 #### Calibration and the coordinate frame
 
-**WISEPACK adopts HARMONY's calibration; it does not redesign it.** HARMONY
-detects four ArUco markers (`DICT_ARUCO_ORIGINAL`, ids `11, 10, 15, 16` by
-default) and computes a homography onto a plane whose corner coordinates are
-declared in millimetres. With the shipped A4 sheet that plane is **130 × 130 mm
-with the origin at marker 11**.
+`perception/calibration.py` detects four ArUco markers (`DICT_ARUCO_ORIGINAL`,
+ids `11, 10, 15, 16` by default) and computes a homography onto a plane whose
+corner coordinates are declared in millimetres. With the default sheet that
+plane is **130 × 130 mm with the origin at marker 11**.
 
-Every WISEPACK observation names its frame explicitly - `wisepack_workarea` by
-default - and that frame **is** HARMONY's calibrated plane: WISEPACK applies no
-transform of its own, so `x_mm`/`y_mm` are HARMONY's millimetres unchanged and
-`yaw_deg` is its bottle→cap angle unchanged.
+**The measured plane IS the work-area frame.** Every WISEPACK observation names
+it explicitly — `wisepack_workarea` by default — and WISEPACK applies no
+transform of its own: `x_mm`/`y_mm` are the calibrated millimetres and `yaw_deg`
+is the object→cap angle, both unchanged from what the detector measured.
+
+Print the sheet from WISEPACK, with no other repository involved:
+
+```bash
+.venv-perception/bin/python scripts/generate_calibration_sheet.py
+# -> results/wisepack-calibration-sheet.png   (A4, 300 dpi)
+```
+
+It places the marker **centres** exactly on the declared corners, prints the
+configuration on the sheet, and tells you which variables to set if you changed
+anything. **Print at 100 % scale** — "fit to page" turns a scaling error into a
+proportional error in every coordinate the system afterwards reports.
 
 130 mm is small for a realistic WISEPACK work area. The extent is therefore
 **configurable rather than hardcoded**, so a larger printed board is a
 configuration change:
 
 ```bash
-WISEPACK_HARMONY_CORNER_MARKERS=11,10,15,16     # marker ids, in plane order
-WISEPACK_HARMONY_CORNER_EXTENT_MM=600           # side of the square, mm
-WISEPACK_PHYSICAL_WORKAREA_WIDTH_MM=600         # declared WISEPACK work area
+WISEPACK_PERCEPTION_CALIBRATION_MARKERS=11,10,15,16   # marker ids, in plane order
+WISEPACK_PERCEPTION_CALIBRATION_EXTENT_MM=600         # side of the square, mm
+WISEPACK_PHYSICAL_WORKAREA_WIDTH_MM=600               # declared WISEPACK work area
 WISEPACK_PHYSICAL_WORKAREA_DEPTH_MM=600
 WISEPACK_PHYSICAL_FRAME_ID=wisepack_workarea
 ```
 
+```bash
+.venv-perception/bin/python scripts/generate_calibration_sheet.py \
+  --extent-mm 600 --paper A3 --landscape
+```
+
+The declared work area **defaults to the calibrated plane's extent**, so the
+frame the dashboard shows and the plane the detector measures on cannot drift
+apart by forgetting to change one of them.
+
 An object measured outside the declared plane is **reported, never clamped or
-rescaled** - silently moving a measurement destroys the evidence for the
+rescaled** — silently moving a measurement destroys the evidence for the
 calibration problem that produced it.
 
-Two behaviours of HARMONY's pipeline are handled explicitly:
+Three behaviours of the pipeline are part of the contract and are handled
+explicitly:
 
-* **Only bottles with a matched cap are reported.** Without the cap there is no
-  orientation, so `pipeline.py` skips the bottle. The reported count is
-  therefore "objects with a resolved orientation", not "objects present".
+* **The marker positions are cached and persist.** Once all four corner markers
+  have been seen together, the plane stays calibrated in frames where an object
+  covers one of them — otherwise detection would fail precisely when the table
+  is busy. A later frame showing all four replaces the cache, and
+  `calibration_revision` changes, so a recalibration is visible rather than
+  silent.
+* **Only objects with a matched cap are reported.** Without the cap there is no
+  orientation. The reported count is therefore "objects with a resolved
+  orientation", not "objects present" — and the difference is published as
+  `objects_without_orientation` rather than hidden.
 * **An uncalibrated frame yields the sentinel `(1, 1)` for every object.** Those
   are not measurements. WISEPACK rejects such a batch as a **calibration
   failure** rather than planning from a pile of objects at one point.
@@ -2618,11 +2685,20 @@ The launcher prints what it is doing and waits for the detector to be ready:
 [perception] perception source : camera
 [perception] service URL       : http://127.0.0.1:22101
 [perception] detector service  : starting
-[perception] detector python   : /data/arise/harmony/torch_venv/bin/python (HARMONY torch_venv)
-[perception] provider          : fasterrcnn_bottle (Faster R-CNN)
+[perception] perception python : /path/to/wisepack/.venv-perception/bin/python (WISEPACK perception environment)
 [perception] camera            : 2
 [perception] service log       : /tmp/wisepack_perception.log
 [perception] detector service  : ready
+[perception] provider          : fasterrcnn_bottle (Faster R-CNN)
+```
+
+On the very first camera start it creates the environment first, once:
+
+```text
+[perception] perception environment : missing — creating it once
+[perception] setup                  : /path/to/wisepack/scripts/setup_perception.sh
+[perception-setup] creating /path/to/wisepack/.venv-perception (reusing host packages where they already exist)
+[perception-setup] environment ready: /path/to/wisepack/.venv-perception/bin/python
 ```
 
 **The detector is a HOST process and the single owner of the camera.** It is
@@ -2631,18 +2707,21 @@ over `WISEPACK_PERCEPTION_SERVICE_URL` (`--net=host`, so `127.0.0.1` works).
 
 **Which interpreter.** The service needs torch, torchvision, cv2, fastapi and
 uvicorn, and the system `python3` has none of them — running it there produces
-`ModuleNotFoundError: No module named 'uvicorn'`. So the launcher uses the
-**provider's** own environment, resolved exactly as that provider's `run.sh`
-resolves it (verified against the real installation, and deliberately not
-`.venv`):
+`ModuleNotFoundError: No module named 'uvicorn'`. So the launcher uses
+**WISEPACK's own** perception environment:
 
-1. `WISEPACK_PERCEPTION_PYTHON`, if set (and executable — if not, that is an error,
-   not a reason to look elsewhere);
-2. `<WISEPACK_HARMONY_PATH>/../torch_venv/bin/python`, i.e.
-   `/data/arise/harmony/torch_venv/bin/python` for the default checkout;
-3. otherwise it **fails with a clear message**. There is deliberately no fall
-   back to the system python, and the venv is never `activate`d into the
-   launcher's shell.
+1. `<repo>/.venv-perception/bin/python`, if it exists **and can import every
+   dependency**. Existing is not enough: a venv whose `torch` is broken must
+   fail here, with the import error, rather than sixty seconds into a demo.
+2. If it is missing or incomplete, `scripts/setup_perception.sh` runs **once**
+   and resolution is retried.
+3. Otherwise it **fails with one command to run**. There is deliberately no fall
+   back to the system python, nothing is installed into it, and the venv is
+   never `activate`d into the launcher's shell.
+
+There is no `WISEPACK_PERCEPTION_PYTHON` and no path to another project — that
+architecture is gone. `WISEPACK_PERCEPTION_VENV` can *move* the WISEPACK
+environment (a faster disk, a shared image) and is otherwise unnecessary.
 
 **Already running one?** If a healthy detector is already answering at the
 configured URL — because you started it by hand to watch its log, or to keep the
@@ -2663,9 +2742,9 @@ with status `6`. It never continues into simulated perception behind a UI that
 claims a camera.
 
 `WISEPACK_PERCEPTION_CAMERA` accepts a device index (`2`), a device path
-(`/dev/video2`) or a stream URL. **No `/dev/videoX` is hardcoded**; the template
-default is documented and overridable. `AI_CAMERA` is honoured too, so an
-existing HARMONY habit keeps working.
+(`/dev/video2`) or a stream URL. **No `/dev/videoX` is hardcoded**; the default
+is `0`, documented and overridable, and this is the only place the device is
+decided.
 
 Its HTTP interface:
 
@@ -2808,9 +2887,9 @@ single writer, so world state keeps one authority — and it publishes them from
 inside the containerized Vulcanexus runtime, not from the host.
 
 The provider's own upstream topics (`/bottle_detection/...`) are **not used**.
-They belong to HARMONY's DDS-native backend, which WISEPACK no longer runs.
+They belong to the HARMONY DDS-native backend, which WISEPACK does not run.
 
-**No NGSI-v2 dependency.** None of this needs HARMONY's legacy FIWARE-v2 stack.
+**No NGSI-v2 dependency.** None of this needs the HARMONY legacy FIWARE-v2 stack.
 The detector service makes no `/v2` call, and WISEPACK's own DDS/NGSI-LD path is
 unchanged.
 
@@ -2862,7 +2941,7 @@ successful scan and never a silent fallback:
 | calibration markers absent / invalid | `Calibration: INVALID` and an explicit rejection of the sentinel coordinates |
 | inference failure | batch error naming the exception |
 | malformed ROS message / detector output | failed batch; partially malformed entries are dropped **and counted** |
-| HARMONY service unavailable | `service_reachable: false`; camera/model report `unknown`, never `false` |
+| perception service unavailable | `service_reachable: false`; camera/model report `unknown`, never `false` |
 | stale observation | `observation_stale` with the batch age |
 
 A camera or model failure never takes an unrelated WISEPACK component down. In
@@ -2878,24 +2957,19 @@ started this way is **reused** by the launcher and is not stopped by it.
 
 ```bash
 # what it resolved, without opening a camera or loading a model
-/data/arise/harmony/torch_venv/bin/python \
-    perception/perception_service.py --check
+.venv-perception/bin/python perception/perception_service.py --check
 
 # run it
 WISEPACK_PERCEPTION_CAMERA=2 \
-/data/arise/harmony/torch_venv/bin/python \
+.venv-perception/bin/python \
     perception/perception_service.py --host 127.0.0.1 --port 22101
-
 ```
 
 The service is HTTP-only; there is no ROS flag because there is no ROS in it.
 
-Use the provider's detector interpreter, not `python3` — see *Which interpreter*
-above. To point the launcher at a different one:
-
-```bash
-WISEPACK_PERCEPTION_PYTHON=/path/to/python   # in config/local.env
-```
+Use `.venv-perception/bin/python`, not `python3` — see *Which interpreter*
+above. `./scripts/setup_perception.sh --check` reports whether that environment
+is usable and, if not, why.
 
 #### Troubleshooting
 
@@ -2903,18 +2977,18 @@ WISEPACK_PERCEPTION_PYTHON=/path/to/python   # in config/local.env
 |---|---|
 | panel absent | `WISEPACK_PERCEPTION_SOURCE` is unset or `sim`. It is the default. |
 | launcher exits with status `6` | camera perception was requested and no detector could be made available. The reason and the log tail are printed above it; the launcher deliberately refuses to fall back to simulated perception. |
-| `no perception detector interpreter found` | the provider's `torch_venv` is missing or `WISEPACK_HARMONY_PATH` points elsewhere. Create it (HARMONY's `setup.py`), or set `WISEPACK_PERCEPTION_PYTHON`. |
-| `ModuleNotFoundError: No module named 'uvicorn'` in the detector log | the service was run with the system `python3` instead of the provider's `torch_venv`. Unset `WISEPACK_PERCEPTION_PYTHON` or point it at the right interpreter. |
-| `unknown perception source 'harmony_camera'` | the value was renamed to `camera` in this refactor. Update `config/local.env`. |
+| `the WISEPACK perception environment is not usable` | run `./scripts/setup_perception.sh` (the message says so). `--check` prints the import error behind it. |
+| `ModuleNotFoundError: No module named 'uvicorn'` in the detector log | the service was run with the system `python3` instead of `.venv-perception/bin/python`. The launcher never does this; a hand-started service can. |
+| `unknown perception source 'harmony_camera'` | the value was renamed to `camera`. Update `config/local.env`. |
+| `WISEPACK_HARMONY_PATH` / `WISEPACK_PERCEPTION_PYTHON` appear to do nothing | correct — they were removed. Perception runs entirely from this repository; see *The perception environment*. |
 | "Vulcanexus is not installed on the host" in diagnostics | expected and correct. WISEPACK uses the **containerized** Vulcanexus runtime; the host needs no middleware for camera perception. |
-| `WISEPACK_PERCEPTION_PYTHON=... is not an executable file` | the explicit override does not exist. It is not silently replaced by the default — fix or unset it. |
 | `perception service unreachable` | the service is not running, or `WISEPACK_PERCEPTION_SERVICE_URL` points elsewhere. |
 | detector keeps running after Ctrl-C | it was started **outside** the launcher, so the launcher does not own it and will not stop it (by design). Stop it where you started it. |
-| `Calibration: INVALID` | the four ArUco markers are not all in frame. HARMONY caches them once seen; show the sheet and detect again. |
+| `Calibration: INVALID` | the four ArUco markers have never all been in frame together. They are cached once seen; show the sheet and detect again. |
 | `Model: unavailable` | run `--check`; the message lists every path searched and the fetch command. |
-| `camera ... delivered no frame` | wrong index, or another process holds the device - **including a second copy of this service, or HARMONY's own `main.py`**. Only one process may own the camera. |
+| `camera ... delivered no frame` | wrong index, or another process holds the device - **including a second copy of this service**. Only one process may own the camera. |
 | first detection takes ~30 s | normal: torch imports and a 159 MB Faster R-CNN loads on the first request only. |
-| objects detected but count lower than expected | HARMONY only reports bottles whose **cap** it also matched - that is where orientation comes from. |
+| objects detected but count lower than expected | only objects whose **cap** was also matched are reported - that is where orientation comes from. The difference is published as `objects_without_orientation`. |
 | coordinates all near `(1, 1)` | uncalibrated frame; WISEPACK rejects this rather than planning from it. |
 | detected but `outside_workarea` in diagnostics | the declared work area is smaller than the calibrated plane; set `WISEPACK_PHYSICAL_WORKAREA_*_MM`. |
 
@@ -2934,7 +3008,7 @@ backend-neutral list of
 
 A scene synchronizer needs an identity, a planar pose, a geometry and the frame
 the pose is in - which is exactly this, and nothing else. **No consumer will
-ever need to parse bottle-specific HARMONY JSON inside Isaac.**
+ever need to parse bottle-specific detector JSON inside Isaac.**
 
 ## 16. Tests and evidence
 
@@ -3068,7 +3142,7 @@ Full detail in [NOTICE](NOTICE).
 | From | Reused | Form |
 |---|---|---|
 | **TEMPO** | topic/QoS contract modules, Docker-only operation, `lib_validate.sh`, `clean_dds_shm.sh`, FastAPI dashboard structure, position-free topology, "KPI from artefact / not measured" pattern, two-theme tokens | adapted code |
-| **HARMONY** | `generate_config.py`, `docker-compose.dds.yml`, `bridge_config.yaml` structure, latency measurement method, `orion_classify` rule, py_trees task pattern, and the hard-won DDS knowledge (Vulcanexus requirement, reserved `status` leaf, `value.data` nesting) | adapted code + documented findings |
+| **HARMONY** | `generate_config.py`, `docker-compose.dds.yml`, `bridge_config.yaml` structure, latency measurement method, `orion_classify` rule, py_trees task pattern, the hard-won DDS knowledge (Vulcanexus requirement, reserved `status` leaf, `value.data` nesting), **and the Faster R-CNN bottle-detection pipeline** now adapted into `perception/` | adapted code + documented findings. The adapted perception code lives in WISEPACK; **HARMONY is not a runtime dependency of anything here.** |
 | **HARVEST** | seeded task generator pattern, YAML dynamic-event model, scenario comparison, map-style rendering | **concepts only - no code.** HARVEST ships no licence file, so everything was re-implemented from scratch. |
 
 ---

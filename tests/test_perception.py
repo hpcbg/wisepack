@@ -7,7 +7,7 @@ the transport by a stub. What the tests check is the part WISEPACK owns —
 
   * the default is still simulated perception, and `sim` behaves exactly as it
     did before this code existed;
-  * a HARMONY result becomes DOMAIN-NEUTRAL objects with x/y/yaw/confidence
+  * a detector result becomes DOMAIN-NEUTRAL objects with x/y/yaw/confidence
     preserved and the CONFIGURED proxy geometry attached;
   * every failure §15 lists is a visible failed batch, never an empty
     successful one and never a silent fall back to the simulator;
@@ -38,8 +38,8 @@ from wisepack_core.execution import ExecutionBackend              # noqa: E402
 # THE PROVIDER, imported from `perception/providers/` — the only detector-aware
 # code in the system. `wisepack_core` deliberately no longer contains it.
 from providers.fasterrcnn_bottle import (                          # noqa: E402
-    DETECTOR_ID, UNCALIBRATED_SENTINEL, observations_from_harmony,
-    parse_harmony_json,
+    DETECTOR_ID, UNCALIBRATED_SENTINEL, observations_from_detections,
+    parse_detection_json,
 )
 from wisepack_core.packing import OptimizerConfig                 # noqa: E402
 from wisepack_core.perception import (                            # noqa: E402
@@ -53,17 +53,19 @@ from wisepack_core.workflow import (                              # noqa: E402
 )
 
 # --------------------------------------------------------------------------- #
-# Fixtures: what HARMONY actually emits
+# Fixtures: what the WISEPACK detector actually emits
 # --------------------------------------------------------------------------- #
 
-#: The `result_json` document HARMONY's ROS 2 backend publishes, verbatim in
-#: shape (see ai-bottle-detector-fiware/ros2_backend.py::run_detection_real and
-#: pipeline.py::process_frame). Three objects, one of them the "selected" pick.
-HARMONY_RESULT = {
+#: The scalar part of what `providers/fasterrcnn_bottle.BottleDetector.process_frame`
+#: returns — verified against the real detector by
+#: `test_the_real_detector_reproduces_the_reference_measurement` below, which
+#: runs the actual network when torch and the weights are present. Three
+#: objects, one of them the "selected" pick.
+DETECTOR_RESULT = {
     "status": "DONE",
-    "bottleCount": 3,
-    "pickPose": {"x": 82.4, "y": 46.1, "rotation": -31.0},
-    "bottles": [
+    "object_count": 3,
+    "pick_pose": {"x": 82.4, "y": 46.1, "rotation": -31.0},
+    "objects": [
         {"x": 82.4, "y": 46.1, "yaw": -31.0, "conf": 0.94, "selected": True},
         {"x": 20.0, "y": 110.5, "yaw": 175.25, "conf": 0.87, "selected": False},
         {"x": 118.75, "y": 12.0, "yaw": 0.0, "conf": 0.71, "selected": False},
@@ -75,8 +77,8 @@ def _batch(payload=None, **kw) -> ObservationBatch:
     kw.setdefault("batch_id", "batch-001")
     kw.setdefault("captured_at", "2026-08-08T10:00:00.000Z")
     kw.setdefault("model_id", "/data/arise/models/best_model.pth")
-    return observations_from_harmony(
-        HARMONY_RESULT if payload is None else payload, **kw)
+    return observations_from_detections(
+        DETECTOR_RESULT if payload is None else payload, **kw)
 
 
 def _code_without_prose(text: str) -> str:
@@ -330,17 +332,24 @@ def test_core_stays_domain_neutral_outside_the_adapter():
         assert "bottle" not in json.dumps({**item, "observation": stripped}).lower()
 
 
-def test_alternative_harmony_payload_shapes_are_accepted():
-    """§7: reuse HARMONY's interfaces rather than demand a new one."""
-    bare_list = observations_from_harmony(HARMONY_RESULT["bottles"],
-                                          batch_id="b1")
-    pipeline_shape = observations_from_harmony(
-        {"bottles": HARMONY_RESULT["bottles"], "pick_pose": {}}, batch_id="b2")
-    assert bare_list.count == pipeline_shape.count == 3
+def test_alternative_detector_payload_shapes_are_accepted():
+    """Absorbing the variety is the PROVIDER's job, not the domain's.
+
+    `bottles` is the key the implementation this provider was adapted from used;
+    it is still accepted so a recorded result or an older transport document
+    keeps parsing, while the current detector emits `objects`.
+    """
+    bare_list = observations_from_detections(DETECTOR_RESULT["objects"],
+                                             batch_id="b1")
+    detector_shape = observations_from_detections(
+        {"objects": DETECTOR_RESULT["objects"], "pick_pose": {}}, batch_id="b2")
+    legacy_shape = observations_from_detections(
+        {"bottles": DETECTOR_RESULT["objects"], "pick_pose": {}}, batch_id="b3")
+    assert bare_list.count == detector_shape.count == legacy_shape.count == 3
 
 
 def test_rotation_is_accepted_where_yaw_is_absent():
-    batch = observations_from_harmony(
+    batch = observations_from_detections(
         [{"x": 5.0, "y": 6.0, "rotation": 42.0, "conf": 0.9}], batch_id="b")
     assert batch.observations[0].yaw_deg == 42.0
 
@@ -406,7 +415,7 @@ def test_waste_item_observation_round_trips_and_defaults_to_none():
 
 def test_no_detections_is_empty_not_an_error():
     """An empty table is a valid measurement; a failed scan is not."""
-    batch = observations_from_harmony({"status": "DONE", "bottles": []},
+    batch = observations_from_detections({"status": "DONE", "bottles": []},
                                       batch_id="b")
     assert batch.status is BatchStatus.EMPTY
     assert batch.ok and batch.count == 0 and not batch.error
@@ -414,13 +423,13 @@ def test_no_detections_is_empty_not_an_error():
 
 def test_malformed_payload_is_a_failed_batch_not_an_exception():
     for payload in (None, 42, "not-json-at-all", {"status": "DONE"}):
-        batch = observations_from_harmony(payload, batch_id="b")
+        batch = observations_from_detections(payload, batch_id="b")
         assert batch.status is BatchStatus.ERROR
         assert "malformed" in batch.error.lower()
 
 
 def test_entries_without_a_usable_position_are_dropped_and_counted():
-    batch = observations_from_harmony(
+    batch = observations_from_detections(
         [{"x": 10.0, "y": 20.0, "conf": 0.9},
          {"y": 5.0, "conf": 0.9},                      # no x
          {"x": "north", "y": 5.0},                     # unparseable
@@ -431,31 +440,31 @@ def test_entries_without_a_usable_position_are_dropped_and_counted():
 
 
 def test_a_wholly_malformed_object_list_fails_rather_than_reporting_zero():
-    batch = observations_from_harmony([{"conf": 0.9}, {"conf": 0.8}], batch_id="b")
+    batch = observations_from_detections([{"conf": 0.9}, {"conf": 0.8}], batch_id="b")
     assert batch.status is BatchStatus.ERROR
 
 
 def test_invalid_json_on_the_ros_topic_is_a_failed_batch():
-    batch = parse_harmony_json("{not json", batch_id="b")
+    batch = parse_detection_json("{not json", batch_id="b")
     assert batch.status is BatchStatus.ERROR
     assert "not valid JSON" in batch.error
 
 
 def test_detector_reported_failure_is_propagated_with_its_reason():
-    batch = observations_from_harmony(
+    batch = observations_from_detections(
         {"status": "FAILED", "error": "no camera frame available"}, batch_id="b")
     assert batch.status is BatchStatus.ERROR
     assert "no camera frame" in batch.error
 
 
 def test_uncalibrated_frame_is_rejected_rather_than_parsed():
-    """HARMONY substitutes (1, 1) for every object when it has no homography.
+    """The calibration substitutes (1, 1) for every object when it has no homography.
 
     Those are not measurements. Planning from a pile of objects at the same
     sentinel point would be nonsense presented as physics.
     """
     x, y = UNCALIBRATED_SENTINEL
-    batch = observations_from_harmony(
+    batch = observations_from_detections(
         [{"x": x, "y": y, "yaw": 0.0, "conf": 0.9},
          {"x": x, "y": y, "yaw": 0.0, "conf": 0.8}], batch_id="b")
     assert batch.status is BatchStatus.ERROR
@@ -465,7 +474,7 @@ def test_uncalibrated_frame_is_rejected_rather_than_parsed():
 
 def test_a_single_object_at_the_sentinel_is_still_rejected():
     x, y = UNCALIBRATED_SENTINEL
-    batch = observations_from_harmony([{"x": x, "y": y, "conf": 0.9}], batch_id="b")
+    batch = observations_from_detections([{"x": x, "y": y, "conf": 0.9}], batch_id="b")
     assert batch.status is BatchStatus.ERROR
 
 
@@ -479,7 +488,7 @@ def test_caller_supplied_calibration_status_wins():
 
 
 def test_out_of_range_confidence_is_dropped_not_carried():
-    batch = observations_from_harmony(
+    batch = observations_from_detections(
         [{"x": 5.0, "y": 5.0, "conf": 42.0}, {"x": 6.0, "y": 6.0, "conf": 1.0000001}],
         batch_id="b")
     assert batch.observations[0].confidence is None      # nonsense, not kept
@@ -488,37 +497,41 @@ def test_out_of_range_confidence_is_dropped_not_carried():
 
 def test_objects_outside_the_work_area_are_reported_never_moved():
     frame = WorkAreaFrame(width_mm=130, depth_mm=130)
-    batch = observations_from_harmony(
+    batch = observations_from_detections(
         [{"x": 900.0, "y": 900.0, "conf": 0.9}], batch_id="b", frame=frame)
     assert batch.detector_status["outside_workarea"] == 1
     assert batch.observations[0].x_mm == 900.0          # evidence preserved
 
 
 def test_a_batch_is_always_json_serialisable_even_from_raw_pipeline_output():
-    """REGRESSION. `pipeline.process_frame` returns the ANNOTATED IMAGES too.
+    """REGRESSION. `process_frame` returns the ANNOTATED IMAGES too.
 
-    Passing its return value straight in — which the detector service does, and
-    must, to reuse HARMONY unchanged — used to copy `processed_image` and
-    `ai_processed_image` into `detector_status`. Those are numpy arrays of a
-    whole camera frame: unserialisable, and megabytes of binary on a topic that
-    is published as JSON over DDS. Found by running the real detector on a
-    synthetic frame; the batch has to survive `json.dumps` in every path.
+    Passing its return value straight in — which the detector service does —
+    used to copy the annotated frames into `detector_status`. Those are numpy
+    arrays of a whole camera frame: unserialisable, and megabytes of binary on a
+    topic that is published as JSON over DDS. Found by running the real detector
+    on a synthetic frame; the batch has to survive `json.dumps` in every path.
     """
     class _FakeImage:                       # stands in for a numpy frame
         def __repr__(self): return "<image>"
 
-    raw = {"bottles": [], "pick_pose": {},
+    raw = {"objects": [], "pick_pose": {},
+           "annotated_image": _FakeImage(), "detections_image": _FakeImage(),
+           # the key names the earlier implementation used, for good measure
            "processed_image": _FakeImage(), "ai_processed_image": _FakeImage()}
     for status in (None, "valid", "invalid"):
-        batch = observations_from_harmony(raw, batch_id="b",
-                                          calibration_status=status)
+        batch = observations_from_detections(raw, batch_id="b",
+                                             calibration_status=status)
         json.dumps(batch.to_dict())         # must not raise
+        assert "annotated_image" not in batch.detector_status
         assert "processed_image" not in batch.detector_status
 
-    with_objects = observations_from_harmony(
-        {**raw, "bottles": HARMONY_RESULT["bottles"]}, batch_id="b")
+    with_objects = observations_from_detections(
+        {**raw, "objects": DETECTOR_RESULT["objects"]}, batch_id="b")
     json.dumps(with_objects.to_dict())
-    assert set(with_objects.detector_status) <= {"status", "bottleCount",
+    assert set(with_objects.detector_status) <= {"status", "object_count",
+                                                 "objects_without_orientation",
+                                                 "caps_detected", "bottleCount",
                                                  "pickPose", "pick_pose",
                                                  "malformed_entries",
                                                  "outside_workarea", "workarea"}
@@ -562,7 +575,7 @@ def test_repeated_detection_replaces_and_never_accumulates():
     first_revision = engine.scenario_revision
 
     # The operator moves the objects and detects again: TWO objects now.
-    moved = observations_from_harmony(
+    moved = observations_from_detections(
         [{"x": 5.0, "y": 5.0, "yaw": 10.0, "conf": 0.9},
          {"x": 100.0, "y": 100.0, "yaw": -10.0, "conf": 0.8}],
         batch_id="batch-002", captured_at="2026-08-08T10:05:00.000Z")
@@ -609,14 +622,14 @@ def test_a_failed_scan_never_falls_back_to_simulated_detections():
 def test_a_provider_that_raises_is_a_failed_scan_not_a_crash():
     """Camera or model failure must not take unrelated components down (§5)."""
     def explode():
-        raise ConnectionRefusedError("HARMONY service unavailable")
+        raise ConnectionRefusedError("perception service unavailable")
 
     engine = _engine(perception_source=PerceptionSource.CAMERA)
     engine.observation_provider = explode
     engine.generate_or_load_scenario()
     with pytest.raises(PerceptionUnavailable) as exc:
         engine.scan_and_detect()
-    assert "HARMONY service unavailable" in str(exc.value)
+    assert "perception service unavailable" in str(exc.value)
 
 
 def test_a_missing_provider_says_what_to_start():
@@ -629,7 +642,7 @@ def test_a_missing_provider_says_what_to_start():
 
 def test_an_empty_physical_batch_plans_nothing_without_claiming_failure():
     engine = _engine(perception_source=PerceptionSource.CAMERA)
-    engine.observation_provider = lambda: observations_from_harmony(
+    engine.observation_provider = lambda: observations_from_detections(
         {"status": "DONE", "bottles": []}, batch_id="b")
     engine.generate_or_load_scenario()
     assert engine.scan_and_detect() == {}
@@ -663,14 +676,6 @@ def test_observation_staleness_is_computed_from_the_capture_time():
 # --------------------------------------------------------------------------- #
 
 
-class _StubPipeline:
-    """Stands in for HARMONY's `pipeline` module: only the marker cache is read."""
-
-    def __init__(self, calibrated=True):
-        self._last_valid_plane_markers = [[0, 0], [1, 0], [1, 1], [0, 1]] \
-            if calibrated else None
-
-
 class _StubFrame:
     """A camera frame. Only `.copy()` is used by the detector runtime."""
 
@@ -678,9 +683,37 @@ class _StubFrame:
         return self
 
 
+class _StubDetector:
+    """Stands in for the provider: `process_frame` and nothing else.
+
+    That IS the provider contract, which is why the whole service is testable
+    without torch: if a stub this small satisfies the runtime, no detector
+    knowledge has leaked out of `perception/providers/`.
+    """
+
+    def __init__(self, *, calibrated=True, inference_error=None, objects=None):
+        self.calibrated = calibrated
+        self.inference_error = inference_error
+        self.objects = objects
+
+    def process_frame(self, _frame):
+        if self.inference_error:
+            raise RuntimeError(self.inference_error)
+        return {
+            "objects": self.objects if self.objects is not None else
+                       [{"x": 10.0, "y": 20.0, "yaw": 5.0, "conf": 0.9}],
+            "pick_pose": {},
+            "calibration": {
+                "status": "valid" if self.calibrated else "invalid",
+                "revision": "abc123def456" if self.calibrated else "",
+                "markers_in_frame": self.calibrated,
+            },
+        }
+
+
 def _runtime(monkeypatch, clock, *, frame=_StubFrame(), calibrated=True,
              pipeline_error=None, inference_error=None, objects=None):
-    """A DetectorRuntime with the camera, model and clock replaced.
+    """A DetectorRuntime with the camera, provider and clock replaced.
 
     No torch, no cv2, no camera and no model file: everything heavy is behind
     the three seams stubbed here, which is what makes the timestamp semantics
@@ -690,23 +723,17 @@ def _runtime(monkeypatch, clock, *, frame=_StubFrame(), calibrated=True,
     monkeypatch.setattr(svc, "utc_now_iso", lambda: next(clock))
     rt = svc.DetectorRuntime()
 
-    def ensure_pipeline():
+    def ensure_detector():
         if pipeline_error:
             raise RuntimeError(pipeline_error)
-        rt._pipeline = _StubPipeline(calibrated)
+        rt._detector = _StubDetector(calibrated=calibrated,
+                                     inference_error=inference_error,
+                                     objects=objects)
         rt.model_loaded = True
 
-    def process_frame(_f):
-        if inference_error:
-            raise RuntimeError(inference_error)
-        return {"bottles": objects if objects is not None else
-                [{"x": 10.0, "y": 20.0, "yaw": 5.0, "conf": 0.9}],
-                "pick_pose": {}}
-
-    monkeypatch.setattr(rt, "_ensure_pipeline", ensure_pipeline)
+    monkeypatch.setattr(rt, "_ensure_detector", ensure_detector)
     monkeypatch.setattr(rt, "frame", lambda timeout_s=3.0: frame)
     monkeypatch.setattr(rt, "jpeg", lambda _f: b"")
-    rt._process_frame = process_frame
     return rt
 
 
@@ -807,8 +834,8 @@ def test_staleness_is_measured_from_the_frame_not_the_request(monkeypatch):
 
 
 def test_requested_at_defaults_empty_and_is_optional():
-    """Producers that have no request time (HARMONY's own topic) still work."""
-    batch = parse_harmony_json(
+    """Producers that have no request time (a bare transport document) still work."""
+    batch = parse_detection_json(
         json.dumps({"bottles": [{"x": 1.0, "y": 2.0, "conf": 0.9}]}),
         batch_id="b", captured_at="2026-08-08T15:00:00.000Z")
     assert batch.requested_at == ""
@@ -818,7 +845,7 @@ def test_requested_at_defaults_empty_and_is_optional():
 
 def test_an_unstamped_batch_is_not_reported_stale():
     """Unknown age must not render as "stale" — that would be an invention."""
-    batch = observations_from_harmony(HARMONY_RESULT, batch_id="b", captured_at="")
+    batch = observations_from_detections(DETECTOR_RESULT, batch_id="b", captured_at="")
     assert not is_stale(batch)
 
 
@@ -914,41 +941,80 @@ def test_model_resolution_prefers_the_configured_path():
 def test_a_configured_path_that_is_missing_is_an_error_not_a_fallback():
     """Loading different weights than the ones asked for is worse than failing."""
     result = resolve_model_path(configured="/nowhere/weights.pth",
-                                harmony_dir="/harmony", exists=lambda p: True)
+                                cache_dir="/cache", exists=lambda p: True)
     assert False is result.available or result.origin == "configured"
 
 
 def test_configured_missing_path_reports_itself():
     result = resolve_model_path(configured="/nowhere/weights.pth",
-                                harmony_dir="/harmony", exists=lambda p: False)
+                                cache_dir="/cache", exists=lambda p: False)
     assert not result.available
     assert "/nowhere/weights.pth" in result.message
     assert result.searched == ["/nowhere/weights.pth"]
 
 
 def test_model_resolution_falls_back_to_the_shared_arise_copy():
-    result = resolve_model_path(configured="", harmony_dir="/harmony",
+    result = resolve_model_path(configured="", cache_dir="/cache",
                                 env={}, exists=lambda p: p == ARISE_MODEL_PATH)
     assert result.path == ARISE_MODEL_PATH
     assert result.origin == "arise_shared"
 
 
-def test_model_resolution_falls_back_to_the_harmony_cache():
-    cached = "/harmony/models/best_model.pth"
-    result = resolve_model_path(configured="", harmony_dir="/harmony",
+def test_model_resolution_falls_back_to_the_wisepack_cache():
+    """The cache is WISEPACK's OWN — no foreign checkout is ever searched."""
+    cached = "/cache/best_model.pth"
+    result = resolve_model_path(configured="", cache_dir="/cache",
                                 env={}, exists=lambda p: p == cached)
-    assert result.path == cached and result.origin == "harmony_cache"
+    assert result.path == cached and result.origin == "wisepack_cache"
+
+
+def test_the_wisepack_cache_lives_inside_the_repository_by_default():
+    """Disposable, git-ignored, and next to the perception environment."""
+    import model_store
+    cache = model_store.default_cache_dir(env={})
+    assert cache == os.path.join(REPO, ".cache-perception", "models")
+    gitignore = (pathlib.Path(REPO) / ".gitignore").read_text()
+    assert ".cache-perception/" in gitignore
+    assert ".venv-perception/" in gitignore
 
 
 def test_absent_model_is_a_clear_diagnostic_not_a_pytorch_traceback():
     """§4: absence must name the file, the repo and the command to fix it."""
-    result = resolve_model_path(configured="", harmony_dir="/harmony",
+    result = resolve_model_path(configured="", cache_dir="/cache",
                                 env={}, exists=lambda p: False)
     assert not result.available and result.path is None
     assert ARISE_MODEL_PATH in result.message
     assert HUGGINGFACE_REPO in result.message
     assert "curl" in result.message
+    assert "setup_perception.sh" in result.message
     assert result.to_dict()["download_url"].endswith("best_model.pth")
+
+
+def test_an_explicit_model_path_is_never_replaced_by_a_download(tmp_path,
+                                                                monkeypatch):
+    """A named file that is absent is a miss to report, not a reason to fetch."""
+    import model_store
+    downloads = []
+    monkeypatch.setattr(model_store, "download_model",
+                        lambda *a, **k: downloads.append(a) or "")
+    result = model_store.ensure_model(
+        configured=str(tmp_path / "nope.pth"),
+        cache_dir=str(tmp_path / "cache"),
+        env={"WISEPACK_PERCEPTION_MODEL_PATH": str(tmp_path / "nope.pth")},
+        allow_download=True)
+    assert not result.available
+    assert downloads == [], "an explicit path was silently replaced by a download"
+
+
+def test_the_download_can_be_switched_off_for_an_air_gapped_host(tmp_path):
+    import model_store
+    assert model_store.download_enabled(env={}) is True
+    assert model_store.download_enabled(
+        env={"WISEPACK_PERCEPTION_MODEL_DOWNLOAD": "0"}) is False
+    result = model_store.ensure_model(
+        configured="", cache_dir=str(tmp_path / "cache"),
+        env={}, allow_download=False)
+    assert not result.available or result.origin != "downloaded"
 
 
 # --------------------------------------------------------------------------- #
@@ -969,7 +1035,7 @@ def test_scene_objects_expose_pose_and_geometry_without_detector_json():
                              "yaw_deg": -31.0}
     assert first["geometry"] == {"shape": "cylinder", "diameter_mm": 70,
                                  "length_mm": 250, "source": "configured_proxy"}
-    # It is a plain JSON document — no HARMONY key survives into it.
+    # It is a plain JSON document — no detector-specific key survives into it.
     assert "bottles" not in json.dumps(objects)
 
 
@@ -1059,39 +1125,71 @@ def test_the_host_service_contains_no_middleware():
 
 
 def test_service_config_honours_the_camera_override(monkeypatch):
-    import perception_service as svc
+    from perception_config import PerceptionConfig
     monkeypatch.setenv("WISEPACK_PERCEPTION_CAMERA", "4")
-    assert svc.build_harmony_config()["CAMERA"] == 4
+    assert PerceptionConfig.from_env().camera == 4
     # A device path or an RTSP URL stays a string; only a bare index is an int.
     monkeypatch.setenv("WISEPACK_PERCEPTION_CAMERA", "/dev/video2")
-    assert svc.build_harmony_config()["CAMERA"] == "/dev/video2"
+    assert PerceptionConfig.from_env().camera == "/dev/video2"
+    monkeypatch.setenv("WISEPACK_PERCEPTION_CAMERA", "rtsp://cam.local/stream")
+    assert PerceptionConfig.from_env().camera == "rtsp://cam.local/stream"
 
 
-def test_service_config_takes_an_absolute_model_path():
-    import perception_service as svc
-    config = svc.build_harmony_config(model_path=ARISE_MODEL_PATH)
-    assert config["MODEL_PATH"] == ARISE_MODEL_PATH
+def test_service_config_takes_the_resolved_model_path():
+    from perception_config import PerceptionConfig
+    config = PerceptionConfig.from_env(model_path=ARISE_MODEL_PATH)
+    assert config.model_path == ARISE_MODEL_PATH
+
+
+def test_a_bad_perception_setting_is_reported_never_silently_defaulted(monkeypatch):
+    """A typo that quietly restored the default would change what is measured."""
+    from perception_config import PerceptionConfig, PerceptionConfigurationError
+    for name, value in (("WISEPACK_PERCEPTION_WIDTH", "wide"),
+                        ("WISEPACK_PERCEPTION_CONFIDENCE", "very"),
+                        ("WISEPACK_PERCEPTION_CONFIDENCE", "5"),
+                        ("WISEPACK_PERCEPTION_SET_RESOLUTION", "maybe"),
+                        ("WISEPACK_PERCEPTION_CALIBRATION_EXTENT_MM", "big"),
+                        ("WISEPACK_PERCEPTION_CALIBRATION_MARKERS", "11,ten")):
+        monkeypatch.setenv(name, value)
+        with pytest.raises(PerceptionConfigurationError):
+            PerceptionConfig.from_env()
+        monkeypatch.delenv(name)
 
 
 def test_a_larger_calibration_board_is_configuration_not_code(monkeypatch):
     """§13: make the extent configurable rather than hardcode a new layout."""
-    import perception_service as svc
-    monkeypatch.setenv("WISEPACK_HARMONY_CORNER_EXTENT_MM", "600")
-    monkeypatch.setenv("WISEPACK_HARMONY_CORNER_MARKERS", "11,10,15,16")
-    config = svc.build_harmony_config()
-    assert config["CORNER_COORDINATES"] == [[0, 0], [600.0, 0], [600.0, 600.0],
-                                            [0, 600.0]]
-    frame = svc.work_area_from_config(config)
+    from perception_config import PerceptionConfig
+    monkeypatch.setenv("WISEPACK_PERCEPTION_CALIBRATION_EXTENT_MM", "600")
+    monkeypatch.setenv("WISEPACK_PERCEPTION_CALIBRATION_MARKERS", "11,10,15,16")
+    monkeypatch.delenv("WISEPACK_PHYSICAL_WORKAREA_WIDTH_MM", raising=False)
+    monkeypatch.delenv("WISEPACK_PHYSICAL_WORKAREA_DEPTH_MM", raising=False)
+    config = PerceptionConfig.from_env()
+    assert config.board.corners_mm == ((0.0, 0.0), (600.0, 0.0),
+                                       (600.0, 600.0), (0.0, 600.0))
+    assert config.board.marker_ids == (11, 10, 15, 16)
+    frame = config.work_area()
     assert (frame.width_mm, frame.depth_mm) == (600, 600)
 
 
-def test_the_work_area_frame_follows_harmonys_calibrated_plane():
-    """WISEPACK adopts HARMONY's coordinate system; it does not redesign it."""
-    import perception_service as svc
-    frame = svc.work_area_from_config(
-        {"CORNER_COORDINATES": [[0, 0], [130, 0], [130, 130], [0, 130]]})
+def test_the_work_area_frame_follows_the_calibrated_plane(monkeypatch):
+    """The measured plane IS the work-area frame — no transform of our own."""
+    from perception_config import PerceptionConfig
+    for name in ("WISEPACK_PERCEPTION_CALIBRATION_EXTENT_MM",
+                 "WISEPACK_PHYSICAL_WORKAREA_WIDTH_MM",
+                 "WISEPACK_PHYSICAL_WORKAREA_DEPTH_MM"):
+        monkeypatch.delenv(name, raising=False)
+    frame = PerceptionConfig.from_env().work_area()
     assert (frame.width_mm, frame.depth_mm) == (130, 130)
     assert frame.frame_id == "wisepack_workarea"
+
+
+def test_a_calibration_board_must_pair_every_marker_with_a_coordinate():
+    from perception_config import CalibrationBoard, PerceptionConfigurationError
+    with pytest.raises(PerceptionConfigurationError):
+        CalibrationBoard(marker_ids=(1, 2, 3), corners_mm=((0, 0), (1, 0),
+                                                           (1, 1), (0, 1)))
+    with pytest.raises(PerceptionConfigurationError):
+        CalibrationBoard.square(130, (11, 11, 15, 16))     # duplicate ids
 
 
 # --------------------------------------------------------------------------- #
@@ -1100,7 +1198,7 @@ def test_the_work_area_frame_follows_harmonys_calibrated_plane():
 
 
 class _StubClient:
-    """A perception service that is not there. §15's "HARMONY unavailable"."""
+    """A perception service that is not there. §15's "detector unavailable"."""
 
     def __init__(self, url="http://127.0.0.1:22101"):
         self.url = url
@@ -1119,7 +1217,7 @@ def test_client_reports_an_unreachable_service_without_raising():
     # TRI-STATE: unknown is not the same as "no camera".
     assert health["camera_available"] is None
     assert "unreachable" in health["last_error"]
-    assert "harmony_perception_service" in health["note"]
+    assert "perception/perception_service.py" in health["note"]
 
     batch = client.detect()
     assert batch.status is BatchStatus.ERROR
@@ -1263,7 +1361,7 @@ def test_provider_selection_is_a_separate_axis_from_the_source():
 
 
 def test_the_core_contains_no_detector_specific_module():
-    """§3: HARMONY-specific parsing lives in the provider, not in the domain."""
+    """§3: detector-specific parsing lives in the provider, not in the domain."""
     core = pathlib.Path(REPO) / "wisepack_ws" / "src" / "wisepack_core" / "wisepack_core"
     assert not (core / "harmony_adapter.py").exists(), (
         "detector-specific parsing must not live in the domain package")
@@ -1295,7 +1393,7 @@ def test_no_planning_or_execution_module_mentions_a_detector(module):
 
 
 def test_the_operator_facing_ui_shows_no_provider_architecture_label():
-    """§13: `Source: HARMONY CAMERA` must not be reachable in the panel."""
+    """§13: a provider name must not be reachable as a source label."""
     html = (pathlib.Path(REPO) / "web" / "index.html").read_text()
     assert "harmony" not in html.lower()
     # The panel names the METHOD, from the service's health document.

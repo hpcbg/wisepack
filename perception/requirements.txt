@@ -1,0 +1,35 @@
+# WISEPACK perception service — Python dependencies.
+#
+# These are the packages `perception/perception_service.py` and its providers
+# import. They are installed into the WISEPACK-OWNED environment:
+#
+#     ./scripts/setup_perception.sh          # creates .venv-perception/
+#
+# NEVER into the system Python, and never by activating someone else's venv.
+# The launcher starts the service with `.venv-perception/bin/python` directly.
+#
+# Nothing else in WISEPACK needs any of this: the dashboard, the ROS 2 nodes and
+# the whole containerised Vulcanexus stack run without torch, without OpenCV and
+# without a camera. Simulated perception (the default) installs nothing at all.
+#
+# Determined from the working detector this provider was adapted from, not
+# guessed:  torch + torchvision (Faster R-CNN), OpenCV (capture, ArUco, drawing,
+# JPEG), numpy (geometry), fastapi + uvicorn (the HTTP service). Pillow arrives
+# as a torchvision dependency and is listed because the provider's image path
+# relies on it being present rather than optional.
+
+torch>=2.0                  # BSD-3 — Faster R-CNN inference
+torchvision>=0.15           # BSD-3 — fasterrcnn_resnet50_fpn + to_tensor
+opencv-python>=4.7          # Apache-2.0 — VideoCapture, cv2.aruco, drawing, imencode
+                            #   4.7 is the floor: ArUco moved into the main
+                            #   module there, so `opencv-contrib-python` is
+                            #   equivalent but not required.
+numpy>=1.24                 # BSD-3 — homography arithmetic
+pillow>=9.0                 # MIT-CMU — torchvision's image backend
+fastapi>=0.100              # MIT — the HTTP interface
+uvicorn>=0.23               # BSD-3 — the ASGI server
+
+# GPU NOTE. The default PyPI `torch` wheel is CPU-only on some platforms and
+# CUDA-enabled on others. If this host already has a CUDA build installed,
+# scripts/setup_perception.sh reuses it rather than downloading a second copy —
+# see that script's --isolated flag for the opposite behaviour.

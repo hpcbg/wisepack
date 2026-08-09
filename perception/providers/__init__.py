@@ -6,7 +6,9 @@ produces into the domain-neutral `ObservationBatch` defined in
 package knows which provider ran, what it detects, or where it came from.
 
     fasterrcnn_bottle   Faster R-CNN + ArUco homography on a calibrated plane.
-                        The implementation developed in HARMONY, reused.
+                        Adapted from the HARMONY project (MIT) and now WISEPACK
+                        code: it runs from this repository and no HARMONY
+                        checkout is involved at runtime. See NOTICE.
 
 Future siblings — YOLO/OBB, RGB-D pose estimation, segmentation — are added
 here and selected with `WISEPACK_PERCEPTION_DETECTOR`. Nothing else moves.

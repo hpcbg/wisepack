@@ -100,8 +100,8 @@ def generate_launch_description() -> LaunchDescription:
                                               default_value="sim"),
             description=("Where the OBJECT OBSERVATIONS come from: `sim` (the "
                          "default and unchanged simulated detector) or "
-                         "`harmony_camera` (a real camera through the HARMONY "
-                         "Faster R-CNN detector). Empty resolves it from "
+                         "`camera` (a real camera through the configured "
+                         "WISEPACK perception provider). Empty resolves it from "
                          "WISEPACK_PERCEPTION_SOURCE, which defaults to `sim`. "
                          "This is a THIRD axis: it is neither the dashboard "
                          "data source nor the execution backend, and every "

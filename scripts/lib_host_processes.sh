@@ -4,14 +4,14 @@
 #
 #     . "$REPO/scripts/lib_host_processes.sh"
 #     host_register_cleanup isaac_cleanup
-#     host_register_cleanup harmony_cleanup
+#     host_register_cleanup perception_cleanup
 #     host_run_foreground docker run ...        # or exec, when nothing is owned
 #
 # WHY THIS EXISTS
 # ---------------
-# The launcher can own more than one host process at a time: Isaac Sim, and now
-# the HARMONY perception service. `trap 'isaac_cleanup' EXIT INT TERM` followed
-# by `trap 'harmony_cleanup' EXIT INT TERM` does NOT compose — the second call
+# The launcher can own more than one host process at a time: Isaac Sim, and the
+# WISEPACK perception service. `trap 'isaac_cleanup' EXIT INT TERM` followed
+# by `trap 'perception_cleanup' EXIT INT TERM` does NOT compose — the second call
 # silently replaces the first, and whichever process was registered earlier is
 # leaked on Ctrl-C. So there is exactly one trap, installed once, over a list of
 # hooks that each clean up only what they own.

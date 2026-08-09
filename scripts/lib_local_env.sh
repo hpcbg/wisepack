@@ -61,22 +61,25 @@ wisepack_load_local_env() {
                     || export WISEPACK_ISAAC_STREAM_HOST="$value"
                 ;;
             # -- PHYSICAL PERCEPTION (README §15a) -----------------------
-            # WISEPACK-owned settings first; the WISEPACK_HARMONY_* tail is
-            # provider-specific (where that detector's checkout and its ArUco
-            # calibration live) and an ordinary camera user never sets it.
-            # Host-specific by nature: which camera is plugged in, where the
-            # weights live, how big the printed calibration board is, and how
-            # big the objects on this table actually are. Listed here for the
-            # same reason as the two above — an allowlisted key is honoured,
+            # All WISEPACK-owned: perception runs entirely from this repository
+            # and no setting here names another project, its checkout or its
+            # Python. Host-specific by nature: which camera is plugged in, where
+            # the weights live, how big the printed calibration board is, and
+            # how big the objects on this table actually are. Listed here for
+            # the same reason as the two above — an allowlisted key is honoured,
             # and a key that is NOT listed is silently ignored, which would
             # make a documented variable quietly do nothing.
             WISEPACK_PERCEPTION_SOURCE|WISEPACK_PERCEPTION_DETECTOR|\
             WISEPACK_PERCEPTION_SERVICE_URL|WISEPACK_PERCEPTION_CAMERA|\
-            WISEPACK_PERCEPTION_PYTHON|WISEPACK_PERCEPTION_READY_TIMEOUT|\
-            WISEPACK_PERCEPTION_LOG|WISEPACK_PERCEPTION_MODEL_PATH|\
+            WISEPACK_PERCEPTION_READY_TIMEOUT|WISEPACK_PERCEPTION_LOG|\
+            WISEPACK_PERCEPTION_MODEL_PATH|WISEPACK_PERCEPTION_MODEL_CACHE|\
+            WISEPACK_PERCEPTION_MODEL_DOWNLOAD|WISEPACK_PERCEPTION_VENV|\
+            WISEPACK_PERCEPTION_AUTO_SETUP|WISEPACK_PERCEPTION_CONFIDENCE|\
             WISEPACK_PERCEPTION_WIDTH|WISEPACK_PERCEPTION_HEIGHT|\
-            WISEPACK_HARMONY_PATH|WISEPACK_HARMONY_RUNTIME_DIR|\
-            WISEPACK_HARMONY_CORNER_MARKERS|WISEPACK_HARMONY_CORNER_EXTENT_MM|\
+            WISEPACK_PERCEPTION_SET_RESOLUTION|\
+            WISEPACK_PERCEPTION_CALIBRATION_MARKERS|\
+            WISEPACK_PERCEPTION_CALIBRATION_EXTENT_MM|\
+            WISEPACK_PERCEPTION_CALIBRATION_DICTIONARY|\
             WISEPACK_PHYSICAL_PROXY_DIAMETER_MM|WISEPACK_PHYSICAL_PROXY_LENGTH_MM|\
             WISEPACK_PHYSICAL_PROXY_WALL_MM|WISEPACK_PHYSICAL_PROXY_MATERIAL|\
             WISEPACK_PHYSICAL_PROXY_GROUP|WISEPACK_PHYSICAL_FRAME_ID|\

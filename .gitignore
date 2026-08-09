@@ -24,6 +24,14 @@ results/*
 .env
 *.log
 
+# The WISEPACK-owned perception runtime. Both are DISPOSABLE and are rebuilt on
+# demand by scripts/setup_perception.sh: `.venv-perception/` holds torch,
+# torchvision, OpenCV, fastapi and uvicorn for the host perception service, and
+# `.cache-perception/` holds the ~159 MB detector weights. Neither belongs in
+# Git — one is platform-specific binaries, the other is a model artefact.
+.venv-perception/
+.cache-perception/
+
 # Host-specific settings (SSH port for the stream port-forward examples, etc).
 # The TEMPLATE config/local.env.example IS tracked; the filled-in file is not.
 config/local.env

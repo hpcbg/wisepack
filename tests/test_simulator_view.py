@@ -520,7 +520,7 @@ def test_cleanup_never_touches_unrelated_services(script):
             f"{os.path.basename(script)} uses {reckless!r}"
     # `service` is checked as a COMMAND, not as a substring. A bare
     # `"service "` also matched ordinary identifiers such as
-    # `harmony_ensure_service "$REPO"` and operator-facing text like
+    # `perception_ensure_service "$REPO"` and operator-facing text like
     # "detector service : ready" — neither of which acts on anything. The rule
     # this test enforces is about invoking `service <name> <verb>`.
     import re as _re

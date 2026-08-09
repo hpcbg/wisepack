@@ -6,11 +6,17 @@ sim` and friends — and with `WISEPACK_PERCEPTION_SOURCE=camera` in
 activate, no second terminal, no torch in the system Python, and no middleware
 on the host: the service speaks HTTP only.
 
-These tests drive the REAL shell libraries with a FAKE detector interpreter, so
-the whole lifecycle — interpreter resolution, reuse, readiness, failure,
-ownership and cleanup — is exercised without a camera, a GPU, torch, or any
-provider being installed. The one thing they never do is trust the script text
-where behaviour can be run instead.
+These tests drive the REAL shell libraries with a FAKE perception environment, so
+the whole lifecycle — environment resolution, first-run bootstrap, reuse,
+readiness, failure, ownership and cleanup — is exercised without a camera, a GPU,
+torch, or any provider being installed. The one thing they never do is trust the
+script text where behaviour can be run instead.
+
+THE ENVIRONMENT IS WISEPACK'S OWN. `WISEPACK_PERCEPTION_VENV` points the library
+at a throwaway `bin/python` for these tests; in production it is unset and the
+library resolves `<repo>/.venv-perception/bin/python`, created by
+`scripts/setup_perception.sh`. No other project's interpreter is involved, and
+there is no `WISEPACK_PERCEPTION_PYTHON` to set.
 """
 
 from __future__ import annotations
@@ -61,8 +67,14 @@ def _alive(pid: int) -> bool:
     return True
 
 
-#: A stand-in for `torch_venv/bin/python`, invoked exactly as the library
-#: invokes the real one: `<python> <service.py> --host H --port P`.
+#: A stand-in for `.venv-perception/bin/python`, invoked exactly as the library
+#: invokes the real one — twice, for two different purposes:
+#:
+#:   `<python> -c 'import torch, ...'`            the usability probe
+#:   `<python> <service.py> --host H --port P`    the service itself
+#:
+#: The probe must SUCCEED here (this stands in for a working environment); the
+#: `dead`/`hang` variants below override the second call to model a broken one.
 #:
 #: NOT indented and NOT passed through `textwrap.dedent`. The embedded Python
 #: below starts at column 0, so dedent would find no common prefix, strip
@@ -70,6 +82,8 @@ def _alive(pid: int) -> bool:
 #: papers over by re-running the file itself, and `execve` rejects outright with
 #: `OSError: [Errno 8] Exec format error`. The shebang has to be the first byte.
 _FAKE_DETECTOR = '''#!/usr/bin/env bash
+# The import probe: a usable environment answers 0 and prints nothing.
+[ "${1:-}" = "-c" ] && exit "${FAKE_PERCEPTION_IMPORT_RC:-0}"
 HOST=""; PORT=""
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -99,12 +113,19 @@ http.server.HTTPServer((sys.argv[1], int(sys.argv[2])), H).serve_forever()
 '''
 
 
+def _fake_venv(root, body=_FAKE_DETECTOR):
+    """A throwaway stand-in for `.venv-perception/`: just `bin/python`."""
+    python = root / "bin" / "python"
+    python.parent.mkdir(parents=True, exist_ok=True)
+    python.write_text(body)
+    python.chmod(0o755)
+    return root, python
+
+
 @pytest.fixture
 def harness(tmp_path):
-    """A fake detector interpreter plus a driver that sources the real libs."""
-    fake_py = tmp_path / "fake_python"
-    fake_py.write_text(_FAKE_DETECTOR)
-    fake_py.chmod(0o755)
+    """A fake perception environment plus a driver that sources the real libs."""
+    fake_venv, fake_py = _fake_venv(tmp_path / "venv")
     # The shebang must be the first byte, so `execve` accepts it directly rather
     # than relying on bash's ENOEXEC fallback — otherwise a test that spawns the
     # stub with `subprocess.Popen` fails for a reason that has nothing to do
@@ -143,19 +164,28 @@ def harness(tmp_path):
         def __init__(self):
             self.tmp = tmp_path
             self.repo = repo
+            self.venv = str(fake_venv)
             self.python = str(fake_py)
             self.log = str(tmp_path / "detector.log")
             self.port = _free_port()
             self.url = f"http://127.0.0.1:{self.port}"
             self.started = []
 
-        def run(self, *, python=None, url=None, env=None, timeout=90):
+        def venv_with(self, name, body):
+            """A second throwaway environment, for the failure cases."""
+            root, _python = _fake_venv(tmp_path / name, body)
+            return str(root)
+
+        def run(self, *, venv=None, url=None, env=None, timeout=90):
             environment = {
                 **os.environ,
-                "WISEPACK_PERCEPTION_PYTHON": python or self.python,
+                "WISEPACK_PERCEPTION_VENV": venv or self.venv,
                 "WISEPACK_PERCEPTION_SERVICE_URL": url or self.url,
                 "WISEPACK_PERCEPTION_LOG": self.log,
                 "WISEPACK_PERCEPTION_READY_TIMEOUT": "25",
+                # The bootstrap must never run in these tests: a fake
+                # environment is deliberately being supplied.
+                "WISEPACK_PERCEPTION_AUTO_SETUP": "0",
             }
             environment.update(env or {})
             proc = subprocess.run([str(driver)], capture_output=True, text=True,
@@ -221,8 +251,7 @@ def test_sim_perception_never_resolves_or_starts_the_provider(tmp_path):
     """
     env = {
         **os.environ,
-        "WISEPACK_PERCEPTION_PYTHON": "/nonexistent/python",
-        "WISEPACK_HARMONY_PATH": "/nonexistent/harmony",
+        "WISEPACK_PERCEPTION_VENV": "/nonexistent/venv",
         "PORT": str(_free_port()),
     }
     env.pop("WISEPACK_PERCEPTION_SOURCE", None)
@@ -232,13 +261,28 @@ def test_sim_perception_never_resolves_or_starts_the_provider(tmp_path):
     combined = proc.stdout + proc.stderr
     assert "[perception]" not in combined, (
         "sim perception performed provider work:\n" + combined)
-    assert "torch_venv" not in combined
+    assert "[perception-setup]" not in combined, (
+        "sim perception bootstrapped the perception environment:\n" + combined)
     # It must not have aborted for a perception reason either.
     assert proc.returncode != EXIT_PERCEPTION_UNAVAILABLE, combined
 
 
+def test_sim_perception_never_creates_the_perception_environment(tmp_path):
+    """§16: `perception=sim` must not touch `.venv-perception` at all."""
+    venv = tmp_path / "should-not-appear"
+    env = {**os.environ,
+           "WISEPACK_PERCEPTION_VENV": str(venv),
+           "PORT": str(_free_port())}
+    env.pop("WISEPACK_PERCEPTION_SOURCE", None)
+    subprocess.run(["timeout", "--signal=INT", "12", DASHBOARD, "sim"],
+                   capture_output=True, text=True, env=env, cwd=REPO,
+                   timeout=120)
+    assert not venv.exists(), (
+        "simulated perception created a perception environment it never uses")
+
+
 def test_the_launcher_only_acts_on_the_exact_camera_value():
-    """Guarded on `harmony_camera`, so a future source cannot start it by luck."""
+    """Guarded on `camera`, so a future source cannot start it by luck."""
     text = open(DASHBOARD, encoding="utf-8").read()
     assert '"${WISEPACK_PERCEPTION_SOURCE:-sim}" = "camera"' in text
     # Unset must behave as `sim` — the `:-sim` default is what guarantees it.
@@ -250,12 +294,12 @@ def test_the_launcher_only_acts_on_the_exact_camera_value():
 # --------------------------------------------------------------------------- #
 
 
-def _resolve(env=None, tmp_path=None):
+def _resolve(env=None, repo=None):
     script = textwrap.dedent(f"""\
         set -u
         . "{LIB_HOST}"
         . "{LIB_PERCEPTION}"
-        if perception_resolve_python; then
+        if perception_resolve_python "{repo or REPO}"; then
             echo "PY=$PERCEPTION_PYTHON"
             echo "ORIGIN=$PERCEPTION_PYTHON_ORIGIN"
         else
@@ -264,86 +308,137 @@ def _resolve(env=None, tmp_path=None):
         fi
     """)
     environment = {**os.environ}
-    environment.pop("WISEPACK_PERCEPTION_PYTHON", None)
-    environment.pop("WISEPACK_HARMONY_PATH", None)
+    environment.pop("WISEPACK_PERCEPTION_VENV", None)
+    # Never bootstrap from a resolution test: creating a real venv would take
+    # minutes and is exercised separately.
+    environment["WISEPACK_PERCEPTION_AUTO_SETUP"] = "0"
     environment.update(env or {})
     return subprocess.run(["bash", "-c", script], capture_output=True,
-                          text=True, env=environment, timeout=30)
+                          text=True, env=environment, timeout=60)
 
 
-def test_camera_mode_resolves_the_provider_venv_beside_its_checkout(tmp_path):
-    """The provider's own run.sh resolves `<checkout>/../torch_venv/bin/python`.
+def _usable_venv(root):
+    """A stand-in that passes the library's import probe."""
+    python = root / "bin" / "python"
+    python.parent.mkdir(parents=True, exist_ok=True)
+    python.write_text("#!/bin/sh\nexit 0\n")
+    python.chmod(0o755)
+    return python
 
-    Verified against the real HARMONY installation layout rather than assumed —
-    and deliberately NOT `.venv`, which this provider does not use.
+
+def test_camera_mode_resolves_the_wisepack_owned_environment(tmp_path):
+    """`.venv-perception/bin/python` inside the working directory. Nothing else.
+
+    This is the whole architectural point: the perception runtime belongs to
+    WISEPACK, so resolution never leaves the repository and never consults
+    another project's layout.
     """
-    harmony = tmp_path / "harmony"
-    detector = harmony / "ai-bottle-detector-fiware"
-    venv_python = harmony / "torch_venv" / "bin" / "python"
-    venv_python.parent.mkdir(parents=True)
-    detector.mkdir(parents=True)
-    venv_python.write_text("#!/bin/sh\n")
-    venv_python.chmod(0o755)
-
-    r = _resolve({"WISEPACK_HARMONY_PATH": str(detector)})
-    assert f"PY={venv_python}" in r.stdout
-    assert "ORIGIN=HARMONY torch_venv" in r.stdout   # provenance, in a diagnostic
-    assert ".venv" not in r.stdout
+    python = _usable_venv(tmp_path / ".venv-perception")
+    r = _resolve({"WISEPACK_PERCEPTION_VENV": str(tmp_path / ".venv-perception")})
+    assert f"PY={python}" in r.stdout, r.stdout + r.stderr
+    assert "ORIGIN=WISEPACK perception environment" in r.stdout
+    assert "harmony" not in r.stdout.lower()
+    assert "torch_venv" not in r.stdout
 
 
-def test_the_default_detector_path_yields_the_documented_interpreter():
-    """With nothing configured, the candidate is the documented ARISE layout."""
-    r = _resolve()
-    if "PY=" in r.stdout and r.stdout.split("PY=")[1].splitlines()[0]:
-        pytest.skip("a real provider torch_venv exists on this host")
-    assert "/torch_venv/bin/python" in r.stdout
-    assert "harmony" in r.stdout.lower()
+def test_the_default_location_is_the_repository_venv(tmp_path):
+    """Unset `WISEPACK_PERCEPTION_VENV` means `<repo>/.venv-perception`."""
+    repo = tmp_path / "repo"
+    _usable_venv(repo / ".venv-perception")
+    r = _resolve(repo=str(repo))
+    assert f"PY={repo}/.venv-perception/bin/python" in r.stdout, r.stdout
 
 
-def test_an_explicit_interpreter_overrides_the_default(tmp_path):
-    harmony = tmp_path / "harmony"
-    (harmony / "torch_venv" / "bin").mkdir(parents=True)
-    (harmony / "torch_venv" / "bin" / "python").write_text("#!/bin/sh\n")
-    (harmony / "torch_venv" / "bin" / "python").chmod(0o755)
-    (harmony / "ai-bottle-detector-fiware").mkdir()
+def test_an_environment_that_cannot_import_its_dependencies_is_rejected(tmp_path):
+    """EXISTING IS NOT USABLE. A venv whose torch is broken must fail here.
 
-    chosen = tmp_path / "my_python"
-    chosen.write_text("#!/bin/sh\n")
-    chosen.chmod(0o755)
+    The alternative is a service that starts, answers /health, and then dies on
+    the first detection with an ImportError sixty seconds into a demo.
+    """
+    venv = tmp_path / ".venv-perception"
+    python = venv / "bin" / "python"
+    python.parent.mkdir(parents=True)
+    python.write_text("#!/bin/sh\n"
+                      "echo \"ModuleNotFoundError: No module named 'torch'\" >&2\n"
+                      "exit 1\n")
+    python.chmod(0o755)
+    r = _resolve({"WISEPACK_PERCEPTION_VENV": str(venv)})
+    assert "PY=\n" in r.stdout + "\n"
+    assert "not usable" in r.stdout
 
-    r = _resolve({"WISEPACK_HARMONY_PATH": str(harmony / "ai-bottle-detector-fiware"),
-                  "WISEPACK_PERCEPTION_PYTHON": str(chosen)})
-    assert f"PY={chosen}" in r.stdout
-    assert "ORIGIN=WISEPACK_PERCEPTION_PYTHON" in r.stdout
 
-
-def test_a_missing_interpreter_fails_clearly_and_never_uses_system_python(tmp_path):
+def test_a_missing_environment_fails_with_exactly_one_command(tmp_path):
     """The observed failure was `No module named 'uvicorn'` under system python.
 
     So absence must be a clear, actionable error at start-up — never a fall
-    back to an interpreter that cannot import the detector's dependencies.
+    back to an interpreter that cannot import the service's dependencies — and
+    the way out must be ONE command.
     """
-    r = _resolve({"WISEPACK_HARMONY_PATH": str(tmp_path / "nowhere")})
-    assert "PY=\n" in r.stdout or "PY=" in r.stdout.splitlines()
+    r = _resolve({"WISEPACK_PERCEPTION_VENV": str(tmp_path / "nowhere")})
     message = r.stdout
-    assert "no perception detector interpreter found" in message
-    assert "torch_venv/bin/python" in message          # names what it looked for
-    assert "WISEPACK_PERCEPTION_PYTHON" in message        # names the way out
-    assert "uvicorn" in message                        # names why python3 is not used
+    assert "PY=\n" in message + "\n"
+    assert "./scripts/setup_perception.sh" in message      # the one command
+    assert "uvicorn" in message                            # why python3 is not used
+    assert "system python3" in message
+    # The failure text must not send anyone to another repository.
+    assert "harmony" not in message.lower()
+    assert "torch_venv" not in message
 
 
-def test_an_explicit_interpreter_that_is_missing_is_an_error_not_a_fallback(tmp_path):
-    harmony = tmp_path / "harmony"
-    (harmony / "torch_venv" / "bin").mkdir(parents=True)
-    (harmony / "torch_venv" / "bin" / "python").write_text("#!/bin/sh\n")
-    (harmony / "torch_venv" / "bin" / "python").chmod(0o755)
-    (harmony / "ai-bottle-detector-fiware").mkdir()
+def test_a_missing_environment_is_bootstrapped_once_by_default(tmp_path):
+    """§5: `./run_wisepack_dashboard.sh sim` stays the only command needed.
 
-    r = _resolve({"WISEPACK_HARMONY_PATH": str(harmony / "ai-bottle-detector-fiware"),
-                  "WISEPACK_PERCEPTION_PYTHON": "/nope/python"})
-    assert "is not an executable file" in r.stdout
-    # It must NOT silently use the torch_venv that does exist.
-    assert "torch_venv" not in r.stdout.split("ERROR")[-1]
+    The real setup script is replaced by a stub here — creating an actual venv
+    with torch in it would take minutes — but the LIBRARY's behaviour is real:
+    it must notice the miss, run the repository's setup script, and then use
+    the environment that appeared.
+    """
+    repo = tmp_path / "repo"
+    (repo / "scripts").mkdir(parents=True)
+    venv = repo / ".venv-perception"
+    marker = tmp_path / "setup-ran"
+    setup = repo / "scripts" / "setup_perception.sh"
+    setup.write_text(
+        "#!/usr/bin/env bash\n"
+        f"echo ran > {marker}\n"
+        f"mkdir -p {venv}/bin\n"
+        f"printf '#!/bin/sh\\nexit 0\\n' > {venv}/bin/python\n"
+        f"chmod 755 {venv}/bin/python\n")
+    setup.chmod(0o755)
+
+    environment = {**os.environ}
+    environment.pop("WISEPACK_PERCEPTION_VENV", None)
+    environment.pop("WISEPACK_PERCEPTION_AUTO_SETUP", None)
+    script = textwrap.dedent(f"""\
+        set -u
+        . "{LIB_HOST}"
+        . "{LIB_PERCEPTION}"
+        if perception_resolve_python "{repo}"; then
+            echo "PY=$PERCEPTION_PYTHON"
+            echo "ORIGIN=$PERCEPTION_PYTHON_ORIGIN"
+        else
+            echo "PY="
+        fi
+    """)
+    r = subprocess.run(["bash", "-c", script], capture_output=True, text=True,
+                       env=environment, timeout=60)
+    assert marker.exists(), "the launcher did not bootstrap the environment"
+    assert f"PY={venv}/bin/python" in r.stdout, r.stdout + r.stderr
+    assert "created just now" in r.stdout
+
+
+def test_the_bootstrap_can_be_switched_off(tmp_path):
+    """An operator who wants to control installation must be able to."""
+    repo = tmp_path / "repo"
+    (repo / "scripts").mkdir(parents=True)
+    marker = tmp_path / "setup-ran"
+    setup = repo / "scripts" / "setup_perception.sh"
+    setup.write_text(f"#!/usr/bin/env bash\necho ran > {marker}\n")
+    setup.chmod(0o755)
+
+    r = _resolve({"WISEPACK_PERCEPTION_AUTO_SETUP": "0"}, repo=str(repo))
+    assert not marker.exists(), "the bootstrap ran despite being switched off"
+    assert "./scripts/setup_perception.sh" in r.stdout
 
 
 # --------------------------------------------------------------------------- #
@@ -430,12 +525,12 @@ def test_something_else_listening_on_the_port_is_not_mistaken_for_the_detector(
 
 def test_a_service_that_dies_at_startup_reports_the_reason(harness, tmp_path):
     """The observed failure, reproduced: the interpreter cannot import uvicorn."""
-    dead = tmp_path / "dead_python"
-    dead.write_text("#!/usr/bin/env bash\n"
-                    "echo \"ModuleNotFoundError: No module named 'uvicorn'\" >&2\n"
-                    "exit 1\n")
-    dead.chmod(0o755)
-    proc = harness.run(python=str(dead))
+    dead = harness.venv_with("dead", "#!/usr/bin/env bash\n"
+                             "[ \"${1:-}\" = \"-c\" ] && exit 0\n"
+                             "echo \"ModuleNotFoundError: No module named "
+                             "'uvicorn'\" >&2\n"
+                             "exit 1\n")
+    proc = harness.run(venv=dead)
     combined = proc.stdout + proc.stderr
     assert "ENSURE=failed" in proc.stdout
     assert "exited during start-up" in combined
@@ -445,11 +540,11 @@ def test_a_service_that_dies_at_startup_reports_the_reason(harness, tmp_path):
 
 def test_a_service_that_never_becomes_healthy_times_out_and_is_stopped(
         harness, tmp_path):
-    hang = tmp_path / "hang_python"
-    hang.write_text("#!/usr/bin/env bash\necho starting\nsleep 300\n")
-    hang.chmod(0o755)
+    hang = harness.venv_with("hang", "#!/usr/bin/env bash\n"
+                             "[ \"${1:-}\" = \"-c\" ] && exit 0\n"
+                             "echo starting\nsleep 300\n")
     started = time.monotonic()
-    proc = harness.run(python=str(hang),
+    proc = harness.run(venv=hang,
                        env={"WISEPACK_PERCEPTION_READY_TIMEOUT": "3"})
     elapsed = time.monotonic() - started
     combined = proc.stdout + proc.stderr
@@ -465,7 +560,8 @@ def test_the_launcher_aborts_rather_than_running_simulated_perception():
     env = {
         **os.environ,
         "WISEPACK_PERCEPTION_SOURCE": "camera",
-        "WISEPACK_PERCEPTION_PYTHON": "/nonexistent/python",
+        "WISEPACK_PERCEPTION_VENV": "/nonexistent/venv",
+        "WISEPACK_PERCEPTION_AUTO_SETUP": "0",
         "WISEPACK_PERCEPTION_SERVICE_URL": f"http://127.0.0.1:{_free_port()}",
         "PORT": str(port),
     }
@@ -598,10 +694,11 @@ def test_the_launcher_starts_the_service_with_no_middleware(harness):
 
 
 def test_the_launcher_never_activates_the_provider_venv():
-    """Activating it would put HARMONY's interpreter ahead of everything else.
+    """Activating it would put this interpreter ahead of everything else.
 
-    The interpreter is invoked directly instead — which is also what HARMONY's
-    own run.sh does for real detection.
+    Everything the launcher runs after the perception service — the dashboard,
+    Docker, the status writers — would resolve out of the perception venv's
+    site-packages. It is invoked directly instead.
     """
     for path in (DASHBOARD, LIB_PERCEPTION):
         text = open(path, encoding="utf-8").read()
@@ -639,7 +736,7 @@ def test_no_middleware_is_sourced_anywhere_for_the_camera():
 
 @pytest.mark.parametrize("library", [LIB_PERCEPTION, LIB_HOST, DASHBOARD])
 def test_no_pattern_based_process_cleanup_is_introduced(library):
-    """`pkill -f harmony_perception_service` would kill an operator's own run.
+    """`pkill -f perception_service` would kill an operator's own run.
 
     Scanned over EXECUTABLE lines only: these files explain in comments why
     pattern matching is forbidden, and a check that cannot tell an instruction

@@ -58,6 +58,52 @@ ADAPTED CODE (derived work, substantially modified):
       explanation of what "uninitialized" means are taken from HARMONY's
       validate_dds_native_demo.sh.
 
+  perception/providers/fasterrcnn_bottle.py
+  perception/calibration.py
+  perception/camera.py
+      Adapted from  ai-bottle-detector-fiware/pipeline.py and camera.py
+                    (MIT, "Copyright (c) 2026 Kaloyan Yovchev").
+      Reused: the Faster R-CNN construction for three classes and the
+      checkpoint-loading convention; the 0.5 confidence threshold; the ArUco
+      corner-marker detection, the ordered marker/coordinate correspondence and
+      the homography onto the declared plane; the persistent marker cache; the
+      (1, 1) sentinel for an uncalibrated frame; the bottle/cap association by
+      mask coverage; the yaw derivation from the object->cap vector measured ON
+      THE PLANE; the annotated-image rendering and its colours; and the
+      threaded grab-newest-frame camera loop.
+      These were reused rather than re-derived because they are validated
+      against this hardware and these weights: WISEPACK's regression test
+      (tests/test_perception_detector_regression.py) reproduces the original
+      implementation's measurements from a saved frame to 0.01 mm and 0.01 deg.
+      Changed: the code is restructured into a WISEPACK provider behind a
+      generic perception-provider interface, reads WISEPACK's own configuration
+      (no config.json is generated or read), reports calibration state
+      explicitly instead of leaving it to be inferred, adds bounded camera
+      error reporting, and emits domain-neutral ObservationBatch documents.
+
+      IMPORTANT: this is ADAPTED code, not a runtime integration. The required
+      implementation is included in WISEPACK and runs from this repository, in
+      WISEPACK's own perception environment. A HARMONY checkout is NOT required
+      at runtime and is never imported, executed or read from; the property is
+      enforced by tests/test_perception_independence.py.
+
+TEST DATA (used verbatim):
+
+  tests/data/perception/calibrated-scene.jpg
+      Copied from  ai-bottle-detector-fiware/utils/images/
+                   a6595ad23b83401da7c1bc8a24dbfc40.jpg  (MIT, as above).
+      A photograph of the calibration board with bottles on it, committed so
+      the detector regression can run with no camera, no network and no HARMONY
+      checkout. See tests/data/perception/README.md.
+
+MODEL ARTEFACT (used as published, not modified):
+
+  The detector weights are the bottle-detection model trained in HARMONY and
+  published at https://huggingface.co/hpcbg/harmony-bottle-detector. WISEPACK
+  downloads that public artefact into its own cache; the weights are never
+  committed to this repository. The model's origin is reported in the perception
+  service's /health document as `model_origin_note`.
+
 REUSED KNOWLEDGE (documented, not copied as code):
   - Vulcanexus is REQUIRED, not preferred: the FIWARE DDS Enabler only fills a
     value once the publisher propagates the std_msgs TypeObject, which plain
@@ -70,8 +116,11 @@ REUSED KNOWLEDGE (documented, not copied as code):
 
 DELIBERATELY NOT USED: HARMONY's custom `configurable_fiware_bridge` node. The
 brief specifies the DDS-native Orion-LD bridge, and WISEPACK uses that path only.
-Also unused: the xArm robot control, bottle detection, voice, gesture and React
-dashboard modules — none apply here.
+Also unused: the xArm robot control, the detector's NGSI-v2 service (main.py,
+fiware.py, jobs.py) and its ROS 2 backend (ros2_backend.py), the voice, gesture
+and React dashboard modules, and HARMONY's installer (setup.py /
+install_prerequisites.sh) — WISEPACK creates its own perception environment with
+scripts/setup_perception.sh.
 
 --------------------------------------------------------------------------------
 2. TEMPO — https://github.com/hpcbg/tempo

@@ -221,7 +221,7 @@ fi
 # A THIRD AXIS, independent of the mode above and of the execution backend. With
 # `WISEPACK_PERCEPTION_SOURCE=sim` — the default, and the value when the variable
 # is absent — NOTHING below happens: no interpreter is resolved, no process is
-# started, no HARMONY path is even looked at.
+# started, and the perception environment is not even looked at.
 #
 # Done HERE, before every `exec` path, so all five modes get it: `sim` execs the
 # dashboard a few lines down, and the live modes exec Docker at the end of the
@@ -801,7 +801,7 @@ DOCKER_RUN=(docker run --rm -i $([ -t 1 ] && echo -t) \
 python3 "$REPO/scripts/startup_status.py" proc --out "$HOST_STATUS" \
     --name wisepack-container --expected 1 --running 1 2>/dev/null || true
 
-# Foreground when this shell owns a host child — Isaac Sim, the HARMONY
+# Foreground when this shell owns a host child — Isaac Sim, the WISEPACK
 # perception service, or both — so the EXIT trap runs when the container stops
 # and Ctrl-C takes every owned process down with the stack. Plain `exec` when it
 # owns nothing, which is what every mode did before either existed.

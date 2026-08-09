@@ -6,13 +6,28 @@ WHAT THIS IS
 The WISEPACK-owned perception service. It is generic: it captures frames,
 answers health, runs one-shot detections, keeps the raw and annotated images,
 and returns `ObservationBatch` documents. It knows nothing about neural
-networks, bottles, or where any detector came from.
+networks, bottles, or how a pose is measured.
 
 Everything detector-specific lives behind the PROVIDER boundary in
-`perception/providers/`. Today that is `fasterrcnn_bottle`, which reuses the
-Faster R-CNN + ArUco implementation developed in HARMONY rather than rewriting
-it. Selecting a different provider — YOLO/OBB, RGB-D pose, segmentation — is
+`perception/providers/`. Today that is `fasterrcnn_bottle`; selecting a
+different provider — YOLO/OBB, RGB-D pose, segmentation — is
 `WISEPACK_PERCEPTION_DETECTOR`, and changes nothing in this file.
+
+WISEPACK OWNS ITS PERCEPTION RUNTIME
+------------------------------------
+Every executable line this service needs is in THIS repository:
+
+    perception/perception_config.py   the settings, WISEPACK's own
+    perception/camera.py              capture
+    perception/calibration.py         ArUco plane -> millimetres
+    perception/model_store.py         weights: resolve, cache, fetch
+    perception/providers/*.py         the detectors
+
+An earlier revision imported a HARMONY checkout at runtime — its `pipeline.py`,
+its `camera.py`, its `config.json`, its `torch_venv`. That made another
+repository a hard runtime dependency of a WISEPACK feature. It no longer is: the
+current provider's detection pipeline is ADAPTED FROM HARMONY (MIT, see NOTICE)
+and now lives here, so deleting `/data/arise/harmony` changes nothing.
 
 WHY IT RUNS ON THE HOST
 -----------------------
@@ -48,7 +63,7 @@ runs when someone asks for a detection and not otherwise. A 50 ms preview loop
 driving a half-second inference would produce a plan that changes under the
 operator while they read it.
 
-    <detector-python> perception/perception_service.py --port 22101
+    .venv-perception/bin/python perception/perception_service.py --port 22101
 
 Normally you do not run this by hand: the launcher starts it when
 `WISEPACK_PERCEPTION_SOURCE=camera`.
@@ -58,7 +73,6 @@ from __future__ import annotations
 
 import argparse
 import contextlib
-import hashlib
 import json
 import os
 import sys
@@ -76,165 +90,20 @@ for _path in (os.path.join(REPO, "wisepack_ws", "src", "wisepack_core"), HERE):
 from wisepack_core.events import utc_now_iso                       # noqa: E402
 from wisepack_core.perception import (                             # noqa: E402
     ObservationBatch, PerceptionHealth, PerceptionSource, ProxyGeometry,
-    WorkAreaFrame, resolve_detector, resolve_model_path,
+    resolve_detector,
 )
+from perception_config import PerceptionConfig                     # noqa: E402
+from calibration import PlaneCalibration                           # noqa: E402
+from model_store import default_cache_dir, ensure_model            # noqa: E402
 # THE ONLY detector-aware import in this file. One provider exists today; when a
 # second is added this becomes a lookup on `resolve_detector()` and nothing else
 # in the service changes.
-from providers import fasterrcnn_bottle as PROVIDER                 # noqa: E402
+from providers import fasterrcnn_bottle as PROVIDER                # noqa: E402
 
-#: Where the HARMONY checkout lives. A DOCUMENTED DEFAULT for the ARISE
-#: demonstrator host, overridable, and never assumed to exist: absence is
-#: reported as a health field, not raised as an import error.
-DEFAULT_HARMONY_PATH = "/data/arise/harmony/ai-bottle-detector-fiware"
-
-#: The port this service listens on. Deliberately NOT 22001: that is HARMONY's
-#: own NGSI-v2 service, and both must be able to run on one host.
+#: The port this service listens on. Deliberately NOT 22001: that is the port the
+#: original HARMONY NGSI-v2 detector service uses, and both must be able to run
+#: on one host without colliding.
 DEFAULT_PORT = 22101
-
-
-def harmony_path() -> str:
-    return os.path.abspath(os.environ.get("WISEPACK_HARMONY_PATH",
-                                          DEFAULT_HARMONY_PATH))
-
-
-# --------------------------------------------------------------------------- #
-# HARMONY runtime configuration
-# --------------------------------------------------------------------------- #
-#
-# HARMONY's `pipeline.py` and `camera.py` read `config/config.json` RELATIVE TO
-# THE WORKING DIRECTORY, and `config/config.json` is git-ignored in HARMONY (only
-# the `.tpl` is tracked). Writing into someone else's checkout to configure our
-# own run would be rude and would collide with a HARMONY operator's settings.
-#
-# So WISEPACK generates its own HARMONY-shaped config in a WISEPACK-owned runtime
-# directory and imports the HARMONY modules with that directory as the working
-# directory. HARMONY is used verbatim; only where it reads its settings from
-# changes, and the settings themselves come from the template plus WISEPACK
-# environment overrides.
-
-def runtime_dir() -> str:
-    """A WRITABLE directory for the generated HARMONY config.
-
-    Deliberately NOT inside the repository. `results/` holds run artefacts and
-    is frequently owned by another user or mounted read-only; a machine-local
-    cache is what this is, so it lives where machine-local caches live. The
-    temporary-directory fallback keeps the service usable on a host with no
-    writable HOME at all (a container running as an unmapped uid, say), because
-    failing to start a camera preview over a config file's location would be an
-    absurd way to lose a demo.
-    """
-    configured = os.environ.get("WISEPACK_HARMONY_RUNTIME_DIR", "").strip()
-    if configured:
-        return os.path.abspath(configured)
-    cache = (os.environ.get("XDG_CACHE_HOME", "").strip()
-             or os.path.join(os.path.expanduser("~"), ".cache"))
-    candidate = os.path.join(cache, "wisepack", "harmony_runtime")
-    try:
-        os.makedirs(candidate, exist_ok=True)
-        return candidate
-    except OSError:
-        import tempfile                                  # noqa: PLC0415
-        return os.path.join(tempfile.gettempdir(), "wisepack_harmony_runtime")
-
-
-def _template_config(harmony: str) -> Dict[str, Any]:
-    """HARMONY's own config template, or its documented defaults if absent."""
-    template = os.path.join(harmony, "config", "config.json.tpl")
-    with contextlib.suppress(OSError, ValueError):
-        with open(template, encoding="utf-8") as fh:
-            return json.load(fh)
-    return {"CAMERA": 0, "SET_RESOLUTION": True, "WIDTH": 1600, "HEIGHT": 1200,
-            "MODEL_PATH": "models/best_model.pth",
-            "CORNER_MARKERS": [11, 10, 15, 16],
-            "CORNER_COORDINATES": [[0, 0], [130, 0], [130, 130], [0, 130]]}
-
-
-def _camera_setting(raw: str) -> Any:
-    """A camera is an INDEX or a URL. `2` and `rtsp://…` both reach cv2 as-is.
-
-    `/dev/video2` and an RTSP URL are strings; a bare number must become an int,
-    because `cv2.VideoCapture("2")` opens a *file* called "2" and then reports a
-    perfectly ordinary "no frame" that looks exactly like an unplugged camera.
-    """
-    raw = str(raw).strip()
-    try:
-        return int(raw)
-    except ValueError:
-        return raw
-
-
-def build_harmony_config(model_path: Optional[str] = None,
-                         env: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
-    """HARMONY's configuration for THIS run: its template + WISEPACK overrides.
-
-    NO CAMERA DEVICE IS HARDCODED beyond the template's documented default —
-    `WISEPACK_PERCEPTION_CAMERA` (or HARMONY's own `AI_CAMERA`, honoured so an
-    operator's existing habit keeps working) selects it.
-    """
-    env = os.environ if env is None else env
-    config = _template_config(harmony_path())
-    camera = (env.get("WISEPACK_PERCEPTION_CAMERA")
-              or env.get("AI_CAMERA")
-              or "").strip()
-    if camera:
-        config["CAMERA"] = _camera_setting(camera)
-    if model_path:
-        # Absolute, so HARMONY's relative-path resolution is bypassed and the
-        # weights that get loaded are unambiguously the ones we resolved.
-        config["MODEL_PATH"] = os.path.abspath(model_path)
-    for key, name in (("WIDTH", "WISEPACK_PERCEPTION_WIDTH"),
-                      ("HEIGHT", "WISEPACK_PERCEPTION_HEIGHT")):
-        raw = str(env.get(name, "") or "").strip()
-        if raw.isdigit():
-            config[key] = int(raw)
-    # The calibrated plane. Overridable so a LARGER printed board is a
-    # configuration change, exactly as §13 requires — never a code change and
-    # never a silently redesigned layout.
-    markers = str(env.get("WISEPACK_HARMONY_CORNER_MARKERS", "") or "").strip()
-    if markers:
-        with contextlib.suppress(ValueError):
-            config["CORNER_MARKERS"] = [int(m) for m in markers.split(",")]
-    extent = str(env.get("WISEPACK_HARMONY_CORNER_EXTENT_MM", "") or "").strip()
-    if extent:
-        with contextlib.suppress(ValueError):
-            side = float(extent)
-            config["CORNER_COORDINATES"] = [[0, 0], [side, 0], [side, side],
-                                            [0, side]]
-    return config
-
-
-def write_runtime_config(model_path: Optional[str] = None,
-                         directory: Optional[str] = None) -> str:
-    """Materialise the HARMONY config and return the directory holding it."""
-    directory = directory or runtime_dir()
-    os.makedirs(os.path.join(directory, "config"), exist_ok=True)
-    config = build_harmony_config(model_path)
-    with open(os.path.join(directory, "config", "config.json"), "w",
-              encoding="utf-8") as fh:
-        json.dump(config, fh, indent=2)
-    return directory
-
-
-def work_area_from_config(config: Dict[str, Any]) -> WorkAreaFrame:
-    """The WISEPACK work-area frame implied by HARMONY's calibrated plane.
-
-    §13: WISEPACK ADOPTS HARMONY's coordinate system rather than redesigning it.
-    The corner coordinates in HARMONY's config define the plane's extent in
-    millimetres with the first marker at the origin; that is read back here so
-    the declared work area and the actual calibration cannot drift apart.
-    """
-    corners = config.get("CORNER_COORDINATES") or []
-    try:
-        xs = [float(c[0]) for c in corners]
-        ys = [float(c[1]) for c in corners]
-        width, depth = int(round(max(xs))), int(round(max(ys)))
-    except (TypeError, ValueError, IndexError):
-        width = depth = 130
-    base = WorkAreaFrame.from_env()
-    return WorkAreaFrame(frame_id=base.frame_id,
-                         width_mm=max(1, width), depth_mm=max(1, depth),
-                         origin_x_mm=0.0, origin_y_mm=0.0)
 
 
 # --------------------------------------------------------------------------- #
@@ -243,7 +112,7 @@ def work_area_from_config(config: Dict[str, Any]) -> WorkAreaFrame:
 
 
 class DetectorRuntime:
-    """Owns the camera and the HARMONY pipeline. One instance per process.
+    """Owns the camera, the calibration and the provider. One per process.
 
     EVERY FAILURE IS A REPORTED STATE, NOT AN EXCEPTION OUT OF THE SERVICE (§5,
     §15). A missing camera, missing weights, an unimportable torch or a failed
@@ -255,80 +124,66 @@ class DetectorRuntime:
     def __init__(self) -> None:
         self._lock = threading.RLock()
         self._camera = None
-        self._process_frame = None
-        self._pipeline = None
+        self._detector = None
         self._batch_counter = 0
         # WHICH PROVIDER. Resolved once, so an unknown name fails at start-up
         # rather than at the first detection.
-        self.detector = resolve_detector()
-        self.model = resolve_model_path(harmony_dir=harmony_path())
-        self.config = build_harmony_config(self.model.path)
-        self.work_area = work_area_from_config(self.config)
+        self.detector_name = resolve_detector()
+        self.model = ensure_model(log=lambda message: print(message,
+                                                            file=sys.stderr))
+        self.config = PerceptionConfig.from_env(model_path=self.model.path or "")
+        self.work_area = self.config.work_area()
         self.geometry = ProxyGeometry.from_env()
+        # The plane lives on the RUNTIME, not inside the provider, because it is
+        # the same geometry whichever detector finds the objects — and because
+        # its marker cache must survive a provider that fails to load.
+        self.calibration = PlaneCalibration(self.config.board)
         self.last_error: str = self.model.message if not self.model.available else ""
         self.last_inference_at: str = ""
         self.last_batch: Optional[ObservationBatch] = None
         self.last_annotated: Optional[bytes] = None
         self.last_raw: Optional[bytes] = None
         self.model_loaded = False
+        self.calibration_status: str = "unknown"
+        self.calibration_revision: str = ""
 
     # -- lazy heavy imports ------------------------------------------------ #
 
-    def _ensure_pipeline(self) -> None:
-        """Import HARMONY's pipeline with its own config in reach. Once.
+    def _ensure_detector(self) -> None:
+        """Build the provider. Once, on the first detection.
 
-        The chdir is scoped to the import and restored in a `finally`: HARMONY
-        resolves `config/config.json` against the working directory, and the
-        alternative — editing HARMONY to accept a path — is a change to a
-        repository that is not ours to change.
+        Deferred because it costs tens of seconds and ~159 MB of weights, and
+        because the camera preview and /health must work on a host where the
+        model has not arrived yet.
         """
-        if self._process_frame is not None:
+        if self._detector is not None:
             return
-        harmony = harmony_path()
-        if not os.path.isdir(harmony):
-            raise RuntimeError(
-                f"HARMONY detector not found at {harmony}. Clone "
-                "https://github.com/hpcbg/harmony and set WISEPACK_HARMONY_PATH "
-                "to its ai-bottle-detector-fiware directory.")
         if not self.model.available:
             raise RuntimeError(self.model.message
-                               or "HARMONY detector weights are not available")
-        directory = write_runtime_config(self.model.path)
-        previous_cwd = os.getcwd()
-        if harmony not in sys.path:
-            sys.path.insert(0, harmony)
+                               or "detector weights are not available")
         try:
-            os.chdir(directory)
-            import pipeline                                  # noqa: PLC0415
+            self._detector = PROVIDER.build_detector(self.config,
+                                                     self.calibration)
         except ImportError as exc:
             raise RuntimeError(
-                "the HARMONY detector pipeline could not be imported "
-                f"({exc}). It needs torch, torchvision and opencv — install "
-                "them, or run this service with HARMONY's detector venv "
-                "python.") from exc
+                f"the {self.detector_name} provider could not be imported "
+                f"({exc}). It needs torch, torchvision and OpenCV — create the "
+                "WISEPACK perception environment with "
+                "./scripts/setup_perception.sh") from exc
         except FileNotFoundError as exc:
             raise RuntimeError(
-                f"the HARMONY detector could not load its weights: {exc}. "
+                f"the detector could not load its weights: {exc}. "
                 + (self.model.message or "")) from exc
-        finally:
-            os.chdir(previous_cwd)
-        self._pipeline = pipeline
-        self._process_frame = pipeline.process_frame
         self.model_loaded = True
 
     def _ensure_camera(self) -> None:
         if self._camera is not None:
             return
-        harmony = harmony_path()
-        if harmony not in sys.path:
-            sys.path.insert(0, harmony)
-        from camera import Camera                            # noqa: PLC0415
-        device = self.config.get("CAMERA", 0)
-        camera = Camera(device,
-                        bool(self.config.get("SET_RESOLUTION", False)),
-                        int(self.config.get("WIDTH", 1600)),
-                        int(self.config.get("HEIGHT", 1200)))
-        self._camera = camera
+        from camera import Camera                             # noqa: PLC0415
+        self._camera = Camera(self.config.camera,
+                              self.config.set_resolution,
+                              self.config.width,
+                              self.config.height)
 
     # -- frames ------------------------------------------------------------ #
 
@@ -339,16 +194,11 @@ class DetectorRuntime:
         except Exception as exc:                             # noqa: BLE001
             self.last_error = f"camera unavailable: {exc}"
             return None
-        deadline = time.time() + timeout_s
-        frame = self._camera.get_frame()
-        while frame is None and time.time() < deadline:
-            time.sleep(0.05)
-            frame = self._camera.get_frame()
+        frame = self._camera.wait_for_frame(timeout_s)
         if frame is None:
-            self.last_error = (
-                f"camera {self.config.get('CAMERA')!r} is configured but "
-                "delivered no frame — is it connected and not held by another "
-                "process?")
+            self.last_error = self._camera.last_error or (
+                f"camera {self.config.camera!r} is configured but delivered no "
+                "frame — is it connected and not held by another process?")
         return frame
 
     def jpeg(self, frame) -> Optional[bytes]:
@@ -363,33 +213,10 @@ class DetectorRuntime:
     def camera_available(self) -> bool:
         return self._camera is not None and self._camera.get_frame() is not None
 
-    # -- calibration ------------------------------------------------------- #
-
-    def _calibration(self) -> tuple:
-        """(status, revision), read from HARMONY's own marker cache.
-
-        `pipeline._last_valid_plane_markers` is HARMONY's cache of the four
-        corner markers; it is None until a frame containing all four has been
-        seen, and it deliberately PERSISTS afterwards (HARMONY's README: "the
-        markers positions will be cached and updated only if there are present
-        again"). Reading it is how we know whether coordinates are real without
-        re-running marker detection and disturbing that cache.
-
-        The revision is a short digest of the cached marker positions, so a
-        recalibration is visible as a changed revision rather than invisible.
-        """
-        markers = getattr(self._pipeline, "_last_valid_plane_markers", None)
-        if markers is None:
-            return "invalid", ""
-        digest = hashlib.sha256(
-            repr(getattr(markers, "tolist", lambda: markers)()).encode()
-        ).hexdigest()[:12]
-        return "valid", digest
-
     # -- the one-shot detection -------------------------------------------- #
 
     def detect(self) -> ObservationBatch:
-        """Capture one frame, run HARMONY inference, return a WISEPACK batch.
+        """Capture one frame, run inference, return a WISEPACK batch.
 
         Serialised by the lock: two concurrent detections would fight over one
         camera and one CUDA context, and the second would replace the first's
@@ -409,10 +236,9 @@ class DetectorRuntime:
             # instant a staleness check and the future Isaac synchronizer both
             # treat as "when the world looked like this".
             requested_at = utc_now_iso()
-            captured_at = ""
 
             try:
-                self._ensure_pipeline()
+                self._ensure_detector()
             except Exception as exc:                         # noqa: BLE001
                 self.last_error = str(exc)
                 return ObservationBatch.failed(
@@ -430,7 +256,8 @@ class DetectorRuntime:
                     error=self.last_error or "no camera frame available",
                     captured_at="", requested_at=requested_at,
                     detector=PROVIDER.DETECTOR_ID,
-                    model_id=self.model.path or "", frame_id=self.work_area.frame_id)
+                    model_id=self.model.path or "",
+                    frame_id=self.work_area.frame_id)
 
             # THE FRAME IS IN HAND — this is the measurement instant. Stamped
             # before inference, because inference describes THIS frame and the
@@ -438,7 +265,7 @@ class DetectorRuntime:
             captured_at = utc_now_iso()
 
             try:
-                result = self._process_frame(frame.copy())
+                result = self._detector.process_frame(frame.copy())
             except Exception as exc:                         # noqa: BLE001
                 self.last_error = f"inference failed: {exc}"
                 return ObservationBatch.failed(
@@ -448,15 +275,21 @@ class DetectorRuntime:
                     model_id=self.model.path or "",
                     frame_id=self.work_area.frame_id)
 
-            calibration_status, calibration_revision = self._calibration()
-            # `processed_image` carries the calibration overlay and the measured
-            # coordinates; `ai_processed_image` carries only the raw boxes. The
+            # THE PROVIDER REPORTS THE CALIBRATION FOR THIS VERY FRAME, so the
+            # service never has to re-run marker detection (which would disturb
+            # the plane cache) or guess from the coordinates.
+            calibration = result.get("calibration") or {}
+            self.calibration_status = str(calibration.get("status", "unknown"))
+            self.calibration_revision = str(calibration.get("revision", ""))
+
+            # `annotated_image` carries the calibration overlay and the measured
+            # coordinates; `detections_image` carries only the raw boxes. The
             # former is what §9 asks the dashboard to show.
-            self.last_annotated = self.jpeg(result.get("processed_image"))
+            self.last_annotated = self.jpeg(result.get("annotated_image"))
             self.last_raw = self.jpeg(frame)
             self.last_inference_at = captured_at
 
-            batch = PROVIDER.observations_from_harmony(
+            batch = PROVIDER.observations_from_detections(
                 result,
                 batch_id=batch_id,
                 captured_at=captured_at,
@@ -464,8 +297,8 @@ class DetectorRuntime:
                 model_id=self.model.path or "",
                 geometry=self.geometry,
                 frame=self.work_area,
-                calibration_status=calibration_status,
-                calibration_revision=calibration_revision,
+                calibration_status=self.calibration_status,
+                calibration_revision=self.calibration_revision,
                 source=source)
             self.last_batch = batch
             self.last_error = batch.error if not batch.ok else ""
@@ -478,32 +311,35 @@ class DetectorRuntime:
         health = PerceptionHealth(
             source=PerceptionSource.CAMERA.value,
             service_reachable=True,
-            camera_configured=self.config.get("CAMERA") is not None,
+            camera_configured=self.config.camera is not None,
             camera_available=self.camera_available,
             model_available=self.model.available,
             model_loaded=self.model_loaded,
             model_path=self.model.path or "",
             model_origin=self.model.origin,
-            calibration_status=(batch.calibration_status if batch else "unknown"),
+            calibration_status=(batch.calibration_status if batch
+                                else self.calibration_status),
             last_inference_at=self.last_inference_at,
             last_error=self.last_error,
             detected_objects=(batch.count if batch and batch.ok else None),
             detector=PROVIDER.DETECTOR_ID,
         ).to_dict()
         health.update({
-            # THE PROVIDER, named generically. `implementation_origin` is
-            # provenance for diagnostics — it is never the architectural
-            # identity of the perception subsystem, and the dashboard shows the
-            # display name rather than this.
-            "provider": self.detector,
+            # THE PROVIDER, named generically. `implementation_origin` and
+            # `model_origin_note` are PROVENANCE for diagnostics — never the
+            # architectural identity of the perception subsystem, and the
+            # dashboard shows the display name rather than either of them.
+            "provider": self.detector_name,
             "detector_display_name": PROVIDER.DISPLAY_NAME,
             "implementation_origin": PROVIDER.IMPLEMENTATION_ORIGIN,
-            "provider_path": harmony_path(),
-            "provider_available": os.path.isdir(harmony_path()),
+            "model_origin_note": PROVIDER.MODEL_ORIGIN,
+            "provider_module": PROVIDER.__name__,
             "model": self.model.to_dict(),
+            "model_cache": default_cache_dir(),
             "proxy_geometry": self.geometry.to_dict(),
             "work_area": self.work_area.to_dict(),
-            "camera": self.config.get("CAMERA"),
+            "calibration_board": self.config.board.to_dict(),
+            "camera": self.config.camera,
             "last_batch_status": (batch.status.value if batch else "none"),
             "batches": self._batch_counter,
             "note": ("Physical bottles are currently used as proxies for "

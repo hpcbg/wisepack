@@ -23,23 +23,32 @@
 # CONTAINERIZED Vulcanexus / Fast DDS runtime, and nothing here installs,
 # sources or requires a host ROS 2 — see perception/perception_service.py.
 #
-# THE INTERPRETER IS THE PROVIDER'S, NEVER THIS SHELL'S
-# -----------------------------------------------------
+# THE INTERPRETER IS WISEPACK'S OWN, NEVER THIS SHELL'S AND NEVER ANOTHER
+# PROJECT'S
+# -----------------------------------------------------------------------
 # `perception_service.py` imports torch, torchvision, cv2, fastapi and uvicorn
 # through its provider. None of those are in the system Python on a normal host,
 # and running the service with `python3` produced exactly:
 #
 #     ModuleNotFoundError: No module named 'uvicorn'
 #
-# The current provider's environment is HARMONY's detector venv, which its own
-# `run.sh` resolves as `<ai-bottle-detector-fiware>/../torch_venv/bin/python`.
-# This file uses the SAME interpreter, invoked directly. The venv is never
-# `activate`d into the launcher shell: activation would put that interpreter and
-# its site-packages ahead of everything this launcher afterwards runs.
+# So WISEPACK owns an environment for them: `.venv-perception/` in the working
+# directory, created by scripts/setup_perception.sh and git-ignored. An earlier
+# revision reached into a HARMONY checkout's `torch_venv` instead, which made
+# another repository a runtime dependency of a WISEPACK feature — deleting that
+# clone broke the camera. It no longer can.
+#
+# The interpreter is invoked DIRECTLY. The venv is never `activate`d into the
+# launcher shell: activation would put that interpreter and its site-packages
+# ahead of everything this launcher afterwards runs.
 #
 # There is NO fall back to the system python. A camera mode that quietly starts
 # an interpreter which cannot import its own dependencies fails later, in a less
 # obvious place, with a worse message.
+#
+# FIRST RUN BOOTSTRAPS ITSELF. If the environment is missing, this library runs
+# scripts/setup_perception.sh once and continues. `WISEPACK_PERCEPTION_AUTO_SETUP=0`
+# turns that off and turns the miss into one printed command instead.
 # ---------------------------------------------------------------------------
 
 #: The PID/PGID of the service THIS launcher started. Empty when none was
@@ -121,56 +130,75 @@ perception_is_local_host() {
     esac
 }
 
-# --- interpreter resolution -------------------------------------------------
+# --- the WISEPACK perception environment ------------------------------------
+
+#: Where the WISEPACK-owned perception environment lives. Overridable only to
+#: move it (a bigger disk, a shared read-only image); it is always a WISEPACK
+#: environment created by scripts/setup_perception.sh, never another project's.
+perception_venv_dir() {
+    printf '%s' "${WISEPACK_PERCEPTION_VENV:-$1/.venv-perception}"
+}
+
+#: Usable == exists AND can import everything the service imports. A venv whose
+#: torch installation is broken must fail HERE, with the import error, not
+#: sixty seconds later inside the first detection.
+perception_env_usable() {
+    [ -x "$1" ] || return 1
+    "$1" -c 'import torch, torchvision, cv2, cv2.aruco, numpy, PIL, fastapi, uvicorn' \
+        >/dev/null 2>&1
+}
 
 perception_resolve_python() {
+    local repo="${1:-$REPO}"
     PERCEPTION_PYTHON=""
     PERCEPTION_PYTHON_ORIGIN=""
     PERCEPTION_PYTHON_ERROR=""
 
-    local configured="${WISEPACK_PERCEPTION_PYTHON:-}"
-    local detector="${WISEPACK_HARMONY_PATH:-/data/arise/harmony/ai-bottle-detector-fiware}"
+    local venv candidate setup
+    venv="$(perception_venv_dir "$repo")"
+    candidate="$venv/bin/python"
+    setup="$repo/scripts/setup_perception.sh"
 
-    # 1. An EXPLICIT choice. If it does not exist that is an error, not a reason
-    #    to go looking elsewhere: silently running a different interpreter than
-    #    the one that was asked for is worse than reporting the miss.
-    if [ -n "$configured" ]; then
-        if [ -x "$configured" ]; then
-            PERCEPTION_PYTHON="$configured"
-            PERCEPTION_PYTHON_ORIGIN="WISEPACK_PERCEPTION_PYTHON"
-            return 0
-        fi
-        PERCEPTION_PYTHON_ERROR="WISEPACK_PERCEPTION_PYTHON=$configured is not an executable file."
-        return 1
-    fi
-
-    # 2. HARMONY's own layout, exactly as its run.sh resolves it:
-    #    <ai-bottle-detector-fiware>/../torch_venv/bin/python
-    local candidate
-    candidate="$(dirname "$detector")/torch_venv/bin/python"
-    if [ -x "$candidate" ]; then
+    # 1. The WISEPACK perception environment, ready to go.
+    if perception_env_usable "$candidate"; then
         PERCEPTION_PYTHON="$candidate"
-        PERCEPTION_PYTHON_ORIGIN="HARMONY torch_venv"
+        PERCEPTION_PYTHON_ORIGIN="WISEPACK perception environment"
         return 0
     fi
 
-    # 3. Fail, naming what was tried. NEVER the system python — see the header.
+    # 2. Missing or incomplete: build it, once, and try again. This is what
+    #    keeps `./run_wisepack_dashboard.sh sim` the only command an operator
+    #    ever types. Nothing is installed into the system Python.
+    if [ "${WISEPACK_PERCEPTION_AUTO_SETUP:-1}" != "0" ] && [ -x "$setup" ]; then
+        echo "[perception] perception environment : missing — creating it once"
+        echo "[perception] setup                  : $setup"
+        if "$setup"; then
+            if perception_env_usable "$candidate"; then
+                PERCEPTION_PYTHON="$candidate"
+                PERCEPTION_PYTHON_ORIGIN="WISEPACK perception environment (created just now)"
+                return 0
+            fi
+        fi
+    fi
+
+    # 3. Fail, naming the ONE command that fixes it. NEVER the system python —
+    #    see the header.
     PERCEPTION_PYTHON_ERROR="$(cat <<EOF
-no perception detector interpreter found.
+the WISEPACK perception environment is not usable.
 
 Looked for: $candidate
-            (the provider's own run.sh resolves its real-detector
-             interpreter as <checkout>/../torch_venv/bin/python)
 
-The detector needs torch, torchvision, cv2, fastapi and uvicorn. The system
-python3 has none of them, so it is deliberately NOT used as a fallback.
+The perception service needs torch, torchvision, cv2, fastapi and uvicorn. The
+system python3 has none of them, so it is deliberately NOT used as a fallback,
+and nothing is ever installed into it.
 
-Fix one of:
-  * create the provider's detector environment (for the current
-    fasterrcnn_bottle provider: the HARMONY repository's setup.py /
-    install_prerequisites.sh), or
-  * point WISEPACK_HARMONY_PATH at your ai-bottle-detector-fiware checkout, or
-  * set WISEPACK_PERCEPTION_PYTHON to the interpreter that has the dependencies.
+Create the environment (this is the only command needed):
+
+    ./scripts/setup_perception.sh
+
+then start WISEPACK as usual. To see what is wrong with an existing one:
+
+    ./scripts/setup_perception.sh --check
 EOF
 )"
     return 1
@@ -322,14 +350,14 @@ perception_ensure_service() {
         return 1
     fi
 
-    if ! perception_resolve_python; then
+    if ! perception_resolve_python "$repo"; then
         echo "[perception] ERROR: $PERCEPTION_PYTHON_ERROR" >&2
         return 1
     fi
 
     echo "[perception] detector service  : starting"
-    echo "[perception] detector python   : $PERCEPTION_PYTHON ($PERCEPTION_PYTHON_ORIGIN)"
-    echo "[perception] camera            : ${WISEPACK_PERCEPTION_CAMERA:-from provider config}"
+    echo "[perception] perception python : $PERCEPTION_PYTHON ($PERCEPTION_PYTHON_ORIGIN)"
+    echo "[perception] camera            : ${WISEPACK_PERCEPTION_CAMERA:-0 (default)}"
     echo "[perception] service log       : $PERCEPTION_LOG"
 
     perception_start_service "$repo" "$host" "$port" || return 1

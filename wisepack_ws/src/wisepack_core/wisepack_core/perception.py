@@ -116,9 +116,10 @@ PERCEPTION_SOURCE_ENV = "WISEPACK_PERCEPTION_SOURCE"
 PERCEPTION_DETECTOR_ENV = "WISEPACK_PERCEPTION_DETECTOR"
 
 #: The provider used when none is named. A Faster R-CNN detector that locates
-#: bottles on an ArUco-calibrated plane, reusing the implementation developed in
-#: HARMONY. Bottles are PHYSICAL PROXIES for cylindrical workpieces — that is a
-#: property of the objects on the table, not of this architecture.
+#: bottles on an ArUco-calibrated plane; its implementation is adapted from the
+#: HARMONY project and lives in `perception/providers/`, inside this repository.
+#: Bottles are PHYSICAL PROXIES for cylindrical workpieces — that is a property
+#: of the objects on the table, not of this architecture.
 DEFAULT_DETECTOR = "fasterrcnn_bottle"
 
 #: Providers this build can run. Names describe the METHOD, never its origin, so
@@ -262,14 +263,13 @@ WORKAREA_FRAME_ID = "wisepack_workarea"
 class WorkAreaFrame:
     """How the detector's calibrated plane maps onto the WISEPACK work area.
 
-    HARMONY's ArUco calibration defines a plane whose corner markers sit at
-    configured millimetre coordinates — with the shipped A4 sheet, a 130 x 130 mm
-    square with the origin at marker 11. That square is small for WISEPACK's
-    work area, and §13 is explicit that this task must NOT redesign the
-    calibration. So the mapping is IDENTITY by default (WISEPACK simply adopts
-    HARMONY's calibrated frame verbatim) and the extent is CONFIGURABLE, so a
-    larger printed board needs a configuration change and a documented note
-    rather than a code change.
+    The ArUco calibration in `perception/calibration.py` defines a plane whose
+    corner markers sit at configured millimetre coordinates — with the default
+    A4 sheet, a 130 x 130 mm square with the origin at marker 11. That square is
+    small for a realistic work area, so the mapping is IDENTITY by default (the
+    measured plane IS the work-area frame, with no transform of WISEPACK's own)
+    and the extent is CONFIGURABLE, so a larger printed board needs a
+    configuration change rather than a code change.
 
     ``width_mm``/``depth_mm`` are the declared extent of the calibrated plane.
     They are used only to report whether an observation landed inside it —
@@ -451,7 +451,8 @@ class ObservationBatch:
         """A batch that records a FAILURE. Never an empty successful batch.
 
         This is the constructor §15 exists for: camera absent, model missing,
-        inference timeout, HARMONY unreachable, malformed detector output. The
+        inference timeout, perception service unreachable, malformed detector
+        output. The
         dashboard renders it as a failure and the workflow refuses to plan from
         it, rather than treating "no objects" as a measurement.
         """
@@ -543,14 +544,15 @@ class ObservationBatch:
 # Model resolution
 # --------------------------------------------------------------------------- #
 
-#: The shared machine-local copy of the trained HARMONY detector on the ARISE
-#: host. Second in the resolution order below: present on the demonstrator
-#: machine, absent everywhere else, and never committed to this repository.
+#: The shared machine-local copy of the trained detector on the ARISE host.
+#: Second in the resolution order below: present on the demonstrator machine,
+#: absent everywhere else, and never committed to this repository.
 ARISE_MODEL_PATH = "/data/arise/models/best_model.pth"
 
-#: The published weights. HARMONY's own `setup.py` downloads exactly this URL
-#: into `ai-bottle-detector-fiware/models/best_model.pth`; WISEPACK reuses that
-#: destination and that URL rather than inventing a second download scheme.
+#: The published weights: the bottle detector trained in the HARMONY project and
+#: released on Hugging Face. WISEPACK downloads that public artefact into its OWN
+#: cache — no HARMONY checkout and no HARMONY installer are involved. Attribution
+#: for the model lives in NOTICE and in the provider's `MODEL_ORIGIN`.
 HUGGINGFACE_REPO = "hpcbg/harmony-bottle-detector"
 HUGGINGFACE_MODEL_URL = (
     f"https://huggingface.co/{HUGGINGFACE_REPO}/resolve/main/best_model.pth")
@@ -558,10 +560,14 @@ HUGGINGFACE_MODEL_URL = (
 
 @dataclass
 class ModelResolution:
-    """Where the detector weights came from, and what to say if they are absent."""
+    """Where the detector weights came from, and what to say if they are absent.
+
+    ``origin`` is one of ``configured`` | ``arise_shared`` | ``wisepack_cache``
+    | ``downloaded`` | ``absent``.
+    """
 
     path: Optional[str]
-    origin: str                     # configured | arise_shared | harmony_cache | absent
+    origin: str
     available: bool
     searched: List[str] = field(default_factory=list)
     message: str = ""
@@ -579,22 +585,26 @@ class ModelResolution:
 
 
 def resolve_model_path(configured: Optional[str] = None,
-                       harmony_dir: Optional[str] = None,
+                       cache_dir: Optional[str] = None,
                        env: Optional[Dict[str, str]] = None,
                        exists=os.path.exists) -> ModelResolution:
-    """Find the detector weights, in the documented order (§4).
+    """Find the detector weights, in the documented order.
 
         1. an explicitly configured path (`WISEPACK_PERCEPTION_MODEL_PATH`)
         2. /data/arise/models/best_model.pth, if present
-        3. the local HARMONY cache (`<harmony>/models/best_model.pth`) — the
-           exact destination HARMONY's own installer downloads into
+        3. the WISEPACK-owned cache (`<cache_dir>/best_model.pth`)
         4. otherwise: absent, with the Hugging Face URL and the command to fetch
-           it, so the download step is HARMONY's rather than a second one here
+           it — `perception/model_store.py` does that automatically
 
-    ABSENCE IS A DIAGNOSTIC, NOT A CRASH. §4 requires a clear message rather
-    than a cryptic ``FileNotFoundError`` from deep inside ``torch.load``, so
-    resolution is a plain filesystem question answered before torch is imported
-    at all. ``exists`` is injectable so the order can be tested without a model.
+    NO FOREIGN CHECKOUT IS SEARCHED. An earlier revision looked inside a HARMONY
+    clone, which made another repository's directory layout part of WISEPACK's
+    runtime contract; the cache is WISEPACK's own and lives in the working
+    directory.
+
+    ABSENCE IS A DIAGNOSTIC, NOT A CRASH: a clear message rather than a cryptic
+    ``FileNotFoundError`` from deep inside ``torch.load``, so resolution is a
+    plain filesystem question answered before torch is imported at all.
+    ``exists`` is injectable so the order can be tested without a model.
     """
     env = os.environ if env is None else env
     configured = (configured
@@ -621,23 +631,26 @@ def resolve_model_path(configured: Optional[str] = None,
     if exists(ARISE_MODEL_PATH):
         return ModelResolution(ARISE_MODEL_PATH, "arise_shared", True, searched)
 
-    if harmony_dir:
-        cached = os.path.join(harmony_dir, "models", "best_model.pth")
+    cache_dir = cache_dir or str(
+        env.get("WISEPACK_PERCEPTION_MODEL_CACHE", "") or "").strip()
+    if cache_dir:
+        cached = os.path.join(cache_dir, "best_model.pth")
         searched.append(cached)
         if exists(cached):
-            return ModelResolution(cached, "harmony_cache", True, searched)
+            return ModelResolution(cached, "wisepack_cache", True, searched)
 
-    hint = os.path.join(harmony_dir or "<harmony>/ai-bottle-detector-fiware",
-                        "models", "best_model.pth")
+    hint = os.path.join(cache_dir or ".cache-perception/models",
+                        "best_model.pth")
     return ModelResolution(
         None, "absent", False, searched,
         message=(
-            "No HARMONY detector weights found. Searched: "
+            "No detector weights found. Searched: "
             + ", ".join(searched)
-            + ". Fetch them with HARMONY's own installer "
-              "(`python3 setup.py` in the HARMONY repository, which downloads "
-              f"{HUGGINGFACE_REPO}), or directly:\n"
-              f"    curl -L --fail -o {hint} {HUGGINGFACE_MODEL_URL}\n"
+            + ". They are fetched automatically on the next camera start "
+              f"(from {HUGGINGFACE_REPO}); to do it by hand:\n"
+              f"    ./scripts/setup_perception.sh --model\n"
+              f"    curl -L --fail --create-dirs -o {hint} "
+              f"{HUGGINGFACE_MODEL_URL}\n"
               "or point WISEPACK_PERCEPTION_MODEL_PATH at an existing copy. "
               "The weights are ~159 MB and are never committed to this "
               "repository."))
