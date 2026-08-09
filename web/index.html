@@ -348,6 +348,18 @@
         <label class="f" id="s-objsrc-field">Object source
           <select id="s-objsrc"></select>
           <div class="note" id="s-objsrc-note" style="margin-top:4px"></div></label>
+        <!-- PERCEPTION METHOD — HOW the camera frame is read, a THIRD axis,
+             independent of the object source above and of the execution
+             backend. Shown only when the next run's objects come from a
+             camera: with a preset selected nothing is perceived at all, and a
+             method selector there would imply otherwise.
+
+             Same discipline as the object source: options come from the
+             backend, an unavailable method is offered but DISABLED with its
+             reason, and changing it touches nothing that is running. -->
+        <label class="f" id="s-method-field" style="display:none">Perception method
+          <select id="s-method"></select>
+          <div class="note" id="s-method-note" style="margin-top:4px"></div></label>
         <label class="f" id="s-preset-field">Preset<select id="s-preset"></select><div class="note" id="s-lock-note" style="margin-top:4px"></div></label>
         <!-- ROBOT. The options are EMPTY here on purpose and are filled from
              GET /api/config/robots. A hard-coded <option> list would be a second
@@ -434,6 +446,38 @@
       <div class="scroll"><table id="percep-objects"><tbody></tbody></table></div>
       <div class="note" id="percep-proxy" style="margin-top:8px"></div>
       <div class="note" id="percep-confidence" style="margin-top:4px"></div>
+
+      <!-- RGB-D 6-DoF / FoundationPose.
+           A SEPARATE BLOCK because it reports a different KIND of thing: the
+           planar status above is one camera and one calibrated plane, this is a
+           five-part inference chain any part of which can be missing on its own.
+           Shown whenever the method exists in this build, available or not —
+           "FoundationPose runtime: READY, RGB-D camera: unavailable" is exactly
+           the state an operator needs to see, and hiding it would make a ready
+           runtime invisible. -->
+      <div id="fp-block" style="display:none;margin-top:10px;border-top:1px solid var(--line);padding-top:8px">
+        <h4 style="margin:0 0 6px 0">RGB-D 6-DoF — FoundationPose
+          <span class="badge" id="fp-badge">RUNTIME</span></h4>
+        <div id="fp-status" class="note" style="margin-bottom:6px"></div>
+        <div id="fp-blocked" class="note" style="margin-bottom:6px"></div>
+        <div id="fp-pose" class="note" style="margin-bottom:6px"></div>
+        <!-- THE REFERENCE REGRESSION IS LABELLED, TWICE: on the button and on
+             the result. It runs a SAVED dataset; a control that read "detect"
+             would put an offline pose into a run as though a camera produced
+             it. -->
+        <div class="btns">
+          <button id="c-fp-reference">Run reference/offline regression</button>
+        </div>
+        <div id="fp-reference-note" class="note" style="margin-top:6px"></div>
+        <div class="btns" id="fp-views" style="margin-top:6px">
+          <button data-v="overlay" aria-pressed="true">pose overlay</button>
+          <button data-v="rgb">RGB</button>
+          <button data-v="depth">depth</button>
+          <button data-v="mask">mask</button>
+        </div>
+        <img id="fp-image" alt="FoundationPose diagnostic image"
+             style="max-width:100%;border-radius:6px;display:none;margin-top:6px"/>
+      </div>
     </div>
 
     <!-- Physical execution diagnostics. HIDDEN unless a physical backend is
@@ -1293,6 +1337,10 @@ function readSettings() {
     // is the only path that turns the draft into a running run — exactly like
     // the preset and the robot above it.
     object_source: $("#s-objsrc") ? $("#s-objsrc").value : null,
+    // HOW the next acquisition reads the frame. Carried on the acquisition —
+    // the only path that turns a draft into a running run — exactly like the
+    // object source above it.
+    perception_method: $("#s-method") ? ($("#s-method").value || null) : null,
     item_count: parseInt($("#s-count").value || "0", 10) || null,
     length_range_mm: parsePair($("#s-len").value),
     diameter_range_mm: parsePair($("#s-dia").value),
@@ -1309,6 +1357,10 @@ function readSettings() {
     robot_id: (STATE && STATE.robot_selector && $("#s-robot"))
       ? ($("#s-robot").value || null) : null,
     object_source: $("#s-objsrc") ? $("#s-objsrc").value : null,
+    // HOW the next acquisition reads the frame. Carried on the acquisition —
+    // the only path that turns a draft into a running run — exactly like the
+    // object source above it.
+    perception_method: $("#s-method") ? ($("#s-method").value || null) : null,
   };
 }
 // THE DRAFT. The scenario controls edit a draft for the NEXT run; they never
@@ -1339,6 +1391,10 @@ function currentDraft() {
     robot_id: (STATE && STATE.robot_selector && $("#s-robot"))
       ? ($("#s-robot").value || null) : null,
     object_source: $("#s-objsrc") ? $("#s-objsrc").value : null,
+    // HOW the next acquisition reads the frame. Carried on the acquisition —
+    // the only path that turns a draft into a running run — exactly like the
+    // object source above it.
+    perception_method: $("#s-method") ? ($("#s-method").value || null) : null,
   };
 }
 
@@ -1408,6 +1464,67 @@ function fillObjectSources(s) {
   }
 }
 
+// The perception-method selector. Identical rules to the object source above:
+// filled from the backend, unavailable options disabled WITH THEIR REASON
+// rather than hidden, and never reverted mid-edit by a poll.
+let METHOD_OPTIONS_KEY = "";
+
+function fillPerceptionMethods(s) {
+  const sel = $("#s-method");
+  const pm = (s && s.perception_method) || {};
+  if (!sel || !pm.options) return;
+  const key = JSON.stringify(pm.options.map(o => [o.value, o.available, o.reason]));
+  if (key !== METHOD_OPTIONS_KEY) {
+    METHOD_OPTIONS_KEY = key;
+    const keep = sel.value;
+    sel.textContent = "";
+    for (const opt of pm.options) {
+      const label = opt.available ? opt.label : `${opt.label} — unavailable`;
+      const node = el("option", { value: opt.value }, label);
+      node.disabled = !opt.available;
+      node.title = opt.reason || opt.detail || "";
+      sel.append(node);
+    }
+    if (keep && [...sel.options].some(o => o.value === keep && !o.disabled)) {
+      sel.value = keep;
+    }
+  }
+  if (!DRAFT_TOUCHED && pm.selected && sel.value !== pm.selected
+      && [...sel.options].some(o => o.value === pm.selected)) {
+    sel.value = pm.selected;
+  }
+}
+
+// The method row is only meaningful when a camera will be used. Hidden — not
+// disabled — under a preset, because "how the frame is read" is not a question
+// that has an answer when there is no frame.
+function applyPerceptionMethodVisibility(s) {
+  const field = $("#s-method-field");
+  if (!field) return;
+  const objsrc = $("#s-objsrc");
+  const cameraSelected = Boolean(objsrc) && objsrc.value === "camera";
+  field.style.display = cameraSelected ? "" : "none";
+  const note = $("#s-method-note");
+  const pm = (s && s.perception_method) || {};
+  if (!note) return;
+  const bits = [];
+  // "Running now" is EMPTY for a preset run and stays empty: nothing measured
+  // that batch, and naming a method would invent a provenance.
+  if (pm.current_label) bits.push(`Measured this run: ${pm.current_label}`);
+  if (pm.changes_next_run && pm.selected_label) {
+    bits.push(`Next run: ${pm.selected_label}`);
+  }
+  if (pm.selected_measures && pm.selected_measures.length) {
+    bits.push(`measures ${pm.selected_measures.join(", ")}`);
+  }
+  for (const opt of (pm.options || [])) {
+    if (!opt.available && opt.reason) {
+      bits.push(`${opt.label} unavailable — ${opt.reason}`);
+    }
+  }
+  note.textContent = bits.join(" · ");
+}
+
 // Grey out and disable the fields that describe a GENERATED batch while the
 // camera is selected. Called at the end of syncScenarioControls — see there.
 function applyObjectSourceEmphasis() {
@@ -1431,6 +1548,8 @@ function syncScenarioControls(s) {
   if (!p) return;
 
   fillObjectSources(s);
+  fillPerceptionMethods(s);
+  applyPerceptionMethodVisibility(s);
   const objsrc = (s.object_source || {});
   const objNote = $("#s-objsrc-note");
   if (objNote) {
@@ -1733,6 +1852,15 @@ $("#c-reset").onclick = async () => {
 };
 $("#c-strategies").onclick = compareStrategies;
 
+// FoundationPose controls. Bound unconditionally; the block that holds them is
+// hidden when the method does not exist in this build.
+if ($("#c-fp-reference")) {
+  $("#c-fp-reference").onclick = runFoundationPoseReference;
+}
+for (const b of document.querySelectorAll("#fp-views button")) {
+  b.onclick = () => showFoundationPoseImage(b.dataset.v);
+}
+
 // cut-aware controls
 $("#c-compare-cut").onclick = () => command("compare_cut_aware");
 $("#cut-maxcuts").onchange = () => command("limit_cuts", { max_cuts: parseInt($("#cut-maxcuts").value || "2", 10) });
@@ -1753,6 +1881,154 @@ for (const b of document.querySelectorAll("#log-filters button")) {
       x.setAttribute("aria-pressed", String(x === b));
     renderLog(LAST_EVENTS);
   };
+}
+
+// The FoundationPose block. EVERY PREREQUISITE IS ITS OWN LINE, because each
+// fails independently and each has a different fix: collapsing them into one
+// "unavailable" is what produces a dashboard nobody can act on.
+let FP_VIEW = "overlay";
+let FP_LAST = null;
+
+function fpTri(value, yes, no) {
+  if (value === true) return yes;
+  if (value === false) return no;
+  return "unknown";
+}
+
+function renderFoundationPose(doc) {
+  const block = $("#fp-block");
+  if (!block) return;
+  const cap = (doc && doc.foundationpose) || {};
+  const pm = (doc && doc.perception_method) || {};
+  const known = (pm.options || []).some(o => o.value === "foundationpose_rgbd");
+  block.style.display = known ? "" : "none";
+  if (!known) return;
+
+  // TWO DIFFERENT READINESS QUESTIONS, and the badge answers the one that is
+  // actually true today: the runtime can be ready while live inference is not.
+  const badge = $("#fp-badge");
+  if (cap.inference_ready) {
+    badge.textContent = "INFERENCE READY"; badge.className = "badge phys";
+  } else if (cap.runtime_ready) {
+    badge.textContent = "RUNTIME READY"; badge.className = "badge";
+  } else {
+    badge.textContent = "UNAVAILABLE"; badge.className = "badge err";
+  }
+
+  const bits = [];
+  bits.push("Worker: " + fpTri(cap.worker_reachable, "reachable", "not answering"));
+  bits.push("GPU: " + fpTri(cap.gpu_available, "available", "unavailable"));
+  bits.push("FoundationPose runtime: "
+    + fpTri(cap.foundationpose_runtime_available, "loaded", "not loaded"));
+  bits.push("Scorer weights: " + fpTri(cap.scorer_weights_available, "present", "missing"));
+  bits.push("Refiner weights: " + fpTri(cap.refiner_weights_available, "present", "missing"));
+  bits.push("RGB-D camera: " + fpTri(cap.rgbd_camera_available, "available", "unavailable"));
+  bits.push("Object model: "
+    + ((cap.models || []).length ? `${cap.models.length} available` : "none"));
+  bits.push("Live inference: " + fpTri(Boolean(cap.inference_ready), "ready", "unavailable"));
+  if (cap.foundationpose_revision) {
+    bits.push("Revision: " + String(cap.foundationpose_revision).slice(0, 12)
+      + (cap.revision_matches_pin ? " (matches pin)" : " (DOES NOT match pin)"));
+  }
+  $("#fp-status").textContent = bits.join(" · ");
+
+  const blocked = $("#fp-blocked");
+  if (blocked) {
+    blocked.textContent = (cap.blocked_by || []).length
+      ? "Blocked by: " + cap.blocked_by.join(" · ") : "";
+  }
+
+  renderFoundationPosePose();
+}
+
+// The last 6-DoF result. THE QUATERNION IS THE POSE; roll/pitch/yaw is shown
+// after it, marked, for readability only — differencing Euler angles is a
+// mistake and the label is what stops someone starting.
+function renderFoundationPosePose() {
+  const node = $("#fp-pose");
+  if (!node) return;
+  const doc = FP_LAST;
+  if (!doc || !doc.batch) { node.textContent = ""; return; }
+  const b = doc.batch;
+  if (b.status === "error") {
+    node.textContent = "Last estimate FAILED — " + (b.error || "no reason given");
+    return;
+  }
+  const o = (b.observations || [])[0];
+  if (!o) { node.textContent = ""; return; }
+  const q = o.pose.orientation || {};
+  const r = o.pose.rpy_deg || [];
+  const parts = [
+    `x ${o.pose.x_mm} mm · y ${o.pose.y_mm} mm · z ${o.pose.z_mm} mm`,
+    `quaternion (x,y,z,w) ${[q.x, q.y, q.z, q.w].map(v => Number(v).toFixed(5)).join(", ")}`,
+    r.length ? `rpy ${r.join(", ")}° (derived, for reading only — not authoritative)` : "",
+    `Frame: ${b.frame_id}`,
+    `Object model: ${o.object_model_id || "—"}`,
+    `Symmetry: ${(o.symmetry || {}).type || "none"}`
+      + (((o.symmetry || {}).ambiguous_dof || []).length
+         ? ` — ambiguous: ${o.symmetry.ambiguous_dof.join(", ")}` : ""),
+    `Measured: ${(o.pose.measured_dof || []).join(", ")}`,
+    // TWO SEPARATE STATEMENTS, because they are two separate facts and reading
+    // one as the other is how a good measurement gets reported as a failure.
+    //
+    //   "Estimate"  — is the pose itself sound IN THE FRAME NAMED ABOVE?
+    //   "Work area" — can it be moved into the work area and acted on?
+    //
+    // A FoundationPose estimate is routinely the first without being the
+    // second: the pose is real and reproducible in the camera frame, and no
+    // validated camera-to-work-area extrinsic exists to place it.
+    o.pose.valid ? "Estimate: VALID in the frame above"
+                 : "Estimate: FAILED — not a usable pose",
+    o.pose.workarea_pose_available
+      ? "Work area: pose available — placeable"
+      : "Work area: NOT available — no validated camera-to-work-area extrinsic, "
+        + "so this pose is not placed in the work area and is not actionable there",
+    doc.acquisition === "reference"
+      ? "Acquisition: REFERENCE / OFFLINE REGRESSION — saved dataset, not a live camera"
+      : "",
+  ].filter(Boolean);
+  node.textContent = parts.join(" · ");
+}
+
+async function runFoundationPoseReference() {
+  const btn = $("#c-fp-reference");
+  const note = $("#fp-reference-note");
+  if (btn) { btn.disabled = true; btn.textContent = "Running…"; }
+  if (note) note.textContent = "";
+  try {
+    const res = await fetch("/api/perception/foundationpose/reference-regression", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      // STATED, NEVER DEFAULTED. The tutorial depth images are uint16
+      // millimetres; a wrong scale here is a factor-of-1000 error that still
+      // looks like a plausible pose.
+      body: JSON.stringify({ depth_scale_mm: 1.0 }),
+    });
+    const doc = await res.json();
+    if (!res.ok) {
+      if (note) note.textContent = "Refused — " + JSON.stringify(doc.detail || doc);
+      return;
+    }
+    FP_LAST = doc;
+    if (note) note.textContent = doc.label + " — " + (doc.note || "");
+    renderFoundationPosePose();
+    showFoundationPoseImage(FP_VIEW);
+  } catch (e) {
+    if (note) note.textContent = "Failed — " + e;
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = "Run reference/offline regression"; }
+  }
+}
+
+function showFoundationPoseImage(kind) {
+  FP_VIEW = kind;
+  const img = $("#fp-image");
+  if (!img) return;
+  img.src = `/api/perception/foundationpose/image/${kind}?t=${Date.now()}`;
+  img.style.display = "";
+  img.onerror = () => { img.style.display = "none"; };
+  for (const b of document.querySelectorAll("#fp-views button")) {
+    b.setAttribute("aria-pressed", String(b.dataset.v === kind));
+  }
 }
 
 // ------------------------------------------------------------- refreshing
@@ -1788,6 +2064,24 @@ async function refreshState() {
       if (settled && objsrc.value !== settled
           && [...objsrc.options].some(o => o.value === settled)) {
         objsrc.value = settled;
+      }
+      syncScenarioControls(STATE);
+    });
+  }
+  // THE PERCEPTION METHOD follows exactly the same path and for the same
+  // reason: the backend validates it against the whole inference chain — a
+  // worker, a GPU, weights and a CAD model — and a selector that kept a value
+  // the backend refused would show a 6-DoF run that is not going to happen.
+  const method = $("#s-method");
+  if (method && !method.dataset.draftBound) {
+    method.dataset.draftBound = "1";
+    method.addEventListener("change", async () => {
+      await command("set_perception_method", { method: method.value });
+      await refreshState();
+      const settled = ((STATE || {}).perception_method || {}).selected;
+      if (settled && method.value !== settled
+          && [...method.options].some(o => o.value === settled)) {
+        method.value = settled;
       }
       syncScenarioControls(STATE);
     });
@@ -1894,12 +2188,27 @@ async function refreshPerception() {
   // run happened to come from a preset made the capability invisible — which is
   // what made switching feel like it needed a restart.
   //
-  // Still hidden when there is no camera at all: a "Physical Perception"
-  // heading over a deployment with no detector would claim one that does not
-  // exist.
+  // Still hidden when there is no perception capability at all: a "Physical
+  // Perception" heading over a deployment with no detector would claim one that
+  // does not exist.
+  //
+  // A READY FOUNDATIONPOSE RUNTIME IS SUCH A CAPABILITY, on its own. The two
+  // methods fail independently — this host has a working 6-DoF runtime and no
+  // depth camera, and no planar camera either — and keying the panel solely on
+  // the planar camera would hide "FoundationPose runtime: READY, RGB-D camera:
+  // unavailable", which is precisely the state an operator needs to see before
+  // deciding what to plug in.
+  const fp = (doc && doc.foundationpose) || {};
   const haveCamera = Boolean(doc && (doc.physical || os.camera_available));
-  if (!haveCamera) { box.style.display = "none"; return; }
+  const haveMethod = Boolean(fp.worker_reachable || fp.runtime_ready);
+  if (!haveCamera && !haveMethod) { box.style.display = "none"; return; }
   box.style.display = "";
+  // The planar half describes a camera. With none, it must not read as though
+  // one were merely idle.
+  for (const id of ["percep-views", "percep-image", "percep-noimage"]) {
+    const node = $("#" + id);
+    if (node) node.style.display = haveCamera ? "" : "none";
+  }
 
   const h = doc.health || {};
   const b = doc.batch;
@@ -1939,6 +2248,7 @@ async function refreshPerception() {
   // frame are not a pose.
   if (b && b.frame_id) bits.push("Frame: " + b.frame_id);
   $("#percep-status").textContent = bits.join(" · ");
+  renderFoundationPose(doc);
 
   // The acquisition control, named for what pressing it will actually do. When
   // a preset run is on screen it will also SWITCH the source, and saying so is

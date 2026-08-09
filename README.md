@@ -2593,10 +2593,26 @@ EXECUTION BACKEND          who PERFORMS the approved placements
 ```
 
 **WISEPACK owns perception.** A *provider* is an implementation behind that
-boundary, selected with `WISEPACK_PERCEPTION_DETECTOR`; the perception SOURCE
-answers only "where do observations come from", never "which neural network
-processed the image". Adding a second method is a new file in
-`perception/providers/` and nothing above it moves.
+boundary; the perception SOURCE answers only "where do observations come from",
+never "how the frame was read". That second question is the **perception
+method**, a third independent axis:
+
+```
+PERCEPTION METHOD          HOW a physical frame becomes observations
+    planar_fasterrcnn      colour frame -> calibrated plane -> x, y, yaw
+    foundationpose_rgbd    RGB-D + CAD mesh -> full 6-DoF pose, camera frame
+```
+
+Selected with `WISEPACK_PERCEPTION_METHOD`, and switchable **per run from the
+dashboard with no restart**, exactly like the object source. The older
+`WISEPACK_PERCEPTION_DETECTOR` is still read when the new variable is unset, so
+an existing deployment keeps working; it named a provider MODULE rather than a
+capability, which is why it was superseded — FoundationPose is a complete
+pose-estimation pipeline, not a detector.
+
+**Planar remains the default.** It is the validated path and it needs no depth
+camera, no GPU, no licensed weights and no CAD model. Adding a method is a new
+file in `perception/providers/` and nothing above it moves.
 
 Every combination is legal and none implies another:
 
@@ -2790,10 +2806,11 @@ Scenario panel  ->  Object source: Physical camera  ->  [ Detect & plan ]
 Objects on a calibrated table are detected by the configured perception
 provider, positioned on the calibrated plane, and converted into generic
 WISEPACK object observations that the ordinary planning workflow consumes.
-Today's provider is `fasterrcnn_bottle`; select another with
-`WISEPACK_PERCEPTION_DETECTOR` once one exists.
+This is the `planar_fasterrcnn` method, implemented by
+`perception/providers/fasterrcnn_bottle.py`. The second method,
+`foundationpose_rgbd`, is described under **RGB-D 6-DoF perception** below.
 
-#### The current provider: `fasterrcnn_bottle`
+#### The planar method: `planar_fasterrcnn` (`fasterrcnn_bottle`)
 
 The provider lives in `perception/providers/fasterrcnn_bottle.py` and is the
 **only** detector-aware code in the system.
@@ -2829,6 +2846,90 @@ network on a committed reference frame and compares against the measurement the
 pre-port implementation produced from the same frame and the same weights —
 2 objects at (86.782, 83.553) mm / −115.112° and (41.008, 59.853) mm / 24.302°,
 to 0.01 mm and 0.01°.
+
+#### RGB-D 6-DoF perception: `foundationpose_rgbd`
+
+The second perception method estimates a **full 6-DoF pose** of a *known* object
+by matching its CAD mesh against an RGB-D frame, using
+[NVLabs FoundationPose](https://github.com/NVlabs/FoundationPose).
+
+**It is opt-in and it is not part of an ordinary WISEPACK run.** Preset
+scenarios and the planar method never touch it; nothing in
+`./run_wisepack_dashboard.sh` builds it.
+
+**Licensing.** FoundationPose is third-party software under the NVIDIA Source
+Code License — *non-commercial research use only*. WISEPACK is MIT and **vendors
+none of it**: the container is built from a recipe that clones a pinned upstream
+revision, and the network weights are fetched separately from the official
+source into a git-ignored cache and mounted **read-only**. Building the image
+opts you into that licence. See [NOTICE](NOTICE).
+
+```bash
+./scripts/setup_foundationpose.sh            # build the pinned image
+./scripts/setup_foundationpose.sh --weights  # fetch the official weights
+./scripts/setup_foundationpose.sh --run      # start the worker
+./scripts/setup_foundationpose.sh --check    # report; change nothing
+```
+
+| Piece | What it is |
+|---|---|
+| `perception/foundationpose/Dockerfile` | The pinned runtime: CUDA 12.4, torch 2.4.1+cu124, pytorch3d 0.7.8, nvdiffrast v0.3.3, FoundationPose at revision `a1b694b8`, native extensions compiled for SM 8.9. |
+| `perception/foundationpose/worker/` | A small WISEPACK-owned HTTP worker: `/health`, `/estimate`, `/last-result`, `/datasets`, `/image/{rgb,depth,mask,overlay}`. No ROS, no DDS, no robot. |
+| `perception/providers/foundationpose_rgbd.py` | The WISEPACK provider — the only code that knows the worker's schema. Validates the response, applies the declared symmetry, builds a generic `ObservationBatch`. |
+| `wisepack_core/foundationpose_client.py` | The transport. Every method answers; none raises for an absent worker. |
+| `config/perception_objects.yaml` | The object-model registry: mesh path, **declared** units, and **measured** symmetry. |
+| `scripts/measure_mesh_symmetry.py` | Derives those symmetry declarations from the geometry rather than by eye. |
+
+**Capability is the whole chain, never "Docker exists".** Each prerequisite is
+reported separately because each fails on its own and each has a different fix:
+worker reachable, GPU available, FoundationPose runtime loaded, scorer weights,
+refiner weights, object model, RGB-D camera, live inference. Today this host
+reports **runtime READY, RGB-D camera unavailable, live inference unavailable** —
+which is a state the dashboard shows rather than collapsing into "unavailable".
+
+**Units are declared, never detected.** Neither STL nor OBJ records a unit, and a
+depth image in millimetres is indistinguishable from one in metres. Both are
+required inputs with no default: guessing either is a factor-of-1000 error that
+produces a confident, completely wrong pose.
+
+**Symmetry is measured, not assumed.** `scripts/measure_mesh_symmetry.py` rotates
+each mesh onto itself and reports the residual. The pipe sections come out
+axially symmetric — their spin about their own axis is *unobservable* and is
+never reported as a measured angle — and the bent section `Cylinder5`, which
+looks fully constrained, turns out to have a **two-fold (180°) symmetry about z**:
+it is a symmetric hairpin, so swapping its two legs is unobservable. Its pose is
+determined up to that flip and no further. See
+`perception/foundationpose/REFERENCE_ASSETS.md`.
+
+**Coordinate frame honesty, and two separate validities.** FoundationPose
+reports in the camera optical frame, and WISEPACK keeps it there. A successful
+estimate is **valid** (`pose_valid = true`) in that frame — it is a real,
+reproducible pose. What it cannot yet do is move into the work area, which is a
+different fact with its own field:
+
+| | |
+|---|---|
+| FoundationPose estimate valid | **true** |
+| pose frame | `camera_color_optical_frame` |
+| camera→work-area extrinsic available | **false** |
+| work-area pose available | **false** |
+
+`workarea_pose_available` is what a planner or the Isaac scene synchronizer
+consults; it is derived, so it is true only when the pose is already in the
+work-area frame or a validated transform into it exists. The missing extrinsic
+is represented as missing — never as an identity transform, and never by
+relabelling `frame_id`. The planar ArUco homography is a *planar* map and is
+never reused as a 3-D transform.
+
+**Offline reference regression.** With no depth camera attached, the complete
+WISEPACK path — worker → provider → `PhysicalObservation` → serialisation →
+dashboard — is exercised against the saved tutorial dataset. It is labelled
+*reference/offline regression* everywhere it appears, is stamped
+`acquisition="reference"`, and is never routed into a run as though a camera had
+produced it.
+
+> **Not validated on live hardware.** No RGB-D camera is attached to this
+> deployment. Nothing here has been checked against a live depth sensor.
 
 #### Prerequisites
 

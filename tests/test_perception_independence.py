@@ -445,6 +445,19 @@ PUBLISHED_MODEL_IDENTIFIER = "hpcbg/harmony-bottle-detector"
 #: between them — so the name appears there as a selectable value.
 PROVIDER_REGISTRY_NAME = "fasterrcnn_bottle"
 
+#: The PUBLIC PERCEPTION METHOD names, which the registry also has to hold for
+#: the same reason: they are the values `WISEPACK_PERCEPTION_METHOD` selects
+#: between, and the labels the operator picks from.
+#:
+#: `planar_fasterrcnn` NAMES AN ARCHITECTURE, and that is worth stating plainly
+#: rather than hiding behind an exemption. The rule this file enforces is that
+#: the domain must not DEPEND on a detector; a selectable value is data, not a
+#: dependency, and `perception.py` imports nothing from the provider. But the
+#: name is still less neutral than "planar_rgb" would have been. It is the
+#: name that was specified for the public setting, so it is used, and it is
+#: exempted BY NAME so a third such string cannot slip in unnoticed.
+PERCEPTION_METHOD_NAMES = ("planar_fasterrcnn", "foundationpose_rgbd")
+
 
 @pytest.mark.parametrize("module", [
     "packing.py", "workflow.py", "validator.py", "kpi.py", "execution.py",
@@ -468,7 +481,7 @@ def test_no_core_module_carries_a_detector_name_in_its_code(module):
 
 
 def test_the_registry_names_a_provider_and_a_model_and_nothing_else():
-    """`perception.py` may name TWO things, and both are data.
+    """`perception.py` may name a SHORT, FIXED LIST of things, all of them data.
 
     The provider's SELECTABLE NAME (so a second provider is a configuration
     change) and the PUBLIC IDENTIFIER of the released weights (an attribution
@@ -481,11 +494,34 @@ def test_the_registry_names_a_provider_and_a_model_and_nothing_else():
     code = _python_code_without_prose(path.read_text(encoding="utf-8")).lower()
     code = code.replace(PUBLISHED_MODEL_IDENTIFIER, "<published-model>")
     code = code.replace(PROVIDER_REGISTRY_NAME, "<provider-name>")
+    for method in PERCEPTION_METHOD_NAMES:
+        code = code.replace(method, "<method-name>")
     for forbidden in ("harmony", "bottle", "fasterrcnn", "faster_rcnn",
                       "aruco", "torch", "cv2"):
         assert forbidden not in code, (
             f"perception.py names {forbidden!r} beyond the provider name and "
             "the published model identifier")
+
+
+def test_the_method_names_are_selectable_values_not_imports():
+    """The exemption is only defensible if the names really are inert data."""
+    import ast
+    path = (pathlib.Path(REPO) / "wisepack_ws" / "src" / "wisepack_core"
+            / "wisepack_core" / "perception.py")
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    for node in ast.walk(tree):
+        modules = []
+        if isinstance(node, ast.Import):
+            modules = [a.name for a in node.names]
+        elif isinstance(node, ast.ImportFrom):
+            modules = [node.module or ""]
+        for module in modules:
+            lowered = module.lower()
+            for forbidden in ("provider", "fasterrcnn", "foundationpose",
+                              "torch", "cv2"):
+                assert forbidden not in lowered, (
+                    f"perception.py imports {module} — a selectable name became "
+                    "a dependency")
 
 
 def test_the_two_exemptions_are_data_not_dependencies():

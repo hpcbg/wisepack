@@ -1,0 +1,201 @@
+# WISEPACK object-model registry.
+#
+# The geometry of every object a MODEL-BASED perception method can locate, in
+# one tracked place. A mesh path hard-coded in a provider would be a second
+# registry that agrees with this one only until somebody edits it — the same
+# rule config/isaac_robots.yaml follows for arms.
+#
+# WHAT A MODEL-BASED METHOD NEEDS AND A PLANAR ONE DOES NOT
+# ---------------------------------------------------------
+# The planar Faster R-CNN provider locates objects on a calibrated plane and
+# needs no CAD at all. FoundationPose estimates the pose OF A KNOWN SHAPE, so it
+# needs the shape — and needs it in the right units, with its symmetry declared.
+#
+# UNITS ARE DECLARED, NEVER DETECTED. Neither STL nor OBJ records a unit, so a
+# mesh authored in millimetres and consumed as metres is a factor-of-1000 error
+# that produces a confident, completely wrong pose. `mesh_units` is mandatory.
+#
+# SYMMETRY IS DECLARED TOO, and it is not decoration. A cylinder has continuous
+# rotational symmetry about its axis: the rotation about that axis is NOT
+# OBSERVABLE, and any estimator will still return some value for it. Declaring
+# the symmetry is what lets WISEPACK report the observable part of the pose and
+# mark the rest ambiguous, instead of publishing a fabricated angle.
+#
+# MESHES ARE NOT COMMITTED AND NOT COPIED. `mesh_path` is relative to the
+# reference root, which is mounted READ-ONLY into the FoundationPose worker at
+# /datasets (see scripts/setup_foundationpose.sh). The CAD models already live
+# beside the repository; duplicating them into a WISEPACK-shaped cache would buy
+# nothing but a second copy to drift out of date.
+#
+# SYMMETRY VALUES BELOW ARE MEASURED, NOT ASSUMED. Each was derived with:
+#
+#     python3 scripts/measure_mesh_symmetry.py <mesh>...
+#
+# which rotates the mesh onto itself and reports the residual. Where a value
+# came out differently from the obvious guess, the entry says so.
+
+objects:
+
+  # --- the first deterministic regression object -------------------------- #
+  #
+  # The bolt from the bin-picking tutorial's FoundationPose demo set. It is the
+  # ONLY object for which a complete FoundationPose input set exists here —
+  # intrinsics, RGB, depth, a registration mask and a textured mesh — which is
+  # why it, and not a WISEPACK part, is the first regression.
+  #
+  # It is ASYMMETRIC, which is exactly what a first test wants: every rotational
+  # degree of freedom is observable, so a wrong orientation cannot hide behind a
+  # symmetry.
+  - model_id: tutorial_bolt
+    object_type: reference_bolt
+    mesh_path: Robot-Mania-Bin-Picking-Tutorial/isaac_bin_picking/FoundationPose_related/bolt/mesh/bolt.obj
+    mesh_units: m           # the tutorial mesh is authored in metres (Isaac Sim)
+    scale: 1.0
+    symmetry:
+      type: none
+    methods:
+      - foundationpose_rgbd
+    description: >-
+      Reference bolt from the bin-picking tutorial's FoundationPose demo set.
+      Regression object only — WISEPACK does not package bolts.
+    provenance: >-
+      The bin-picking tutorial's own demo asset, read in place from the mounted
+      reference tree. Not copied into WISEPACK and not redistributed by it;
+      see NOTICE.
+
+  # --- THE ACTUAL TARGET DOMAIN: pipe and tube sections ------------------- #
+  #
+  # These are the objects WISEPACK exists to pack. The bolt above is a runtime
+  # regression and nothing more; the demonstration is these.
+  #
+  # EVERY ONE OF THESE IS AUTHORED IN MILLIMETRES and every one is consumed by
+  # FoundationPose in metres, so `mesh_units: mm` is load-bearing: dropping it
+  # would place a 190 mm pipe 190 metres away, with total confidence.
+  #
+  # NO CAPTURED-OBJECT CORRESPONDENCE IS CLAIMED. Which of these CAD files
+  # matches which tube in references/Tubes-Capture has NOT been established, and
+  # cannot be from appearance: several share a 35 mm outer diameter and differ
+  # only in length, which a single view does not resolve. Establishing it needs
+  # either the physical parts to hand or a new controlled capture where the
+  # model_id is known at capture time. See REFERENCE_ASSETS.md.
+
+  # Short straight tube. OD 20, length 40, axis along z.
+  - model_id: cylinder1
+    object_type: pipe_section
+    mesh_path: CAD-Models/STL-Files/Cylinder1.stl
+    mesh_units: mm
+    scale: 1.0
+    extents_mm: [20.0, 20.0, 40.0]      # measured from the mesh
+    symmetry:
+      type: axial
+      axis: z
+    methods:
+      - foundationpose_rgbd
+    description: >-
+      Short straight pipe section. Rotation about its own axis is NOT
+      observable and must never be reported as a measured angle.
+
+  # OD 35, length 70, axis along y.
+  - model_id: cylinder2
+    object_type: pipe_section
+    mesh_path: CAD-Models/STL-Files/Cylinder2.stl
+    mesh_units: mm
+    scale: 1.0
+    extents_mm: [35.0, 70.0, 35.0]
+    symmetry:
+      type: axial
+      axis: y
+    methods:
+      - foundationpose_rgbd
+    description: Straight pipe section, axis along the mesh y axis.
+
+  # OD 35, length 190, axis along y.
+  - model_id: cylinder3
+    object_type: pipe_section
+    mesh_path: CAD-Models/STL-Files/Cylinder3.stl
+    mesh_units: mm
+    scale: 1.0
+    extents_mm: [34.98, 190.0, 35.0]
+    symmetry:
+      type: axial
+      axis: y
+    methods:
+      - foundationpose_rgbd
+    description: >-
+      Long straight pipe section. Good position and axis-direction test; axial
+      spin is unobservable.
+
+  # OD 25, length 315.5, axis along x.
+  - model_id: cylinder4
+    object_type: pipe_section
+    mesh_path: CAD-Models/STL-Files/Cylinder4.stl
+    mesh_units: mm
+    scale: 1.0
+    extents_mm: [315.51, 25.0, 25.0]
+    symmetry:
+      type: axial
+      axis: x
+    methods:
+      - foundationpose_rgbd
+    description: >-
+      Longest straight pipe section, axis along the mesh x axis.
+
+  # THE BENT ONE — and the measurement that matters most here.
+  #
+  # It is not axially symmetric: rotating it about any axis by an arbitrary
+  # angle moves the surface by >100 mm, so its orientation IS genuinely
+  # constrained in a way a straight tube's never is. That makes it the right
+  # early 6-DoF test.
+  #
+  # BUT IT IS NOT UNIQUELY CONSTRAINED, which eyeballing it would not reveal:
+  # a 180 deg rotation about z maps it onto itself to within 0.75 mm, i.e. to
+  # sampling noise. It is a symmetric hairpin, so swapping its two legs is
+  # unobservable. Its pose is determined up to that flip and no further, and
+  # WISEPACK must report it that way.
+  - model_id: cylinder5
+    object_type: pipe_section_bent
+    mesh_path: CAD-Models/STL-Files/Cylinder5.stl
+    mesh_units: mm
+    scale: 1.0
+    extents_mm: [315.5, 148.02, 25.0]
+    symmetry:
+      type: discrete
+      axis: z
+      fold: 2
+    methods:
+      - foundationpose_rgbd
+    description: >-
+      Bent (hairpin) pipe section. Orientation is well constrained — unlike the
+      straight sections — but only up to a measured 180 deg flip about z, which
+      exchanges its two legs. Do not report that flip as resolved.
+
+  # --- the WISEPACK proxy, once a mesh exists for it ---------------------- #
+  #
+  # DELIBERATELY LEFT WITHOUT A MESH. The physical proxies WISEPACK currently
+  # detects are ordinary bottles, and no CAD model of them exists; inventing an
+  # "approximate cylinder" and calling it their geometry would put a fabricated
+  # shape into a model-based estimator and report the result as a measurement.
+  #
+  # The entry exists so the symmetry and packing dimensions are recorded in the
+  # one place they belong, and so `mesh_available: false` is what the dashboard
+  # reports — rather than the object being invisible until someone remembers it.
+  #
+  # AXIAL SYMMETRY, and it matters: rotation about the cylinder's own axis is
+  # unobservable, so no planner may depend on it.
+  - model_id: wisepack_cylinder_proxy
+    object_type: cylindrical_proxy
+    mesh_path: ""           # none yet — see above
+    mesh_units: mm
+    symmetry:
+      type: axial
+      axis: z
+    diameter_mm: 65
+    length_mm: 215
+    methods:
+      - foundationpose_rgbd
+    description: >-
+      The cylindrical workpiece proxy WISEPACK packages. Dimensions are the
+      CONFIGURED proxy geometry (WISEPACK_PHYSICAL_PROXY_*), not a measurement.
+    provenance: >-
+      No CAD model available. A 3-D printed or scanned proxy with known geometry
+      is needed before FoundationPose can locate this object honestly.

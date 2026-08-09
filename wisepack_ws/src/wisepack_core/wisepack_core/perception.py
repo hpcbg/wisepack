@@ -201,7 +201,146 @@ DEFAULT_DETECTOR = "fasterrcnn_bottle"
 
 #: Providers this build can run. Names describe the METHOD, never its origin, so
 #: nothing downstream has to be renamed when a provider is added.
+#:
+#: LEGACY. `fasterrcnn_bottle` is a PROVIDER MODULE name — it names an
+#: implementation (`perception/providers/fasterrcnn_bottle.py`), not a
+#: capability. See `PerceptionMethod` below, which is the abstraction that
+#: replaced it, and `resolve_perception_method()`, which accepts this value as a
+#: compatibility alias.
 KNOWN_DETECTORS = (DEFAULT_DETECTOR,)
+
+
+# --------------------------------------------------------------------------- #
+# Perception METHOD — how a physical frame becomes observations
+# --------------------------------------------------------------------------- #
+#
+# WHY THIS REPLACED "DETECTOR". `WISEPACK_PERCEPTION_DETECTOR` was named when
+# there was one provider and it was a detector: a network that finds bounding
+# boxes, with the geometry supplied by a separate ArUco homography.
+#
+# FoundationPose is not that. It is a complete pose-estimation pipeline — mesh
+# in, RGB-D in, 6-DoF pose out — and calling it a "detector" would describe the
+# smallest part of what it does while implying it produces the same kind of
+# answer as the planar provider. It does not: one measures x/y/yaw on a
+# calibrated plane, the other measures a full rigid transform in the camera
+# frame.
+#
+# The METHOD is therefore the axis, and it is a THIRD axis, independent of the
+# two that already exist:
+#
+#     dashboard data source      sim | ros | fiware      (where the UI reads)
+#     object source              preset | camera         (where objects come from)
+#     perception method          planar | rgbd 6-DoF     (how a frame is read)
+#
+# Only the last is new. Selecting a method never implies a camera is present,
+# and never implies anything about the execution backend.
+
+
+class PerceptionMethod(str, Enum):
+    """How a physical camera frame becomes object observations."""
+
+    #: Faster R-CNN detection plus an ArUco homography onto the calibrated
+    #: plane. THE DEFAULT, and deliberately so: it is the validated path, it
+    #: needs no CAD model, no depth sensor and no GPU, and every physical run
+    #: WISEPACK has ever done used it.
+    PLANAR_FASTERRCNN = "planar_fasterrcnn"
+    #: FoundationPose: model-based 6-DoF pose from RGB-D against a known mesh.
+    #: Never the default — it needs a depth camera, a GPU, licensed weights and
+    #: a CAD model for the object in view, and any of those being absent must be
+    #: visible rather than silently worked around.
+    FOUNDATIONPOSE_RGBD = "foundationpose_rgbd"
+
+    @property
+    def provider_module(self) -> str:
+        """The module under `perception/providers/` that implements this."""
+        return {"planar_fasterrcnn": "fasterrcnn_bottle",
+                "foundationpose_rgbd": "foundationpose_rgbd"}[self.value]
+
+    @property
+    def selector_label(self) -> str:
+        return {"planar_fasterrcnn": "Planar RGB — Faster R-CNN",
+                "foundationpose_rgbd": "RGB-D 6-DoF — FoundationPose"}[self.value]
+
+    @property
+    def selector_detail(self) -> str:
+        return {
+            "planar_fasterrcnn": (
+                # NO CALIBRATION TECHNOLOGY NAMED. Which marker system defines
+                # the plane is the provider's business; the domain describes
+                # what the method MEASURES, so replacing the markers does not
+                # mean editing operator-facing text in the core.
+                "objects are detected in a colour frame and measured on the "
+                "calibrated plane: x, y and yaw"),
+            "foundationpose_rgbd": (
+                "a full 6-DoF pose is estimated from RGB-D against the "
+                "object's CAD model, in the camera frame"),
+        }[self.value]
+
+    @property
+    def measures(self) -> Tuple[str, ...]:
+        """The degrees of freedom this method can actually produce.
+
+        Carried so the dashboard never has to infer it from the method name,
+        and so a planar observation is never rendered as though it had
+        measured a full orientation.
+        """
+        return {"planar_fasterrcnn": ("x", "y", "yaw"),
+                "foundationpose_rgbd": ("x", "y", "z", "orientation")}[self.value]
+
+    @property
+    def requires_depth(self) -> bool:
+        return self is PerceptionMethod.FOUNDATIONPOSE_RGBD
+
+    @property
+    def requires_object_model(self) -> bool:
+        """Model-BASED means exactly that: no mesh, no estimate."""
+        return self is PerceptionMethod.FOUNDATIONPOSE_RGBD
+
+
+#: The public setting. Supersedes `WISEPACK_PERCEPTION_DETECTOR`, which is still
+#: read when this is unset so an existing deployment keeps working.
+PERCEPTION_METHOD_ENV = "WISEPACK_PERCEPTION_METHOD"
+
+DEFAULT_PERCEPTION_METHOD = PerceptionMethod.PLANAR_FASTERRCNN.value
+
+KNOWN_PERCEPTION_METHODS = tuple(m.value for m in PerceptionMethod)
+
+#: Values accepted for compatibility, mapped to the method they mean. The old
+#: variable held a PROVIDER MODULE name; both spellings resolve to one method so
+#: an existing `WISEPACK_PERCEPTION_DETECTOR=fasterrcnn_bottle` is not a
+#: configuration error after this change.
+PERCEPTION_METHOD_ALIASES = {
+    "fasterrcnn_bottle": PerceptionMethod.PLANAR_FASTERRCNN.value,
+    "planar": PerceptionMethod.PLANAR_FASTERRCNN.value,
+    "foundationpose": PerceptionMethod.FOUNDATIONPOSE_RGBD.value,
+}
+
+
+def resolve_perception_method(value: Optional[str] = None,
+                              env: Optional[Dict[str, str]] = None) -> str:
+    """Resolve the perception method: argument, then env, then the planar default.
+
+    AN UNKNOWN VALUE IS AN ERROR, never a silent fall back — the same rule the
+    perception source follows, and for the same reason: quietly running the
+    planar detector when someone asked for 6-DoF produces measurements that are
+    correct-looking and mean something else entirely.
+    """
+    environment = os.environ if env is None else env
+    raw = value
+    if raw is None:
+        raw = environment.get(PERCEPTION_METHOD_ENV, "")
+        if not str(raw or "").strip():
+            # LEGACY FALLBACK, read only when the current variable is unset.
+            raw = environment.get(PERCEPTION_DETECTOR_ENV, "")
+    raw = str(raw or "").strip().lower()
+    if not raw:
+        return DEFAULT_PERCEPTION_METHOD
+    raw = PERCEPTION_METHOD_ALIASES.get(raw, raw)
+    if raw not in KNOWN_PERCEPTION_METHODS:
+        raise PerceptionConfigError(
+            f"unknown perception method {raw!r}; known: "
+            + ", ".join(KNOWN_PERCEPTION_METHODS))
+    return raw
 
 
 def resolve_detector(value: Optional[str] = None) -> str:
@@ -451,7 +590,21 @@ class ObservationBatch:
     #: only timestamp a batch that never reached the camera can carry.
     requested_at: str = ""
     detector: str = ""
+    #: WHICH METHOD MEASURED THIS BATCH. Additive: an older batch document has
+    #: no such key and `from_dict` leaves it empty rather than assuming planar,
+    #: because assuming is how a 6-DoF batch would come back labelled as a
+    #: planar one after a round trip.
+    perception_method: str = ""
     model_id: str = ""
+    #: The 6-DoF fields below are EMPTY for a planar batch and must stay that
+    #: way. A planar observation has no depth camera behind it and no CAD model;
+    #: filling these in with defaults would make the two methods indistinguishable
+    #: downstream, which is the one thing this whole boundary exists to prevent.
+    #:
+    #: Whether the batch came from a live acquisition or from the saved
+    #: reference dataset. "reference" is never presented as a measurement of the
+    #: physical work area — see the provider.
+    acquisition: str = ""
     calibration_status: str = "unknown"
     calibration_revision: str = ""
     error: str = ""
@@ -492,6 +645,8 @@ class ObservationBatch:
             "captured_at": self.captured_at,
             "requested_at": self.requested_at,
             "detector": self.detector,
+            "perception_method": self.perception_method,
+            "acquisition": self.acquisition,
             "model_id": self.model_id,
             "calibration_status": self.calibration_status,
             "calibration_revision": self.calibration_revision,
@@ -515,6 +670,8 @@ class ObservationBatch:
             captured_at=str(d.get("captured_at", "")),
             requested_at=str(d.get("requested_at", "")),
             detector=str(d.get("detector", "")),
+            perception_method=str(d.get("perception_method", "")),
+            acquisition=str(d.get("acquisition", "")),
             model_id=str(d.get("model_id", "")),
             calibration_status=str(d.get("calibration_status", "unknown")),
             calibration_revision=str(d.get("calibration_revision", "")),
@@ -858,6 +1015,96 @@ class ObjectSourceState:
         }
 
 
+@dataclass
+class PerceptionMethodState:
+    """available / selected / current — the SAME three states as the object source.
+
+    Deliberately the same shape, because it is the same problem. A single global
+    "perception method" would mean choosing FoundationPose reached back into the
+    run already on screen and relabelled a batch that a planar detector actually
+    produced. The batch on screen was measured one way; the operator's draft is
+    a different question; conflating them rewrites history.
+
+        available   which methods this deployment can run RIGHT NOW. Re-evaluated
+                    on every ask, never latched: an operator can start the
+                    FoundationPose worker at any moment and the dashboard has to
+                    notice without a restart.
+        selected    the method the NEXT physical acquisition will use. A draft.
+        current     the method the RUNNING batch was actually measured with.
+                    Provenance — it is stamped on the batch and travels to FIWARE.
+
+    `current` is empty when no physical batch exists, which is not the same as
+    "planar". A preset run was measured by nothing at all, and saying it used the
+    planar detector would be an invented provenance.
+    """
+
+    current: str = ""
+    selected: str = DEFAULT_PERCEPTION_METHOD
+    available: List[str] = field(
+        default_factory=lambda: [DEFAULT_PERCEPTION_METHOD])
+    #: Why each unavailable method is unavailable, keyed by method. A method
+    #: offered as "unavailable" with no reason is a dead end for the operator.
+    unavailable_reasons: Dict[str, str] = field(default_factory=dict)
+
+    @property
+    def changes_next_run(self) -> bool:
+        """True when the draft differs from the running batch's provenance."""
+        return bool(self.current) and self.selected != self.current
+
+    def is_available(self, method: str) -> bool:
+        return method in self.available
+
+    def to_dict(self) -> Dict[str, Any]:
+        selected = PerceptionMethod(self.selected)
+        document: Dict[str, Any] = {
+            "selected": selected.value,
+            "selected_label": selected.selector_label,
+            "selected_detail": selected.selector_detail,
+            "selected_measures": list(selected.measures),
+            # EMPTY, NOT DEFAULTED. No physical batch means no method measured
+            # anything, and naming one would fabricate provenance.
+            "current": self.current,
+            "current_label": (PerceptionMethod(self.current).selector_label
+                              if self.current else ""),
+            "changes_next_run": self.changes_next_run,
+            "available": list(self.available),
+            "unavailable_reasons": dict(self.unavailable_reasons),
+            "options": [],
+        }
+        for method in PerceptionMethod:
+            document["options"].append({
+                "value": method.value,
+                "label": method.selector_label,
+                "detail": method.selector_detail,
+                "measures": list(method.measures),
+                "requires_depth": method.requires_depth,
+                "requires_object_model": method.requires_object_model,
+                "available": method.value in self.available,
+                "reason": self.unavailable_reasons.get(method.value, ""),
+            })
+        return document
+
+
+def resolve_perception_method_selection(
+        value: Optional[str], available: Sequence[str],
+        fallback: str = DEFAULT_PERCEPTION_METHOD) -> str:
+    """The operator's draft method, clamped to what is actually runnable.
+
+    A METHOD THAT IS NO LONGER AVAILABLE FALLS BACK, and this is the one place a
+    fall back is right: the selection is a DRAFT for a run that has not started.
+    A draft naming a worker that has since died must not become a run that
+    silently fails, and it must not become a run that quietly uses the other
+    method either — so the fallback is to the planar default, which the caller
+    then displays. Nothing about an EXISTING batch is changed by this.
+    """
+    candidates = list(available) or [fallback]
+    raw = str(value or "").strip().lower()
+    raw = PERCEPTION_METHOD_ALIASES.get(raw, raw)
+    if raw in candidates:
+        return raw
+    return fallback if fallback in candidates else candidates[0]
+
+
 def resolve_object_source(value: Optional[str], available: Sequence[str],
                           fallback: str = PerceptionSource.SIM.value
                           ) -> PerceptionSource:
@@ -941,4 +1188,8 @@ __all__ = [
     "PerceptionHealth", "DEFAULT_OBSERVATION_TTL_S", "observation_age_s",
     "is_stale", "ObjectSourceState", "resolve_object_source",
     "PERCEPTION_ENABLE_ENV", "camera_capability_requested",
+    "PerceptionMethod", "PERCEPTION_METHOD_ENV", "DEFAULT_PERCEPTION_METHOD",
+    "KNOWN_PERCEPTION_METHODS", "PERCEPTION_METHOD_ALIASES",
+    "resolve_perception_method", "PerceptionMethodState",
+    "resolve_perception_method_selection",
 ]

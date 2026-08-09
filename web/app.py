@@ -61,8 +61,11 @@ from wisepack_core.artifacts import (                              # noqa: E402
 from wisepack_core.domain import Strategy                          # noqa: E402
 from wisepack_core.execution import physical_presets              # noqa: E402
 from wisepack_core.perception import (                             # noqa: E402
-    ObjectSourceState, PerceptionSource, ProxyGeometry, WorkAreaFrame,
-    resolve_object_source, resolve_perception_source,
+    ObjectSourceState, PerceptionMethod, PerceptionMethodState,
+    PerceptionSource, ProxyGeometry, WorkAreaFrame,
+    DEFAULT_PERCEPTION_METHOD, resolve_object_source,
+    resolve_perception_method, resolve_perception_method_selection,
+    resolve_perception_source,
 )
 from wisepack_core.events import (                                 # noqa: E402
     DynamicEvent, DynamicEventType, Stage,
@@ -173,6 +176,11 @@ class DemoState:
             # session, without restarting anything. Like the robot draft, it is
             # inert until an acquisition is actually started.
             "object_source": PERCEPTION_SOURCE.value,
+            # THE METHOD IS A DRAFT LIKE THE SOURCE. Planar is the default and
+            # stays the default: it is the validated path, it needs no depth
+            # camera, no GPU and no CAD model, and every physical run WISEPACK
+            # has done used it.
+            "perception_method": resolve_perception_method(),
         }
 
     # -- event capture ---------------------------------------------------- #
@@ -335,6 +343,149 @@ def available_object_sources(health: Optional[Dict[str, Any]] = None):
     if camera_capability(health)[0]:
         sources.append(PerceptionSource.CAMERA.value)
     return sources
+
+
+#: The reference dataset and model the offline regression uses by default. The
+#: tutorial bolt is the ONLY complete FoundationPose input set available —
+#: intrinsics, RGB, depth, a registration mask and a textured mesh — which is
+#: why it, and not a WISEPACK pipe section, is the regression object. WISEPACK
+#: does not package bolts; see perception/foundationpose/REFERENCE_ASSETS.md.
+DEFAULT_REFERENCE_DATASET = (
+    "Robot-Mania-Bin-Picking-Tutorial/isaac_bin_picking/"
+    "FoundationPose_related/bolt")
+DEFAULT_REFERENCE_MODEL_ID = "tutorial_bolt"
+
+#: The FoundationPose provider, built lazily and shared. Cheap to construct —
+#: it holds a URL and a registry, opens no camera and imports no torch — but
+#: rebuilding it per request would re-read the object registry on every poll.
+_FOUNDATIONPOSE_PROVIDER = None
+_FOUNDATIONPOSE_CAPABILITY: Dict[str, Any] = {}
+_FOUNDATIONPOSE_CAPABILITY_AT: Optional[float] = None
+
+
+def foundationpose_provider():
+    """The shared provider, or None when this deployment cannot load it.
+
+    NEVER RAISES INTO A HANDLER. FoundationPose is opt-in; a deployment that
+    never built the worker must render the rest of the dashboard normally, so an
+    import failure becomes "unavailable, here is why" rather than a 500.
+    """
+    global _FOUNDATIONPOSE_PROVIDER
+    if _FOUNDATIONPOSE_PROVIDER is not None:
+        return _FOUNDATIONPOSE_PROVIDER
+    try:
+        perception_dir = os.path.join(REPO, "perception")
+        if perception_dir not in sys.path:
+            sys.path.insert(0, perception_dir)
+        from providers.foundationpose_rgbd import (              # noqa: PLC0415
+            FoundationPoseProvider)
+        _FOUNDATIONPOSE_PROVIDER = FoundationPoseProvider()
+    except Exception:                                            # noqa: BLE001
+        return None
+    return _FOUNDATIONPOSE_PROVIDER
+
+
+def foundationpose_capability(force: bool = False) -> Dict[str, Any]:
+    """The whole FoundationPose inference chain. A LIVE question, cached briefly.
+
+    Cached for the same reason the camera capability is: the panel polls, and
+    asking a container over HTTP on every refresh would make the dashboard's
+    responsiveness depend on a worker that is allowed to be absent. The TTL is
+    short enough that starting the worker is noticed without a restart.
+    """
+    global _FOUNDATIONPOSE_CAPABILITY, _FOUNDATIONPOSE_CAPABILITY_AT
+    now = time.time()
+    if (not force and _FOUNDATIONPOSE_CAPABILITY_AT is not None
+            and now - _FOUNDATIONPOSE_CAPABILITY_AT < CAMERA_CAPABILITY_TTL_S):
+        return _FOUNDATIONPOSE_CAPABILITY
+    provider = foundationpose_provider()
+    if provider is None:
+        answer = {
+            "method": PerceptionMethod.FOUNDATIONPOSE_RGBD.value,
+            "worker_reachable": False, "runtime_ready": False,
+            "inference_ready": False, "offline_regression_available": False,
+            "rgbd_camera_available": False, "models": [],
+            "blocked_by": [
+                "the FoundationPose provider could not be loaded in this "
+                "deployment. It is OPT-IN: build the worker with "
+                "./scripts/setup_foundationpose.sh."],
+        }
+    else:
+        # RGB-D CAMERA: FALSE, AND SAID SO. No depth camera is attached to this
+        # host. It is passed explicitly rather than defaulted inside the
+        # provider so the single place that decides it is visible here.
+        answer = provider.capability(rgbd_camera_available=False)
+    # WHO HOLDS THE CAMERA. Carried with the capability so the panel can say
+    # what a method switch would require, rather than discovering it when two
+    # providers both open one device.
+    from wisepack_core.camera_ownership import current_ownership  # noqa: PLC0415
+    answer["camera_ownership"] = current_ownership(
+        colour_available=camera_capability()[0],
+        depth_available=False,
+        colour_holder=PerceptionMethod.PLANAR_FASTERRCNN.value
+        if camera_capability()[0] else "").to_dict()
+    _FOUNDATIONPOSE_CAPABILITY = answer
+    _FOUNDATIONPOSE_CAPABILITY_AT = now
+    return answer
+
+
+def available_perception_methods(capability: Optional[Dict[str, Any]] = None
+                                 ) -> List[str]:
+    """Methods this deployment can run RIGHT NOW.
+
+    The planar method is always listed: it is the default and its availability
+    is the camera's, which the object-source selector already reports. Listing
+    it as unavailable when the camera is unplugged would make the METHOD
+    selector a second, competing camera indicator.
+    """
+    methods = [PerceptionMethod.PLANAR_FASTERRCNN.value]
+    document = foundationpose_capability() if capability is None else capability
+    # AVAILABLE MEANS THE METHOD CAN RUN, which for FoundationPose means the
+    # whole chain: worker, GPU, weights and a CAD model. Not "Docker exists".
+    if document.get("runtime_ready") and document.get("models"):
+        methods.append(PerceptionMethod.FOUNDATIONPOSE_RGBD.value)
+    return methods
+
+
+def perception_method_state(capability: Optional[Dict[str, Any]] = None
+                            ) -> PerceptionMethodState:
+    """available + draft + what the RUNNING batch was actually measured with."""
+    document = foundationpose_capability() if capability is None else capability
+    available = available_perception_methods(document)
+    with STATE.lock:
+        selected = str(STATE.settings.get("perception_method")
+                       or DEFAULT_PERCEPTION_METHOD)
+        engine = STATE.engine
+    selected = resolve_perception_method_selection(selected, available)
+
+    # CURRENT IS THE BATCH'S OWN PROVENANCE, read off the batch rather than
+    # from any setting. A preset run has no physical batch and therefore no
+    # method: empty, not "planar", because nothing measured anything.
+    current = ""
+    if engine is not None:
+        try:
+            state = engine.perception_state() or {}
+            current = str((state.get("batch") or {}).get("perception_method") or "")
+        except Exception:                                        # noqa: BLE001
+            current = ""
+    else:
+        # LIVE MODES: this process does not run the engine. The orchestrator
+        # publishes the measuring method beside the object source on the
+        # perception status topic, and that document is authoritative.
+        with STATE.lock:
+            mirror = STATE.ros_mirror
+        published = (mirror or {}).get("perception_status") or {}
+        current = str(published.get("run_perception_method") or "")
+
+    reasons: Dict[str, str] = {}
+    if PerceptionMethod.FOUNDATIONPOSE_RGBD.value not in available:
+        blocked = document.get("blocked_by") or []
+        reasons[PerceptionMethod.FOUNDATIONPOSE_RGBD.value] = (
+            "; ".join(str(b) for b in blocked)
+            or "the FoundationPose worker is not available")
+    return PerceptionMethodState(current=current, selected=selected,
+                                 available=available,
+                                 unavailable_reasons=reasons)
 
 
 def object_source_state(health: Optional[Dict[str, Any]] = None
@@ -878,6 +1029,10 @@ def api_state():
         # what is running. Per run and switchable at runtime — no restart, and
         # no application-wide "camera mode".
         "object_source": source_state.to_dict(),
+        # HOW the next physical batch is read. A THIRD axis: independent of the
+        # source above, independent of the execution backend, and — like the
+        # source — a per-run draft that never touches the run on screen.
+        "perception_method": perception_method_state().to_dict(),
         "ts": time.time(),
     })
     return payload
@@ -1021,6 +1176,8 @@ def _perception_payload() -> Dict[str, Any]:
     # separately in `object_source`, because "running now" and "next run" are
     # different answers and the panel shows both.
     source_state = object_source_state()
+    fp_capability = foundationpose_capability()
+    method_state = perception_method_state(fp_capability)
     run_source = PerceptionSource(source_state.current)
     payload: Dict[str, Any] = {
         "perception_source": run_source.value,
@@ -1028,6 +1185,11 @@ def _perception_payload() -> Dict[str, Any]:
         "perception_source_detail": run_source.detail,
         "physical": run_source.is_physical,
         "object_source": source_state.to_dict(),
+        # THE METHOD IS A THIRD AXIS and travels with the panel in every mode,
+        # including preset mode: an operator deciding whether to switch to the
+        # camera needs to see which methods that camera could be read with.
+        "perception_method": method_state.to_dict(),
+        "foundationpose": fp_capability,
         # THE PROXY DISCLOSURE (§9). Unobtrusive, but always present in the
         # payload so the panel cannot render real detections without it.
         "proxy_note": (
@@ -1105,6 +1267,105 @@ def api_perception():
     return _perception_payload()
 
 
+@app.get("/api/perception/foundationpose")
+def api_foundationpose():
+    """FoundationPose capability, object models, and the last estimate."""
+    capability = foundationpose_capability(force=True)
+    provider = foundationpose_provider()
+    document: Dict[str, Any] = {
+        "capability": capability,
+        "method": perception_method_state(capability).to_dict(),
+        "last_result": None,
+        "last_result_error": "",
+    }
+    if provider is not None:
+        result, reason = provider.client.last_result()
+        document["last_result"] = result
+        document["last_result_error"] = reason
+        document["datasets"] = provider.client.datasets()[0]
+    return document
+
+
+@app.post("/api/perception/foundationpose/reference-regression")
+def api_foundationpose_reference_regression(payload: Optional[Dict[str, Any]] = None):
+    """Run the OFFLINE reference regression. NOT a camera acquisition.
+
+    This exists so the whole WISEPACK path — worker, provider,
+    PhysicalObservation, serialisation, dashboard — can be exercised while no
+    depth camera exists. It is a separate endpoint from `detect_physical_objects`
+    on purpose: routing a saved dataset through the control labelled "detect"
+    would put a reference pose into a run as though a camera had produced it,
+    which is precisely the deception the physical-camera work exists to avoid.
+
+    The batch it returns is stamped `acquisition="reference"` and is NOT
+    installed into the running scenario. Its poses are VALID estimates in the
+    camera frame — `pose_valid` is True — and carry
+    `workarea_pose_available=False`, which is the flag that keeps them out of
+    the work area. Those are two different facts and the payload states both.
+    """
+    body = dict(payload or {})
+    provider = foundationpose_provider()
+    if provider is None:
+        raise HTTPException(
+            status_code=503,
+            detail="the FoundationPose provider is not available in this build")
+    capability = foundationpose_capability(force=True)
+    if not capability.get("offline_regression_available"):
+        raise HTTPException(
+            status_code=409,
+            detail={"error": "the offline reference regression cannot run",
+                    "blocked_by": capability.get("blocked_by", [])})
+    dataset = str(body.get("dataset") or DEFAULT_REFERENCE_DATASET)
+    model_id = str(body.get("model_id") or DEFAULT_REFERENCE_MODEL_ID)
+    if "depth_scale_mm" not in body:
+        # NO DEFAULT, the same rule the worker enforces: a uint16 millimetre
+        # image and a float32 metre image are indistinguishable from the pixels,
+        # and guessing is a factor-of-1000 error that looks like a real pose.
+        raise HTTPException(
+            status_code=400,
+            detail="depth_scale_mm is required — how many millimetres one raw "
+                   "depth unit represents (1.0 for a uint16 millimetre image)")
+    batch = provider.acquire_reference(
+        dataset=dataset, model_id=model_id,
+        depth_scale_mm=float(body["depth_scale_mm"]),
+        frame=int(body.get("frame", 0)),
+        refine_iterations=int(body.get("refine_iterations", 5)))
+    return {
+        "batch": batch.to_dict(),
+        "acquisition": batch.acquisition,
+        # SAID TWICE, AND DELIBERATELY: once in the data and once in a label the
+        # dashboard renders. A reference result that reaches an operator without
+        # this wording is indistinguishable from a live measurement.
+        "label": "reference/offline FoundationPose regression",
+        "live": False,
+        "note": _REFERENCE_NOTE(),
+    }
+
+
+def _REFERENCE_NOTE() -> str:
+    provider = foundationpose_provider()
+    if provider is None:
+        return ""
+    from providers.foundationpose_rgbd import REFERENCE_NOTE     # noqa: PLC0415
+    return REFERENCE_NOTE
+
+
+@app.get("/api/perception/foundationpose/image/{kind}")
+def api_foundationpose_image(kind: str):
+    """Proxy the worker's diagnostic images. A PROXY, never a cache."""
+    from fastapi.responses import Response                        # noqa: PLC0415
+    if kind not in ("rgb", "depth", "mask", "overlay"):
+        raise HTTPException(status_code=404, detail=f"unknown image {kind!r}")
+    provider = foundationpose_provider()
+    if provider is None:
+        raise HTTPException(status_code=503,
+                            detail="the FoundationPose provider is not available")
+    image, error = provider.client.image(kind)
+    if image is None:
+        raise HTTPException(status_code=503, detail=error)
+    return Response(image, media_type="image/jpeg")
+
+
 @app.get("/api/perception/image/{kind}")
 def api_perception_image(kind: str):
     """Proxy the detector's images so the browser needs no second origin.
@@ -1145,6 +1406,14 @@ def api_draft(payload: Dict[str, Any]):
     # not exist, so it is validated here as well as on the command path. The
     # draft form posts the whole form on any change, and a stale `camera` in it
     # must not be able to re-select a camera that has since gone away.
+    if "perception_method" in incoming:
+        # SAME RULE AS THE OBJECT SOURCE. The draft form posts every field on
+        # any change, so a stale `foundationpose_rgbd` in it must not re-select
+        # a worker that has since gone away. Dropped, not raised: the operator
+        # was editing something else.
+        if str(incoming.get("perception_method") or "") not in (
+                perception_method_state().available):
+            incoming.pop("perception_method")
     if "object_source" in incoming:
         # DROPPED, NOT RAISED, and checked without an exception handler: the
         # operator was editing the preset, not the source, and failing their
@@ -1467,6 +1736,33 @@ def _apply_command_locked(engine: WorkflowEngine, command: str,
                 "action_label": source.action_label,
                 "current": state.current,
                 "changes_next_run": source.value != state.current}
+
+    if command == "set_perception_method":
+        # THE DRAFT ONLY, exactly like set_object_source. Changing the selector
+        # must NOT mutate the run on screen: the batch it is planning from was
+        # measured by whichever method actually produced it, and relabelling it
+        # would rewrite that batch's provenance. A method becomes authoritative
+        # when a new physical acquisition starts, and not before.
+        state = perception_method_state()
+        method = resolve_perception_method_selection(
+            str(args.get("method", "")), state.available,
+            fallback=state.selected)
+        if method != str(args.get("method", "")).strip().lower() and args.get("method"):
+            # ASKED FOR SOMETHING UNAVAILABLE. Refused loudly rather than
+            # silently substituted — a selector that quietly keeps the old
+            # method while showing the new one is how an operator ends up
+            # believing a 6-DoF run is under way.
+            raise ValueError(
+                f"perception method {str(args.get('method'))!r} is not "
+                "available: "
+                + (state.unavailable_reasons.get(str(args.get("method")))
+                   or "unknown method"))
+        STATE.settings["perception_method"] = method
+        STATE.settings_touched = True
+        return {"ok": True, "perception_method": method,
+                "label": PerceptionMethod(method).selector_label,
+                "current": state.current,
+                "changes_next_run": bool(state.current) and method != state.current}
 
     if command == "detect_physical_objects":
         # REFUSED, NOT SILENTLY SIMULATED. A control labelled "detect" that

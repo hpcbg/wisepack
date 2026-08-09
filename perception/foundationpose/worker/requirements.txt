@@ -1,0 +1,16 @@
+# WISEPACK FoundationPose worker — the worker's OWN dependencies.
+#
+# Deliberately small. torch, pytorch3d, nvdiffrast and the FoundationPose CUDA
+# extensions are installed by the Dockerfile at pinned versions; this file is
+# only what the WISEPACK wrapper needs on top of them.
+#
+# NOTHING HERE IS INSTALLED ON THE HOST. The host's `.venv-perception` (the
+# planar provider) is untouched by this image — see the Dockerfile header.
+
+fastapi>=0.100          # MIT — the HTTP surface WISEPACK talks to
+uvicorn>=0.23           # BSD-3 — ASGI server
+numpy>=1.24             # BSD-3 — arrays at the boundary
+opencv-python>=4.7      # Apache-2.0 — image decode/encode, overlay drawing
+trimesh>=4.0            # MIT — mesh loading, bounds, units
+pillow>=9.0             # MIT-CMU — PNG depth is read through it where needed
+pyyaml>=6.0             # MIT — dataset descriptors

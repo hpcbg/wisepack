@@ -32,6 +32,22 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
+# 3-D pose, symmetry and frames. Standard library only — importing it here does
+# not change what `domain` costs to load, and it keeps the quaternion rules in
+# one place instead of spread across the producers.
+from .pose import (WORKAREA_FRAME, Orientation, Symmetry,
+                   canonicalize)
+
+#: How far the planar `yaw_deg` and the quaternion's projection may differ and
+#: still be considered the same angle. Comfortably above quaternion round-trip
+#: noise (~1e-9 deg) and far below any disagreement that could matter.
+_YAW_AGREEMENT_DEG = 1e-6
+
+
+def _wrapped_degrees(delta: float) -> float:
+    """`delta` folded into (-180, 180]. -179 and +181 are the same angle."""
+    return (float(delta) + 180.0) % 360.0 - 180.0
+
 SCHEMA_VERSION = "wisepack/1"
 
 # --------------------------------------------------------------------------- #
@@ -316,7 +332,7 @@ class PhysicalObservation:
     confidence: Optional[float] = None
     object_type: str = "cylindrical_proxy"
     source: str = "unknown"                 # perception source id, e.g. camera
-    frame_id: str = "wisepack_workarea"
+    frame_id: str = WORKAREA_FRAME
     #: -- provenance (§11): enough to debug or re-analyse this detection later --
     detector: str = ""                      # detector/model family identification
     model_id: str = ""                      # weights identity (path, hash or repo id)
@@ -329,6 +345,59 @@ class PhysicalObservation:
     diameter_mm: Optional[int] = None
     length_mm: Optional[int] = None
     geometry_source: str = "configured_proxy"
+    # -- FULL 3-D ORIENTATION ------------------------------------------------ #
+    #
+    # ADDITIVE AND OPTIONAL, so every existing producer and consumer is
+    # unaffected. A planar detector sets none of these and gets an orientation
+    # derived from its own yaw, which is exactly what its yaw means; a
+    # model-based RGB-D estimator sets them explicitly.
+    #
+    # THE QUATERNION IS AUTHORITATIVE — `yaw_deg` above remains the planar
+    # projection every existing consumer already reads, and the two are kept
+    # consistent rather than allowed to disagree. See `wisepack_core.pose`.
+    orientation: Optional["Orientation"] = None
+    #: The estimator's UNMODIFIED output, kept when symmetry canonicalisation
+    #: changed the reported orientation. Diagnostics only: it is evidence about
+    #: the estimator, not a second opinion about the object.
+    orientation_raw: Optional["Orientation"] = None
+    #: What the object's SHAPE makes unobservable. Carried on the observation so
+    #: a consumer never has to know what an `object_type` implies.
+    symmetry: Optional["Symmetry"] = None
+    #: WHICH METHOD produced this — `planar_fasterrcnn`, `foundationpose_rgbd`,
+    #: `sim`. Provenance beside `detector`, never a type distinction: nothing
+    #: downstream branches on it.
+    perception_method: str = ""
+    #: The object model this pose was estimated against, when the method is
+    #: model-based. Empty for methods that use no CAD.
+    object_model_id: str = ""
+    #: Whether THE ESTIMATE ITSELF is structurally and numerically valid IN
+    #: `frame_id`. That is the only question this field answers.
+    #:
+    #: TWO DIFFERENT VALIDITIES, AND CONFLATING THEM WAS A BUG. A model-based
+    #: estimator can produce a perfectly good 6-DoF pose in the camera optical
+    #: frame while no camera-to-work-area extrinsic exists. The pose is real,
+    #: reproducible and correct where it lives; what is missing is a way to move
+    #: it somewhere else. Reporting that as `pose_valid=False` said the
+    #: measurement was bad, which was not true and hid the actual gap.
+    #:
+    #: So: `pose_valid` is about the ESTIMATE, `frame_id` says WHERE it lives,
+    #: and `workarea_transform_valid` below says whether it can be placed in the
+    #: work area. False here means the estimate genuinely failed or is kept only
+    #: as diagnostic evidence.
+    pose_valid: bool = True
+    #: Whether a VALIDATED SE(3) transform exists from `frame_id` into the work
+    #: area. Only meaningful when the pose is not already expressed there.
+    #:
+    #: Never set true by an identity transform standing in for a measurement:
+    #: an unmeasured extrinsic is missing, not identity, and assuming identity
+    #: puts objects wherever the camera happens to be. The transform itself,
+    #: when one exists, belongs in a `wisepack_core.pose.RigidTransform`, whose
+    #: `valid` already requires a named `method` for exactly this reason.
+    workarea_transform_valid: bool = False
+    #: Which degrees of freedom this method actually MEASURED. A planar detector
+    #: measures three of six; saying so stops a consumer reading an assumed zero
+    #: as a measured height.
+    measured_dof: Tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         _require_id("observation_id", self.observation_id)
@@ -353,6 +422,53 @@ class PhysicalObservation:
         if self.length_mm is not None:
             self.length_mm = _require_positive_int("length_mm", self.length_mm)
 
+        # -- 3-D orientation: derived when absent, reconciled when present --- #
+        #
+        # ONE POSE, TWO REPRESENTATIONS, NEVER ALLOWED TO DISAGREE.
+        #
+        #   no quaternion  -> build it from the planar yaw. That is what the
+        #                     yaw means, so nothing is invented.
+        #   a quaternion   -> `yaw_deg` becomes its planar projection, so the
+        #                     existing planar consumers keep working unchanged
+        #                     on a 6-DoF observation instead of reading a stale
+        #                     number that was never updated.
+        if isinstance(self.orientation, dict):
+            self.orientation = Orientation.from_dict(self.orientation)
+        if isinstance(self.orientation_raw, dict):
+            self.orientation_raw = Orientation.from_dict(self.orientation_raw)
+        if isinstance(self.symmetry, dict):
+            self.symmetry = Symmetry.from_dict(self.symmetry)
+        if self.orientation is None:
+            self.orientation = Orientation.from_yaw_deg(self.yaw_deg)
+        else:
+            projected = float(self.orientation.yaw_deg)
+            # THE SUPPLIED YAW WINS WHEN IT ALREADY AGREES. Converting a yaw to
+            # a quaternion and back is lossy at the 1e-9 level, and overwriting
+            # a caller's exact -31.0 with -30.999999997 would put float noise
+            # into an audit trail and into every test that compares poses. A
+            # DISAGREEMENT, though, is resolved in favour of the quaternion:
+            # it is the authoritative representation.
+            if abs(_wrapped_degrees(projected - self.yaw_deg)) > _YAW_AGREEMENT_DEG:
+                self.yaw_deg = projected
+        self.measured_dof = tuple(str(d) for d in (self.measured_dof or ()))
+
+    @property
+    def workarea_pose_available(self) -> bool:
+        """Can this observation be placed in the work area?
+
+        DERIVED, so the two ways of being placeable cannot drift apart: a pose
+        already expressed in the work-area frame needs no transform, and one in
+        another frame needs a validated transform into it. This is the question
+        the Isaac scene synchronizer and any planner must ask — never
+        `pose_valid`, which is about the measurement rather than about where it
+        can be put.
+        """
+        if not self.pose_valid:
+            return False
+        if self.frame_id == WORKAREA_FRAME:
+            return True
+        return bool(self.workarea_transform_valid)
+
     @property
     def position(self) -> Vec3:
         """The integer-millimetre projection the packing layer consumes."""
@@ -365,14 +481,38 @@ class PhysicalObservation:
             "object_type": self.object_type,
             "source": self.source,
             "frame_id": self.frame_id,
+            # THE PLANAR KEYS ARE UNCHANGED AND STILL FIRST. Every existing
+            # consumer — the dashboard, the twin validator, the FIWARE bridge —
+            # reads exactly what it read before; the 3-D content is additive.
             "pose": {
                 "x_mm": round(self.x_mm, 3),
                 "y_mm": round(self.y_mm, 3),
                 "z_mm": round(self.z_mm, 3),
                 "yaw_deg": round(self.yaw_deg, 3),
+                # The authoritative orientation. `yaw_deg` above is its planar
+                # projection, kept for the consumers that only need a plane.
+                "orientation": self.orientation.to_dict() if self.orientation else None,
+                # Derived, for humans reading a dashboard. Never consumed.
+                "rpy_deg": ([round(v, 3) for v in self.orientation.rpy_deg()]
+                            if self.orientation else None),
+                # THE ESTIMATE'S OWN VALIDITY, in `frame_id` above. Not a
+                # statement about whether it can be placed in the work area —
+                # that is the next two keys.
+                "valid": bool(self.pose_valid),
+                "workarea_transform_valid": bool(self.workarea_transform_valid),
+                "workarea_pose_available": self.workarea_pose_available,
+                "measured_dof": list(self.measured_dof),
             },
             "confidence": (round(self.confidence, 4)
                            if self.confidence is not None else None),
+            "perception_method": self.perception_method,
+            "object_model_id": self.object_model_id,
+            "symmetry": self.symmetry.to_dict() if self.symmetry else None,
+            # The estimator's own output, when canonicalisation changed what is
+            # reported above. Present only when the two genuinely differ, so its
+            # presence is itself the signal that a symmetry was collapsed.
+            "orientation_raw": (self.orientation_raw.to_dict()
+                                if self.orientation_raw else None),
             "detector": self.detector,
             "model_id": self.model_id,
             "detector_class": self.detector_class,
@@ -412,6 +552,26 @@ class PhysicalObservation:
             diameter_mm=geometry.get("diameter_mm"),
             length_mm=geometry.get("length_mm"),
             geometry_source=geometry.get("source", "configured_proxy"),
+            # ABSENT MEANS PLANAR, not malformed: a document written before
+            # 6-DoF existed still parses, and its orientation is derived from
+            # its yaw exactly as it always implied.
+            orientation=(Orientation.from_dict(pose["orientation"])
+                         if pose.get("orientation") else None),
+            orientation_raw=(Orientation.from_dict(d["orientation_raw"])
+                             if d.get("orientation_raw") else None),
+            symmetry=(Symmetry.from_dict(d["symmetry"])
+                      if d.get("symmetry") else None),
+            perception_method=d.get("perception_method", ""),
+            object_model_id=d.get("object_model_id", ""),
+            pose_valid=bool(pose.get("valid", True)),
+            # ABSENT MEANS "not stated", and for a document written before this
+            # field existed the honest reading is that nothing claimed a
+            # transform. A planar observation is unaffected: it is already in
+            # the work-area frame, so `workarea_pose_available` derives True
+            # without one.
+            workarea_transform_valid=bool(pose.get("workarea_transform_valid",
+                                                   False)),
+            measured_dof=tuple(pose.get("measured_dof") or ()),
         )
 
 

@@ -964,3 +964,118 @@ def test_asking_to_detect_without_a_camera_is_refused_not_simulated(
         "async () => ((await (await fetch('/api/state')).json())"
         ".scenario || {}).totals?.items")
     assert after == before, "a refused detection changed the run"
+
+
+# --------------------------------------------------------------------------- #
+# Perception method selector and FoundationPose status
+# --------------------------------------------------------------------------- #
+#
+# These render against whatever the deployment actually has. On a machine with
+# no FoundationPose worker the method shows as unavailable WITH ITS REASON, and
+# that is a state these tests accept and check — a test that required a GPU
+# container would not be a dashboard test.
+
+
+def test_the_perception_method_selector_appears_only_with_a_camera_selected(page, sim_server):
+    """"How is the frame read" has no answer when there is no frame. With a
+    preset selected the row is hidden, not merely disabled."""
+    page.goto(sim_server.url, wait_until="networkidle")
+    page.wait_for_timeout(3000)
+    field = page.query_selector("#s-method-field")
+    assert field is not None, "the perception-method field is missing"
+    # The default scenario is a preset, so the row starts hidden.
+    assert not field.is_visible(), (
+        "the method selector is shown while the objects come from a preset")
+
+
+def test_the_method_selector_offers_both_methods_naming_the_capability(page, sim_server):
+    page.goto(sim_server.url, wait_until="networkidle")
+    page.wait_for_timeout(3000)
+    values = page.eval_on_selector_all(
+        "#s-method option", "els => els.map(e => e.value)")
+    assert "planar_fasterrcnn" in values
+    assert "foundationpose_rgbd" in values
+    labels = page.eval_on_selector_all(
+        "#s-method option", "els => els.map(e => e.textContent)")
+    joined = " ".join(labels)
+    # NAMED FOR WHAT THEY DO, not for the module that implements them.
+    assert "Planar RGB" in joined
+    assert "6-DoF" in joined
+
+
+def test_an_unavailable_method_is_disabled_with_a_reason_not_hidden(page, sim_server):
+    """A missing option tells an operator nothing; a disabled one with its
+    reason tells them what to fix."""
+    page.goto(sim_server.url, wait_until="networkidle")
+    page.wait_for_timeout(3000)
+    options = page.eval_on_selector_all(
+        "#s-method option",
+        "els => els.map(e => ({value: e.value, disabled: e.disabled, title: e.title}))")
+    by_value = {o["value"]: o for o in options}
+    assert "foundationpose_rgbd" in by_value, (
+        "an unavailable method must still be offered")
+    entry = by_value["foundationpose_rgbd"]
+    if entry["disabled"]:
+        assert entry["title"], "a disabled method must carry its reason"
+
+
+def test_the_planar_method_is_the_default_selection(page, sim_server):
+    """FoundationPose is never the default: it needs a depth camera, a GPU,
+    weights and a CAD model."""
+    page.goto(sim_server.url, wait_until="networkidle")
+    page.wait_for_timeout(3000)
+    assert page.eval_on_selector("#s-method", "e => e.value") == "planar_fasterrcnn"
+
+
+def test_the_foundationpose_block_reports_every_prerequisite_separately(page, sim_server):
+    """One collapsed "unavailable" is what produces a dashboard nobody can act
+    on. Each link in the chain gets its own statement."""
+    page.goto(sim_server.url, wait_until="networkidle")
+    page.wait_for_timeout(3000)
+    block = page.query_selector("#fp-block")
+    assert block is not None, "the FoundationPose block is missing"
+    if not block.is_visible():
+        pytest.skip("this build does not offer the FoundationPose method")
+    status = page.inner_text("#fp-status")
+    for label in ("Worker:", "GPU:", "FoundationPose runtime:",
+                  "Scorer weights:", "Refiner weights:", "RGB-D camera:",
+                  "Live inference:"):
+        assert label in status, f"the FoundationPose status omits {label!r}"
+
+
+def test_a_ready_runtime_without_a_camera_says_exactly_that(page, sim_server):
+    """The state this deployment is actually in, and the wording that must not
+    collapse it: runtime READY, camera unavailable, live inference unavailable."""
+    page.goto(sim_server.url, wait_until="networkidle")
+    page.wait_for_timeout(3000)
+    block = page.query_selector("#fp-block")
+    if block is None or not block.is_visible():
+        pytest.skip("this build does not offer the FoundationPose method")
+    status = page.inner_text("#fp-status")
+    badge = page.inner_text("#fp-badge")
+    if "RGB-D camera: unavailable" in status:
+        assert "Live inference: unavailable" in status, (
+            "a missing depth camera must make live inference unavailable")
+        assert "INFERENCE READY" not in badge, (
+            "the badge claims inference is ready with no RGB-D camera")
+
+
+def test_the_offline_regression_control_is_labelled_as_offline(page, sim_server):
+    """§16: it must read as a reference regression, never as a live camera
+    acquisition. A control labelled "detect" would put a saved pose into a run
+    as though a camera produced it."""
+    page.goto(sim_server.url, wait_until="networkidle")
+    page.wait_for_timeout(3000)
+    button = page.query_selector("#c-fp-reference")
+    if button is None or not button.is_visible():
+        pytest.skip("this build does not offer the FoundationPose method")
+    label = button.inner_text().lower()
+    assert "reference" in label or "offline" in label
+    assert "detect" not in label
+
+
+def test_the_dashboard_renders_with_the_method_selector_present(page, sim_server):
+    """The whole point of an additive change: nothing else breaks."""
+    page.goto(sim_server.url, wait_until="networkidle")
+    page.wait_for_timeout(3000)
+    assert_no_refresh_failure(page, "perception method selector")

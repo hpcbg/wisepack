@@ -879,6 +879,14 @@ class HitLOrchestrator(Node):
                 "requested_at": batch.requested_at,
                 "error": batch.error,
                 "object_source": self.object_source_state().to_dict(),
+                # THE METHOD THAT MEASURED THIS BATCH, read off the batch and
+                # not from any setting. In a live mode the dashboard does not
+                # run the engine and must not guess what the container did, so
+                # the provenance travels on the status topic beside the source.
+                # Empty for a batch with no method — a preset run measured
+                # nothing, and naming a method would invent a provenance.
+                "run_perception_method": batch.perception_method,
+                "run_acquisition": batch.acquisition,
                 "run_object_source": self.engine.config.perception_source.value,
                 "run_object_provenance":
                     self.engine.config.perception_source.provenance,
