@@ -447,6 +447,9 @@ class HitLOrchestrator(Node):
         self.p_correlation = {name: pub(topic, String)
                               for name, topic in T.CORRELATION_TOPICS.items()}
         self._correlation_sequence = 0
+        #: The scenario revision the SCENARIO PROJECTION was last published at.
+        #: None until the first publish. See `publish_scenario_if_stale`.
+        self._published_scenario_revision: Optional[int] = None
 
         # -- subscriptions: the operator command path ------------------------
         # These are the ONLY inbound topics. Orion-LD writes them when a
@@ -706,8 +709,50 @@ class HitLOrchestrator(Node):
         self.p_items.publish(String(data=json.dumps(
             [i.to_dict() for i in scenario.items])))
         self.publish_correlation("scenario")
+        self._published_scenario_revision = self.engine.scenario_revision
+
+    def publish_scenario_if_stale(self) -> bool:
+        """Republish the scenario when the engine has moved past what it says.
+
+        THE INVARIANT THIS KEEPS: the scenario projection may never be older
+        than the revision the plan projections are stamped with. The dashboard
+        merges latched, independently-published topics, and its consistency gate
+        withholds every operator control when two of them disagree about
+        `scenario_revision` — correctly, because they genuinely describe
+        different batches.
+
+        THE BUG THIS FIXES, measured on the live camera path. A physical scan
+        does not merely count objects: `apply_observation_batch` REPLACES the
+        scenario's item list with the observed proxies and bumps the revision.
+        `ScanAndDetect` then published only the detected COUNT, so the scenario
+        topic kept describing the pre-scan, generated items at revision 1 while
+        the plans built from the camera batch went out stamped revision 2. The
+        gate reported
+
+            the scenario and the selected plan describe different runs
+            (scenario_revision 1 vs 2)
+
+        and withheld approval — permanently, because nothing on that path ever
+        republished the scenario. The stale stamp was telling the truth: the
+        document really was from the previous revision.
+
+        Written as a REVISION CHECK rather than an extra call in that one
+        behaviour, so any present or future path that changes the batch is
+        covered by construction. Returns True when it republished.
+        """
+        if self.engine.scenario is None:
+            return False
+        if self._published_scenario_revision == self.engine.scenario_revision:
+            return False
+        self.publish_scenario()
+        return True
 
     def publish_detection(self) -> None:
+        # A SCAN CAN CHANGE THE SCENARIO ITSELF, not just the count: a physical
+        # batch rewrites the item list and advances the revision. Re-sync before
+        # announcing the count, so the count is never the only evidence that the
+        # world changed.
+        self.publish_scenario_if_stale()
         self.p_detected.publish(Int32(data=len(self.engine.detected)))
         self.publish_correlation("scenario")
 
@@ -822,9 +867,30 @@ class HitLOrchestrator(Node):
         # the gate with the objects that are actually on the table.
         self.engine.generate_plans()
         self.engine.digital_twin_validate()
+        # RETURN TO THE GATE EXPLICITLY, for the new plan and the new revision.
+        #
+        # Not left to the behaviour tree. `AwaitApproval` only calls
+        # `request_approval()` from `initialise()`, and py_trees runs
+        # `initialise()` only when the behaviour was not already RUNNING — which
+        # is exactly what it IS while parked at the gate. So an operator who
+        # pressed "Detect physical objects" a second time WITHOUT approving the
+        # first result got a re-planned batch whose approval stamp still pointed
+        # at the previous revision: the stage stopped at DIGITAL_TWIN_VALIDATE,
+        # the dashboard reported "the pending decision is about scenario
+        # revision N but the current revision is N+1", and no control was ever
+        # offered again. Measured on the live camera path.
+        #
+        # `request_approval` is the ONE way the gate is entered (see
+        # workflow.py): it sets PENDING and stamps the revision and plan the
+        # decision is about, so the renewed decision cannot inherit anything
+        # from the batch that has just been replaced.
+        if self.engine.selected is not None:
+            self.auto_step = False
+            self.engine.request_approval()
         self.publish_scenario()
         self.publish_detection()
         self.publish_plans()
+        self.publish_state()
 
     def publish_perception(self) -> None:
         """Stamp the engine's adoption of a batch onto the scenario projection.
@@ -841,6 +907,11 @@ class HitLOrchestrator(Node):
         Twin and the twin validator both need real placement geometry, and no
         amount of summary can be turned back into a container drawing.
         """
+        # BELT AND BRACES for the invariant in `publish_scenario_if_stale`: the
+        # plans below are stamped with the CURRENT revision, so a scenario
+        # projection still on an older one would be published into a state the
+        # dashboard must withhold. Cheap — a no-op unless the revision moved.
+        self.publish_scenario_if_stale()
         engine = self.engine
         if engine.baseline:
             self.p_baseline.publish(
@@ -858,7 +929,14 @@ class HitLOrchestrator(Node):
             "selected": engine.selected.summary() if engine.selected else None,
             "selected_plan_id": engine.selected.plan_id if engine.selected else None,
             "selection_reason": engine.selection_reason,
-            "approval_revision": engine.approval_revision,
+            # NO APPROVAL YET IS `null`, NOT REVISION 0. An approval revision
+            # only means something alongside the plan it approves, and the
+            # engine's initial 0 is "never asked", not "a decision about
+            # revision 0". Published as 0 it read as a decision belonging to an
+            # older batch the moment the first scan advanced the revision, and
+            # the dashboard withheld controls for a decision nobody had made.
+            "approval_revision": (engine.approval_revision
+                                  if engine.approval_plan_id else None),
             "approval_plan_id": engine.approval_plan_id,
             "approval_state": (engine.selected.approval_state.value
                                if engine.selected else "pending"),

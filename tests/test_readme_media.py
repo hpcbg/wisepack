@@ -32,6 +32,18 @@ REQUIRED_BT = [
     "wisepack_behaviour_tree.svg", "wisepack_behaviour_tree.png",
     "wisepack_behaviour_tree_interview.svg", "wisepack_behaviour_tree_interview.png",
 ]
+#: PHYSICAL-CAMERA EVIDENCE. These three cannot be produced without a real
+#: camera: `generate_readme_gifs.py --camera-shots` checks the attached
+#: dashboard's `/api/perception` first and refuses unless the source is
+#: `camera`, the batch is `ok` and the calibration is `valid`. They are listed
+#: separately from the screenshots above because they are captured against a
+#: LIVE deployment, not against the reproducible sim dashboard.
+CAMERA_MEDIA = [
+    "perception-camera-light.png",          # the Physical Perception panel
+    "perception-twin-approval-light.png",   # Digital Twin + operator controls
+    "perception-camera-annotated.jpg",      # the detector's own annotated frame
+]
+
 NEW_GIFS = ["cut-aware-comparison.gif", "container-inventory.gif",
             "container-logistics.gif", "anomaly-workflow.gif"]
 OLD_GIFS = ["hitl-approve-execute.gif", "hitl-dynamic-replan.gif",
@@ -53,7 +65,50 @@ def test_all_readme_image_paths_resolve():
             f"README references missing image {ref}"
 
 
-@pytest.mark.parametrize("name", REQUIRED_SCREENSHOTS)
+@pytest.mark.parametrize("name", CAMERA_MEDIA)
+def test_physical_camera_media_exists_and_is_a_real_capture(name):
+    """The camera evidence must be present and must be a photograph-sized file.
+
+    A few kB would mean a blank panel or an error page saved with a 200; the
+    real captures are hundreds of kB because they contain a camera frame.
+    """
+    path = os.path.join(GEN, name)
+    assert os.path.isfile(path), (
+        f"{name} is missing — regenerate it against a running camera stack:\n"
+        "  ./run_wisepack_dashboard.sh          (with WISEPACK_PERCEPTION_SOURCE=camera)\n"
+        "  python3 scripts/generate_readme_gifs.py --attach <url> --camera-shots")
+    assert os.path.getsize(path) > 50_000, f"{name} is too small to be a capture"
+
+
+def test_the_camera_media_is_referenced_by_the_readme():
+    """Evidence nobody can see is not evidence."""
+    readme = open(os.path.join(REPO, "README.md"), encoding="utf-8").read()
+    for name in CAMERA_MEDIA:
+        assert name in readme, f"{name} is not referenced anywhere in the README"
+
+
+def test_the_camera_capture_refuses_a_stack_that_is_not_on_a_camera():
+    """The generator must not be able to produce this media from the simulator.
+
+    Read from the source rather than run: the guard needs a live dashboard. What
+    is asserted is that the guard EXISTS and covers all three conditions — a
+    fabricated 'physical' screenshot is the one failure in this file that no
+    later reader could detect.
+    """
+    src = open(os.path.join(REPO, "scripts", "generate_readme_gifs.py"),
+               encoding="utf-8").read()
+    assert "def _require_live_camera" in src
+    assert "_require_live_camera(dash)" in src
+    for condition in ('!= "camera"', '!= "ok"', '!= "valid"'):
+        assert condition in src, (
+            f"the camera-capture guard does not check {condition}")
+    # And it must refuse to capture the coherent-state image while the
+    # inconsistency banner is on screen.
+    assert "Inconsistent state" in src
+
+
+@pytest.mark.parametrize("name", REQUIRED_SCREENSHOTS
+                         + [n for n in CAMERA_MEDIA if n.endswith(".png")])
 def test_screenshots_are_light_theme(name):
     """A corner sample must be light — the generator must fail on a dark capture."""
     Image = pytest.importorskip("PIL.Image", reason="Pillow needed for pixel check")

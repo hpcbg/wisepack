@@ -94,8 +94,10 @@ actually in them rather than relabelled to match the current default. Which arm
 executes is a run-time selection — see
 [Supported robots](#supported-robots).*
 
-*Two honest limitations. **Ground-truth object poses are used in the current
-Isaac integration; camera-based perception is planned for the next iteration.**
+*Two honest limitations. **The Isaac scene is still built from ground-truth
+scenario poses.** Real camera perception exists and is demonstrated — see
+[§15a](#15a-real-camera-perception) — but feeding a physical
+`ObservationBatch` into the Isaac scene is a separate, not-yet-implemented step.
 And the settled pose is where physics puts it, not a reproduction of the target:
 the latest four-item **Panda** run measured a **mean final-position error after
 release and settling of about 35 mm** (see
@@ -295,6 +297,18 @@ Everything in this list was executed and verified on this machine.
    can drive the approval with no WISEPACK-specific API.
 7. **The demo runs with nothing installed.** `./run_wisepack_demo.sh --core-only`
    needs only Python 3.
+8. **A real camera drives the real workflow.** With
+   `WISEPACK_PERCEPTION_SOURCE=camera` a USB camera, a Faster R-CNN detector and
+   an ArUco-calibrated plane produced two measured observations — x/y in
+   millimetres and yaw in degrees — which became ordinary WISEPACK items, were
+   packed by the same optimizer, validated by the same independent Digital Twin
+   validator, published over Fast DDS and read back from Orion-LD as NGSI-LD,
+   and held at the same human approval gate. Verified in `ros` and in `fiware`
+   mode; the execution backend stayed simulated, because perception and
+   execution are independent axes. See
+   [§15a](#15a-real-camera-perception).
+   **What this does NOT prove:** any depth, 6-DoF or dimensional measurement, and
+   no detection RATE — see [§14](#14-kpi-definitions).
 
 ## 3. What is simulated - read this before quoting any number
 
@@ -333,8 +347,11 @@ Reading the table:
   grasp or a displaced item there has a mechanical cause that can be inspected;
 * **neither mode is a real robot experiment**, and no result here is evidence
   about hardware;
-* **perception still uses ground-truth scenario poses** in the current Isaac
-  integration.
+* **camera perception is real but planar**: `WISEPACK_PERCEPTION_SOURCE=camera`
+  measures x/y/yaw from a real frame; depth, 6-DoF pose and object dimensions
+  are not measured;
+* **the Isaac scene is still built from ground-truth scenario poses** — the
+  physical observations are not yet synchronized into it.
 
 Every figure in the dashboard, the artefacts and the reports carries a
 `measured` / `simulated` / `operator` / `target` label. Nothing is unlabelled.
@@ -347,7 +364,7 @@ rather than scored - a green tick on a simulated grasp rate would be fabrication
 
 | KPI | Proposal target | This demonstrator |
 |---|---|---|
-| KPI1 Vision detection rate | > 85% | `not_applicable` - no perception model exists |
+| KPI1 Vision detection rate | > 85% | `not_measured` - a real detector runs in `camera` mode, but a detection RATE needs a labelled ground-truth trial, which this demonstrator does not run |
 | KPI2 Pick success rate | > 80% | `not_applicable` - no robot exists |
 | KPI3 End-to-end success rate | > 80% | `not_applicable` - derived from simulated picks |
 | KPI4 Volume reduction | > 50% | **`not_met`: 33.3% measured** on the dense scenario |
@@ -409,8 +426,13 @@ Mission-Task-Skill, in the four layers the proposal describes.
 
 ```
  PERCEPTION      Task generator ......... deterministic, seeded
-                 Perception simulator ... SIMULATED (extension point for
-                                          YOLOv12-OBB + SAM2 + FPFH/ICP)
+                 Perception simulator ... SIMULATED, the default
+                                          (WISEPACK_PERCEPTION_SOURCE=sim)
+                 Camera provider ........ OPTIONAL, REAL: USB camera ->
+                                          Faster R-CNN -> ArUco-calibrated
+                                          planar x/y/yaw (see §15a).
+                                          Extension point for RGB-D / 6-DoF:
+                                          YOLOv12-OBB + SAM2 + FPFH/ICP
  OPTIMIZATION    Packing optimizer ...... geometry_aware_ep_bfd, 3 strategies
  + DIGITAL TWIN  Digital Twin validator . independent process, 9 hard constraints
  HITL            py_trees orchestrator .. the approval gate
@@ -422,6 +444,40 @@ Mission-Task-Skill, in the four layers the proposal describes.
  ANALYTICS       Orion-LD ............... NGSI-LD audit trail
                  Dashboard .............. FastAPI + offline SVG
 ```
+
+### Three orthogonal axes
+
+WISEPACK has **three independent selections**, and collapsing any two of them is
+the mistake this section exists to prevent. Every combination is legal, and none
+is implied by another.
+
+| Axis | Values | What it decides | Set with |
+|---|---|---|---|
+| **Dashboard / data source** | `sim` \| `ros` \| `fiware` | where the DASHBOARD reads state from | the launcher argument: `./run_wisepack_dashboard.sh [sim\|ros\|fiware]` |
+| **Perception source** | `sim` \| `camera` | where the OBJECT OBSERVATIONS come from | `WISEPACK_PERCEPTION_SOURCE` |
+| **Execution backend** | `simulated` \| `isaac` | what PERFORMS the pick-and-place the operator approved | `WISEPACK_EXECUTION_BACKEND`, or the `isaac` launcher modes |
+
+```
+   data source        sim ──── ros ──── fiware        where the dashboard reads
+   perception         sim ──── camera                 where the objects come from
+   execution          simulated ──── isaac            what moves them
+```
+
+**A camera is not an execution backend. Isaac is not a perception source. FIWARE
+is not an execution backend.** Selecting a real camera does not touch the
+execution backend, and selecting Isaac does not touch perception.
+
+The physical-camera demonstration recorded in
+[§15a](#15a-real-camera-perception) is:
+
+```
+   data source : ROS 2 / DDS       (./run_wisepack_dashboard.sh)
+   perception  : camera            (real USB camera, Faster R-CNN, ArUco plane)
+   execution   : simulated         (no robot moved)
+```
+
+and that combination is entirely valid: real measurements of the real world,
+planned and validated for real, executed logically.
 
 ### The one architectural decision worth explaining
 
@@ -488,19 +544,26 @@ Put two lines in `config/local.env`:
 
 ```bash
 WISEPACK_PERCEPTION_SOURCE=camera
-WISEPACK_PERCEPTION_CAMERA=2                  # your camera index / device / URL
+WISEPACK_PERCEPTION_CAMERA=0                  # your camera index / device / URL
 ```
 
-then start WISEPACK **exactly as always**:
+then start WISEPACK **exactly as always** — any mode, no extra step:
 
 ```bash
-./run_wisepack_dashboard.sh sim            # or ros / fiware / isaac / isaac-fiware
+./run_wisepack_dashboard.sh                # full ROS 2 / DDS stack
+./run_wisepack_dashboard.sh sim            # dashboard only, no ROS
+./run_wisepack_dashboard.sh fiware         # + Orion-LD read-back
+./run_wisepack_dashboard.sh isaac          # camera perception + PHYSICAL execution
+./run_wisepack_dashboard.sh isaac-fiware
 ```
 
-The launcher starts the perception service for you, waits for it to be healthy,
-and stops it again when you Ctrl-C. **No virtual environment to activate, no
-second terminal, no torch in the system Python, and no middleware on the host** —
-it uses the provider's own interpreter and speaks HTTP.
+The launcher creates the WISEPACK perception environment on the first camera run,
+starts the perception service, waits for it to be healthy, and stops it again
+when you Ctrl-C. **You do not activate a virtual environment, start
+`perception_service.py` by hand, clone another repository, or point WISEPACK at
+another project's Python interpreter** — and nothing is installed into the system
+Python. Manual startup exists only as an advanced debugging procedure
+([§15a](#15a-real-camera-perception)).
 
 Objects on the table are detected, and their measured position and orientation
 become the objects WISEPACK plans from. **Perception source is a THIRD axis**,
@@ -1355,6 +1418,23 @@ separately. Container counts use containers *actually holding a placement*. A
 rate with zero attempts is **`not measured`**, never `0` - "no attempts yet" and
 "0% success" are different statements.
 
+**KPI1, and why a real detector does not produce it.** With
+`WISEPACK_PERCEPTION_SOURCE=camera` a real Faster R-CNN runs on a real frame and
+routinely reports confidences of **1.00**. That is the network's own certainty
+about the boxes it drew. It is **not** a detection rate, and WISEPACK never
+publishes it as one:
+
+* the mean is published as `physical_detector_mean_confidence`, deliberately
+  under a name containing neither "rate" nor "accuracy";
+* `detection_rate_pct` stays **`not measured — real detector active; no
+  ground-truth trial`**, and KPI1 stays `not_measured`.
+
+The reason is the denominator. A detection rate is *detected / actually present*,
+and only a labelled ground-truth trial knows how many objects were actually
+present — a camera does not. So `stats.detectable_items` is deliberately left at
+zero on the physical path rather than set to "however many we found", which would
+have produced a fabricated 100%. There is a test asserting exactly this.
+
 Full list: `items_generated`, `items_packed`, `unplaced_items`,
 `containers_baseline`, `containers_optimized`,
 `container_utilization_{baseline,optimized}_pct`, `packing_density_gain_pct`,
@@ -1646,9 +1726,10 @@ homing, and a safe hold on any model or controller failure.
 
 It carries the **same two stated limitations** as the Panda backend, unchanged:
 
-* **item poses are still ground truth.** No camera, no detector, no pose
-  estimator. Perception integration is a separate development step and was
-  deliberately not bundled with the robot migration;
+* **item poses in the Isaac scene are still ground truth.** WISEPACK does have
+  a real camera detector (§15a), but wiring a physical `ObservationBatch` into
+  the Isaac scene is a separate development step and was deliberately not
+  bundled with the robot migration;
 * **the grasp is still the temporary fixed joint.** The carry is idealised; the
   release and everything after it are real PhysX.
 
@@ -1794,9 +1875,15 @@ its C extension.
 **GUI is the default** when `DISPLAY` is set; the launcher falls back to headless
 automatically and says so. `WISEPACK_ISAAC_HEADLESS=1` forces it.
 
-**No perception.** No camera, no detector, no pose estimator. Item poses are
-**ground truth** - the simulator spawned the items, so it knows where they are.
-Extension point: `wisepack_core.isaac_transform.table_pose_for_index`.
+**No perception INTO ISAAC.** Item poses in the Isaac scene are **ground
+truth** - the simulator spawned the items, so it knows where they are. This is
+not "WISEPACK has no perception": `WISEPACK_PERCEPTION_SOURCE=camera` runs a real
+detector and produces measured observations (§15a), and those observations drive
+the planning and the Digital Twin. What is missing is the last hop — building the
+Isaac scene from a physical `ObservationBatch` instead of from the generated
+scenario. Extension point:
+`wisepack_core.isaac_transform.table_pose_for_index`, fed from
+`ObservationBatch.scene_objects()`.
 
 **Temporary fixed-joint grasp.** When the gripper closes, the item is welded to
 the selected robot's end-effector link with a USD fixed joint, removed the
@@ -2458,6 +2545,84 @@ are used only as physical proxies for cylindrical workpieces.
 > the selected execution backend — and independently of which provider produced
 > it.
 
+### The demonstration, end to end
+
+This is not a design sketch. The images below are captures of a running stack —
+`./run_wisepack_dashboard.sh` with `WISEPACK_PERCEPTION_SOURCE=camera` and
+`WISEPACK_PERCEPTION_CAMERA=0` — and the generator that produces them
+(`scripts/generate_readme_gifs.py --attach <url> --camera-shots`) **refuses to
+capture anything** unless the attached dashboard reports a real camera source, a
+successful detection and a `valid` calibration.
+
+```text
+physical bottles on the calibration sheet      <- the real world
+        |
+        v  physical RGB camera (/dev/video0)
+WISEPACK perception service (host, HTTP only)
+        |  Faster R-CNN  ->  bottle + cap boxes
+        |  ArUco homography  ->  x/y in mm, yaw from the bottle->cap vector
+        v
+PhysicalObservation / ObservationBatch          <- domain-neutral, no bottles
+        |
+        v  HTTP -> orchestrator INSIDE the Vulcanexus container
+WISEPACK packing (baseline + optimized)
+        |
+        v
+Digital Twin validation (independent process, 9 hard constraints)
+        |
+        v
+Human-in-the-Loop approval                      <- the operator decides
+        |
+        v
+selected execution backend                      (simulated here; Isaac is a
+                                                 separate, orthogonal choice)
+```
+
+**Bottles are physical proxies for the cylindrical workpieces WISEPACK
+packages.** That is a fact about the objects on the table, and it stops at the
+provider: nothing downstream of `ObservationBatch` knows what a bottle is.
+
+#### 1. What the detector measured
+
+![Physical Perception panel with a real camera detection](images/generated/perception-camera-light.png)
+
+Camera connected, model loaded, **calibration VALID**, two cylindrical objects
+detected, with the annotated frame and the measured pose of each object. The
+geometry column reads `configured_proxy` because the dimensions are declared,
+not measured — see [Proxy-cylinder geometry](#proxy-cylinder-geometry).
+
+The detector's own annotated frame, full size:
+
+![Annotated camera frame: two bottles, four ArUco markers, the calibrated plane](images/generated/perception-camera-annotated.jpg)
+
+The green quadrilateral is the calibrated plane resolved from the four corner
+markers; each object carries its measured `(x, y)` in millimetres, its yaw, and
+the detector's confidence. The magenta box is the object the detector would pick
+first.
+
+#### 2. What WISEPACK did with it
+
+![Digital Twin and operator panel on a coherent camera revision](images/generated/perception-twin-approval-light.png)
+
+The same two observations, planned and rendered. Note what this image shows:
+
+* the header reads **source: ROS 2 / DDS** and **execution: SIMULATED
+  EXECUTION** — the three axes, independently selected;
+* the Digital Twin contains **exactly the two proxy cylinders that are on the
+  table**, and the container is far larger than they are, so **0.3% utilisation
+  is the correct answer**, not a rendering fault;
+* the operator panel offers **Approve plan / Reject & re-plan / Alternative
+  strategy** — the controls are available because every published document
+  describes the same run and the same batch revision;
+* there is **no "Inconsistent state — controls withheld" banner**. That banner is
+  a real safety gate (see [One run, or no controls](#one-run-or-no-controls));
+  its absence here means the state set is genuinely coherent, not that the gate
+  was relaxed.
+
+Re-detecting after moving the objects **revokes any previous approval**, produces
+a new batch revision, and asks for a fresh decision — an authorisation for
+objects that have since moved is never carried forward.
+
 ### Simulated perception (the default)
 
 ```bash
@@ -2626,6 +2791,17 @@ apart by forgetting to change one of them.
 An object measured outside the declared plane is **reported, never clamped or
 rescaled** — silently moving a measurement destroys the evidence for the
 calibration problem that produced it.
+
+**This happens in the recorded demonstration and is left visible.** The default
+board is 130 x 130 mm, and one of the two detected objects measured
+**x ≈ 184.5 mm** — genuinely outside it, because the printed A4 sheet is small
+and the object was placed past its edge. WISEPACK publishes the measurement as
+it was measured and raises `outside_workarea` in `detector_status`; it does not
+move the number to make the picture tidy. The fixes are physical or
+configurational, never numerical:
+
+* put the objects inside the printed square, or
+* print a larger board and declare it — see the extent variables above.
 
 Three behaviours of the pipeline are part of the contract and are handled
 explicitly:
@@ -3059,15 +3235,37 @@ Figures in `images/generated/` are produced by running the real pipeline -
 
 Stated plainly, because a demonstrator that hides its edges is not evidence.
 
-1. **No perception.** No camera, RGB-D, detector or 6D pose estimation.
-   Extension point: `wisepack_sim/perception_sim.py::detect()`.
+1. **Perception is real but PLANAR, and optional.**
+   `WISEPACK_PERCEPTION_SOURCE=camera` runs a real USB camera through a real
+   Faster R-CNN detector and an ArUco-calibrated plane, and the resulting
+   observations are what the planner packs ([§15a](#15a-real-camera-perception)).
+   What that gives, and what it does not:
+
+   * **measured:** object x, y and yaw in millimetres on the calibrated plane,
+     plus the detector's own confidence per object;
+   * **configured, not measured:** object dimensions. A calibrated 2-D detector
+     measures where an object is, not how big it is, so the proxy cylinder's
+     diameter and length are declared and every item is stamped
+     `geometry_source: "configured_proxy"`;
+   * **not implemented:** RGB-D / depth, 6-DoF pose, arbitrary geometry
+     reconstruction;
+   * **not implemented:** synchronizing the physical `ObservationBatch` into the
+     **Isaac scene** — Isaac still builds its scene from ground-truth scenario
+     poses. The boundary for that work already exists and is exercised:
+     `ObservationBatch.scene_objects()`;
+   * **not measured:** a detection RATE. Confidence near 1.00 is not 100%
+     accuracy — see limitation 3 and [§14](#14-kpi-definitions).
+
+   The default remains `sim`, which uses ground-truth scenario poses and says so.
+   Extension point for the simulated path: `wisepack_sim/perception_sim.py::detect()`.
 2. **The default backend has no robot.** No kinematics, no MoveIt2, no
    collision-free trajectories, and in that backend a pick outcome is a seeded
    coin flip. The Isaac backend is different: it runs contact physics and
    reports measured outcomes, but it is still a simulator and not hardware. The
    **optional Isaac Sim backend** ([§15](#15-isaac-sim-physical-execution)) does
    move a real arm against real PhysX contacts, but within its own stated
-   limits: no perception, a temporary fixed-joint grasp during the carry, and a
+   limits: a scene built from ground-truth poses rather than from the
+   camera, a temporary fixed-joint grasp during the carry, and a
    small 4-cylinder scenario rather than the packing benchmark. Its measured
    placement error against the plan is reported, never hidden. Still no MoveIt2
    and no collision-free motion planning.
@@ -3107,11 +3305,11 @@ Stated plainly, because a demonstrator that hides its edges is not evidence.
 
 | Step | Work | Maps to |
 |---|---|---|
-| 1 | Replace `perception_sim.detect()` with YOLOv12-OBB + SAM2 + FPFH/ICP on real RGB-D | O1, KPI1, MS2 |
+| 1 | **Done for planar RGB:** a real camera provider (Faster R-CNN + ArUco) now measures x/y/yaw and feeds the ordinary planning path ([§15a](#15a-real-camera-perception)). What remains on this line: **(a)** synchronize the physical `ObservationBatch` into the Isaac scene via `scene_objects()`, **(b)** RGB-D / depth, **(c)** 6-DoF pose and measured geometry (YOLOv12-OBB + SAM2 + FPFH/ICP), **(d)** a labelled ground-truth trial so KPI1 becomes a measured detection rate rather than `not_measured` | O1, KPI1, MS2 |
 | 2 | Exact geometry for the five approximated classes (convex decomposition or voxel masks) instead of bounding boxes | O3, KPI4 |
 | 3 | **Add the real xArm 7 execution backend** using the same ROS 2 execution contract, with hardware drivers, calibrated robot/camera/tool/facility frames, safety integration and hardware-aware motion planning. **Retain Isaac as the pre-deployment and regression-testing environment.** There are now two simulator levels - the lightweight logical simulator and the Isaac physics simulator - and the hardware backend is a **sibling of Isaac, not a replacement for all simulation** | O2, KPI2/KPI3, MS4 |
 | 4 | Add **collision-aware motion planning** to the Isaac execution backend. This is the structural gap the xArm 7 migration exposed: differential IK has no collision model and no null-space control, so a shorter arm working a bench-scale cell folds into the space its own remaining source objects occupy and disturbs them. Moving coordinates further apart took a four-item xArm run from 1/4 to 3/4 and cannot take it further — see [Measured xArm 7 behaviour](#measured-xarm-7-behaviour-and-what-is-not-yet-solid) | O2, MS4 |
-| 5 | Improve **clearance-aware release planning** to further reduce the measured mean final-position error after PhysX settling, currently about **35 mm** in the four-item Panda smoke run (down from about 48 mm, see [§15](#15-isaac-sim-physical-execution)). Then replace the temporary fixed-joint grasp approximation with a friction/contact grasp, and replace ground-truth poses with perception | MS4 |
+| 5 | Improve **clearance-aware release planning** to further reduce the measured mean final-position error after PhysX settling, currently about **35 mm** in the four-item Panda smoke run (down from about 48 mm, see [§15](#15-isaac-sim-physical-execution)). Then replace the temporary fixed-joint grasp approximation with a friction/contact grasp, and build the Isaac scene from the physical `ObservationBatch` instead of from ground-truth scenario poses | MS4 |
 | 6 | Calibrate the baseline against real EDF/CEA site practice so KPI4 is measured against reality, not a textbook packer | KPI4, MS6 |
 | 7 | QuantumLeap + CrateDB + Grafana on the existing NGSI-LD entities for true historical retention | O5, MS5 |
 | 8 | Re-attach HARMONY's Vosk voice and MediaPipe gesture modules to the same operator attributes | O4 |

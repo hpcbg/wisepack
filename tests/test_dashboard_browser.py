@@ -415,15 +415,38 @@ def test_ros_dashboard_is_fully_populated(page):
     page.wait_for_function(
         "() => document.querySelector('#b-scenario')?.textContent?.includes('mixed_pipes')",
         timeout=60_000)
+
+    # HOW MANY OBJECTS THERE ACTUALLY ARE, asked rather than assumed.
+    #
+    # This used to hard-code "> 20 rects", which silently encoded "the attached
+    # stack is running the 40-item dense scenario with SIMULATED perception".
+    # Against a stack running WISEPACK_PERCEPTION_SOURCE=camera the scenario is
+    # whatever is physically on the table — two proxy cylinders in the recorded
+    # demonstration — and the test failed on a Digital Twin that was rendering
+    # the truth. The threshold now follows the scenario: unchanged (> 20) for
+    # the dense batch, and "every detected object is drawn" for a small one.
+    items = page.evaluate(
+        "async () => (await (await fetch('/api/state')).json())"
+        "?.scenario?.totals?.items || 0")
+    assert items > 0, "the attached stack reports no items at all"
+    floor = min(items - 1, 20)
     page.wait_for_function(
-        "() => document.querySelectorAll('#twin rect').length > 20", timeout=60_000)
+        f"() => document.querySelectorAll('#twin rect').length > {floor}",
+        timeout=60_000)
     page.wait_for_function(
         "() => document.querySelectorAll('#kpis .tile').length >= 10", timeout=60_000)
     page.wait_for_function(
         "() => document.querySelectorAll('#log .row').length > 3", timeout=60_000)
 
     kpis = page.inner_text("#kpis")
-    assert "not measured" not in kpis.split("DDS")[0], \
+    core = kpis.split("DDS")[0]
+    # The vision detection RATE is deliberately `not measured` whenever a real
+    # detector is running — confidence is not a rate, and only a labelled
+    # ground-truth trial produces one (§14). Excluding that one tile keeps the
+    # check meaningful instead of turning an honest label into a failure.
+    core = "\n".join(line for line in core.splitlines()
+                      if "detection rate" not in line.lower())
+    assert "not measured" not in core, \
         "core KPI tiles are unmeasured in ROS mode"
 
     assert_no_refresh_failure(page, "ROS mode")

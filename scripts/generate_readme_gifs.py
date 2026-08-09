@@ -20,6 +20,7 @@ so `_assert_simulated_badge` fails the build instead.
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import shutil
 import socket
@@ -434,6 +435,136 @@ def _capture_live_screenshots(browser, dash, theme: str) -> List[str]:
     return written
 
 
+def _require_live_camera(dash) -> Dict:
+    """Refuse to capture camera evidence from anything but a real camera.
+
+    THE POINT OF THESE IMAGES is that they are evidence: a real frame, a real
+    calibration, real measured millimetres. A screenshot of the simulator with a
+    camera-shaped caption would be a lie that is very hard to spot afterwards,
+    so the generator checks the running stack before it captures anything and
+    stops with a reason rather than producing a plausible picture.
+    """
+    import urllib.request                                    # noqa: PLC0415
+
+    with urllib.request.urlopen(dash.url + "/api/perception", timeout=10) as r:
+        payload = json.loads(r.read().decode("utf-8"))
+
+    if payload.get("perception_source") != "camera":
+        raise SystemExit(
+            "--camera-shots needs a stack running with "
+            "WISEPACK_PERCEPTION_SOURCE=camera; the attached dashboard reports "
+            f"{payload.get('perception_source')!r}.")
+    batch = payload.get("batch") or {}
+    if batch.get("status") != "ok":
+        raise SystemExit(
+            "--camera-shots needs a successful detection on screen; the current "
+            f"batch is {batch.get('status')!r} ({batch.get('error') or 'no batch'}). "
+            "Press 'Detect physical objects' and try again.")
+    if batch.get("calibration_status") != "valid":
+        raise SystemExit(
+            "--camera-shots needs a VALID calibration; the current batch reports "
+            f"{batch.get('calibration_status')!r}. Put the ArUco sheet in frame "
+            "and detect again.")
+    if not batch.get("count"):
+        raise SystemExit(
+            "--camera-shots needs at least one detected object on screen.")
+    return payload
+
+
+def _capture_camera_screenshots(browser, dash, theme: str) -> List[str]:
+    """PHYSICAL-CAMERA EVIDENCE, captured from a running camera deployment.
+
+    Two images, and between them they show the whole claim end to end:
+
+      perception-camera-light.png    the Physical Perception panel — the
+                                     annotated frame from the real camera, the
+                                     calibration verdict, and the measured
+                                     x/y/yaw/confidence of each object.
+      perception-twin-approval-light.png
+                                     the Digital Twin built from exactly those
+                                     observations, beside an operator panel with
+                                     controls ENABLED and no inconsistent-state
+                                     warning — the state the revision fix
+                                     restored.
+
+    Neither can be produced without a camera: `_require_live_camera` refuses
+    first.
+    """
+    payload = _require_live_camera(dash)
+    count = (payload.get("batch") or {}).get("count")
+    written: List[str] = []
+
+    ctx = browser.new_context(viewport=VIEWPORT, device_scale_factor=1,
+                              color_scheme=theme)
+    page = ctx.new_page()
+    errors: List[str] = []
+    page.on("pageerror", lambda e: errors.append(str(e)))
+    page.goto(dash.url + "/", wait_until="networkidle")
+    page.wait_for_timeout(2500)
+    if theme == "light":
+        set_light_theme(page)
+    page.wait_for_timeout(1200)
+
+    panel = page.locator("#perceppanel")
+    if not panel.is_visible():
+        raise SystemExit("the Physical Perception panel is not on screen")
+    # The panel must show the detection, not a spinner: assert the count the API
+    # just reported is actually rendered before the shutter opens.
+    panel_text = panel.inner_text()
+    for expected in ("Calibration: VALID", f"Detected cylindrical objects: {count}"):
+        if expected not in panel_text:
+            raise SystemExit(f"the panel does not show {expected!r} yet:\n"
+                             f"{panel_text[:400]}")
+
+    out = os.path.join(OUT_DIR, "perception-camera-light.png")
+    panel.screenshot(path=out)
+    written.append(out)
+    print(f"[camera] perception-camera-light.png "
+          f"({os.path.getsize(out)/1e3:.0f} kB)")
+
+    # THE INCONSISTENT-STATE WARNING MUST BE ABSENT, and that is asserted rather
+    # than hoped for: this image exists to show the operator gate open on a
+    # coherent revision, and capturing it while the warning was on screen would
+    # document the bug instead of the fix.
+    body = page.locator("body").inner_text()
+    if "Inconsistent state" in body:
+        raise SystemExit(
+            "the dashboard is showing 'Inconsistent state — controls withheld'; "
+            "this image is meant to show the coherent state, so it will not be "
+            "captured.")
+
+    out = os.path.join(OUT_DIR, "perception-twin-approval-light.png")
+    page.screenshot(path=out, clip=CLIP)
+    written.append(out)
+    print(f"[camera] perception-twin-approval-light.png "
+          f"({os.path.getsize(out)/1e3:.0f} kB)")
+
+    if errors:
+        raise RuntimeError(f"page errors during capture: {errors}")
+    ctx.close()
+
+    # THE DETECTOR'S OWN OUTPUT, at full resolution and unretouched: the frame
+    # that was analysed, with the ArUco plane, the measured millimetres and the
+    # matched cap drawn on it by the provider. Fetched from the running service
+    # rather than screenshotted, so nothing is rescaled or recompressed by a
+    # browser on the way — this is the image the operator's decision rests on.
+    import urllib.request                                    # noqa: PLC0415
+
+    out = os.path.join(OUT_DIR, "perception-camera-annotated.jpg")
+    with urllib.request.urlopen(dash.url + "/api/perception/image/annotated",
+                                timeout=20) as response:
+        image = response.read()
+    if len(image) < 10_000:
+        raise SystemExit("the annotated frame came back too small to be a photo")
+    with open(out, "wb") as handle:
+        handle.write(image)
+    written.append(out)
+    print(f"[camera] perception-camera-annotated.jpg "
+          f"({os.path.getsize(out)/1e3:.0f} kB)")
+
+    return written
+
+
 def _capture_screenshots(browser, dash, theme: str) -> List[str]:
     """The required light-theme still screenshots (brief §22)."""
     written: List[str] = []
@@ -520,6 +651,11 @@ def main() -> int:
                               "a sim one — for the live-only panels"))
     parser.add_argument("--live-shots", action="store_true",
                         help="with --attach: capture the live-deployment stills")
+    parser.add_argument("--camera-shots", action="store_true",
+                        help=("with --attach: capture the PHYSICAL-CAMERA "
+                              "evidence. Refuses unless the attached stack is "
+                              "running a real camera with a valid calibration "
+                              "and a successful detection on screen."))
     args = parser.parse_args()
 
     try:
@@ -541,6 +677,12 @@ def main() -> int:
     try:
         with sync_playwright() as pw:
             browser = pw.chromium.launch()
+            if args.camera_shots:
+                written = _capture_camera_screenshots(browser, dash, args.theme)
+                browser.close()
+                dash.close()
+                print(f"\nwrote {len(written)} physical-camera screenshot(s).")
+                return 0
             if args.live_shots:
                 # NOT sim-badge guarded: these exist precisely to show a live
                 # deployment, where the badge must NOT read SIMULATED.
