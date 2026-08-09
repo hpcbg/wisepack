@@ -12,7 +12,7 @@ trail.
 |---|---|
 | **Scope** | Interview demonstrator, not the nine-month TRL6 implementation. See [Limitations](#17-limitations). |
 | **Runtime** | ROS 2 Jazzy on Vulcanexus / Fast DDS, Orion-LD (NGSI-LD), FastAPI dashboard |
-| **Host requirements** | Docker only. No host ROS 2, no host Python packages. A no-Docker mode also works. |
+| **Host requirements** | Docker only. No host ROS 2, no host Vulcanexus, no host Python packages. A no-Docker mode also works ([`--core-only`](#one-command-full-acceptance-demonstration)). **Optional real-camera perception** additionally needs a camera the host can open, and uses a WISEPACK-owned `.venv-perception/` the launcher creates automatically — no other repository and no host middleware ([§15a](#15a-real-camera-perception)). |
 | **Licence** | MIT. Reuses **TEMPO**, **HARVEST** and **HARMONY** - see [NOTICE](NOTICE) and [§19](#19-attribution). |
 | **Tests** | unit, contract, QoS, cut-aware, inventory, logistics, whole-process, anomaly, diagnostics, behaviour-tree, media, Isaac backend and headless-browser |
 
@@ -49,7 +49,7 @@ one screen. Robot outcomes in this capture are the **simulated** execution
 backend; the packing arithmetic is **measured**.*
 
 ```bash
-./run_wisepack_dashboard.sh sim        # no Docker, no ROS
+./run_wisepack_dashboard.sh sim        # no ROS, no FIWARE
 ./run_wisepack_dashboard.sh fiware     # live ROS 2/DDS + Orion-LD read-back
 ```
 
@@ -94,10 +94,12 @@ actually in them rather than relabelled to match the current default. Which arm
 executes is a run-time selection — see
 [Supported robots](#supported-robots).*
 
-*Two honest limitations. **The Isaac scene is still built from ground-truth
-scenario poses.** Real camera perception exists and is demonstrated — see
-[§15a](#15a-real-camera-perception) — but feeding a physical
-`ObservationBatch` into the Isaac scene is a separate, not-yet-implemented step.
+*Two honest limitations. **Physical-camera observations are not yet
+synchronized into the Isaac scene**: Isaac still initializes object poses from
+its existing scenario source. Real camera perception is implemented and
+validated — see [§15a](#15a-real-camera-perception) — and it drives the planning
+and the Digital Twin; what is missing is the last hop into the simulator's
+scene.
 And the settled pose is where physics puts it, not a reproduction of the target:
 the latest four-item **Panda** run measured a **mean final-position error after
 release and settling of about 35 mm** (see
@@ -350,8 +352,8 @@ Reading the table:
 * **camera perception is real but planar**: the **Physical camera** object
   source measures x/y/yaw from a real frame; depth, 6-DoF pose and object dimensions
   are not measured;
-* **the Isaac scene is still built from ground-truth scenario poses** — the
-  physical observations are not yet synchronized into it.
+* **physical-camera observations are not yet synchronized into the Isaac
+  scene** — Isaac initializes object poses from its existing scenario source.
 
 Every figure in the dashboard, the artefacts and the reports carries a
 `measured` / `simulated` / `operator` / `target` label. Nothing is unlabelled.
@@ -364,7 +366,7 @@ rather than scored - a green tick on a simulated grasp rate would be fabrication
 
 | KPI | Proposal target | This demonstrator |
 |---|---|---|
-| KPI1 Vision detection rate | > 85% | `not_measured` - a real detector runs in `camera` mode, but a detection RATE needs a labelled ground-truth trial, which this demonstrator does not run |
+| KPI1 Vision detection rate | > 85% | `not_measured` - a real detector runs on a camera-selected run, but a detection RATE needs a labelled ground-truth trial, which this demonstrator does not run |
 | KPI2 Pick success rate | > 80% | `not_applicable` - no robot exists |
 | KPI3 End-to-end success rate | > 80% | `not_applicable` - derived from simulated picks |
 | KPI4 Volume reduction | > 50% | **`not_met`: 33.3% measured** on the dense scenario |
@@ -528,7 +530,7 @@ reason when Isaac Sim or a GPU is unavailable.
 ```bash
 ./run_wisepack_dashboard.sh              # live ROS 2 / DDS
 ./run_wisepack_dashboard.sh fiware       # live + Orion-LD, state read back over NGSI-LD
-./run_wisepack_dashboard.sh sim          # presentation only - no ROS, no FIWARE, no Docker
+./run_wisepack_dashboard.sh sim          # presentation only - no ROS, no FIWARE
 ./run_wisepack_dashboard.sh isaac        # live + PHYSICAL execution in Isaac Sim (§15)
 ./run_wisepack_dashboard.sh isaac-fiware # ...and state read back from Orion-LD
 
@@ -544,15 +546,32 @@ backend and dashboard data source are **different axes** - see
 [§15](#15-isaac-sim-physical-execution). `sim` is unchanged: still no ROS, no
 FIWARE and no simulator.
 
+**What `sim` guarantees is "no ROS and no FIWARE", not "no container."** It runs
+the dashboard against the in-process workflow engine: no ROS 2 node, no DDS, no
+Orion-LD. WHERE that dashboard process runs is an implementation detail — the
+launcher uses the host Python when it can import FastAPI, and otherwise borrows
+the WISEPACK image as a dashboard runtime rather than pip-installing into a
+system interpreter Ubuntu marks externally-managed (PEP 668), which fails, and
+fails at demo time. It says which one it chose:
+
+```text
+[dashboard] host has no fastapi; running sim inside wisepack:jazzy instead
+```
+
+For a run that is container-free by construction, use
+`./run_wisepack_demo.sh --core-only` — pure Python, no Docker at all.
+
 ### Real camera perception (optional)
 
 **The camera is an additional input, not a different application mode.** Preset
 scenarios and the physical camera are both available in the SAME running
 WISEPACK, and switching between them is a dropdown — never a restart.
 
-Put two lines in `config/local.env`:
+Put two lines in `config/local.env` — read by the launcher's allowlist parser,
+so they need no `export`:
 
 ```bash
+# config/local.env
 WISEPACK_PERCEPTION_ENABLE=1                  # have the camera ready
 WISEPACK_PERCEPTION_CAMERA=0                  # your camera index / device / URL
 ```
@@ -566,6 +585,32 @@ then start WISEPACK **exactly as always** — any mode, no extra step:
 ./run_wisepack_dashboard.sh isaac          # + PHYSICAL execution
 ./run_wisepack_dashboard.sh isaac-fiware
 ```
+
+Or say it once, inline, without touching any file — **one command, the
+assignments as a prefix**:
+
+```bash
+WISEPACK_PERCEPTION_ENABLE=1 \
+WISEPACK_PERCEPTION_CAMERA=0 \
+./run_wisepack_dashboard.sh
+```
+
+**The line continuations matter.** `VAR=value command` puts the assignments in
+that command's environment. Written as separate lines they are *shell-local*
+variables of your interactive shell — set, visible to `echo`, and **not
+inherited by the launcher**, which then starts with no camera and says so:
+
+```bash
+# DOES NOT WORK — three unrelated statements, nothing exported
+WISEPACK_PERCEPTION_ENABLE=1
+WISEPACK_PERCEPTION_CAMERA=0
+./run_wisepack_dashboard.sh                # starts with the camera unavailable
+```
+
+Use `config/local.env`, the single-command prefix form above, or `export` them
+first. The launcher prints the resolved object source at start-up, so a setting
+that did not arrive is visible immediately rather than at the moment someone
+presses *Detect & plan*.
 
 The session opens on the **ordinary preset workflow, unchanged**. From the
 dashboard's Scenario panel:
@@ -593,9 +638,11 @@ the dropdown still switches both ways afterwards. Without any of these variables
 WISEPACK behaves exactly as it always has.
 
 Objects on the table are detected, and their measured position and orientation
-become the objects WISEPACK plans from. **Perception source is a THIRD axis**,
-independent of both the data source and the execution backend, so `camera`
-composes with every mode above. Unset means `sim` and nothing changes. See [§15a](#15a-real-camera-perception).
+become the objects WISEPACK plans from. **The object source is a THIRD axis**,
+independent of both the data source and the execution backend, so the camera
+composes with every mode above — and, unlike the other two, it is chosen **per
+run** rather than per process. Change nothing and every session opens on preset
+scenarios, exactly as before. See [§15a](#15a-real-camera-perception).
 
 ### Individual validations
 
@@ -1753,10 +1800,10 @@ homing, and a safe hold on any model or controller failure.
 
 It carries the **same two stated limitations** as the Panda backend, unchanged:
 
-* **item poses in the Isaac scene are still ground truth.** WISEPACK does have
-  a real camera detector (§15a), but wiring a physical `ObservationBatch` into
-  the Isaac scene is a separate development step and was deliberately not
-  bundled with the robot migration;
+* **Isaac still initializes object poses from its existing scenario source.**
+  WISEPACK does have a validated camera detector (§15a), but synchronizing a
+  physical `ObservationBatch` into the Isaac scene is a separate development
+  step and was deliberately not bundled with the robot migration;
 * **the grasp is still the temporary fixed joint.** The carry is idealised; the
   release and everything after it are real PhysX.
 
@@ -1902,13 +1949,16 @@ its C extension.
 **GUI is the default** when `DISPLAY` is set; the launcher falls back to headless
 automatically and says so. `WISEPACK_ISAAC_HEADLESS=1` forces it.
 
-**No perception INTO ISAAC.** Item poses in the Isaac scene are **ground
-truth** - the simulator spawned the items, so it knows where they are. This is
-not "WISEPACK has no perception": the **Physical camera** object source runs a real
-detector and produces measured observations (§15a), and those observations drive
-the planning and the Digital Twin. What is missing is the last hop — building the
-Isaac scene from a physical `ObservationBatch` instead of from the generated
-scenario. Extension point:
+**Physical-camera observations are not yet synchronized into the Isaac scene.**
+Isaac initializes object poses from its **existing scenario source** — the
+simulator spawned the items, so it knows where they are.
+
+This is not "WISEPACK has no perception". Camera perception is implemented and
+validated: selecting **Object source: Physical camera** runs a real detector,
+produces measured observations, and those observations drive the packing, the
+validator, the Digital Twin and the approval gate (§15a). What is missing is
+only the last hop — building the Isaac scene from a physical `ObservationBatch`
+instead of from the scenario. Extension point:
 `wisepack_core.isaac_transform.table_pose_for_index`, fed from
 `ObservationBatch.scene_objects()`.
 
@@ -2566,7 +2616,7 @@ implementation is **included in WISEPACK**, behind its generic
 perception-provider interface; **HARMONY is not a runtime dependency**. Bottles
 are used only as physical proxies for cylindrical workpieces.
 
-> In camera mode, their detected physical position and orientation are
+> On a camera-selected run, their detected physical position and orientation are
 > transformed into domain-neutral WISEPACK object observations. This allows the
 > planning and workflow layers to consume real perception data independently of
 > the selected execution backend — and independently of which provider produced
@@ -2638,8 +2688,10 @@ to one operation, not two variants of it.
 ### The demonstration, end to end
 
 This is not a design sketch. The images below are captures of a running stack —
-`./run_wisepack_dashboard.sh` with `WISEPACK_PERCEPTION_SOURCE=camera` and
-`WISEPACK_PERCEPTION_CAMERA=0` — and the generator that produces them
+`./run_wisepack_dashboard.sh` with `WISEPACK_PERCEPTION_CAMERA=0` and the camera
+selected as the object source (these were taken with
+`WISEPACK_PERCEPTION_SOURCE=camera`; selecting **Physical camera** in the
+dashboard produces the same state) — and the generator that produces them
 (`scripts/generate_readme_gifs.py --attach <url> --camera-shots`) **refuses to
 capture anything** unless the attached dashboard reports a real camera source, a
 successful detection and a `valid` calibration.
@@ -2713,16 +2765,21 @@ Re-detecting after moving the objects **revokes any previous approval**, produce
 a new batch revision, and asks for a fresh decision — an authorisation for
 objects that have since moved is never carried forward.
 
-### Simulated perception (the default)
+### Preset scenarios (the default object source)
 
-```bash
-WISEPACK_PERCEPTION_SOURCE=sim      # or simply leave it unset
+```text
+Scenario panel  ->  Object source: Preset scenario  ->  [ Generate & plan ]
 ```
 
-No camera, no image, no detector. The generated ground truth is republished with
-a seeded confidence and every event is labelled `simulated`. **This is what runs
-when the variable is unset, and its behaviour is byte-identical to before this
-feature existed** - `tests/test_perception.py` asserts exactly that.
+No camera, no image, no detector: the selected preset's deterministic generator
+produces the objects, the ground truth is republished with a seeded confidence,
+and every event is labelled `simulated`. **This is what a session opens on
+unless `WISEPACK_PERCEPTION_SOURCE=camera` says otherwise, and its behaviour is
+byte-identical to before physical perception existed** —
+`tests/test_perception.py` asserts exactly that.
+
+It stays available for the whole session. Selecting the camera for one run does
+not remove it, and coming back to it is the same dropdown.
 
 ### Real camera perception
 
@@ -3015,10 +3072,15 @@ Only a service the launcher started is stopped by it, and only by PID/session �
 never by process-name matching, so a WISEPACK run can never kill someone else's
 detector.
 
-**If it cannot start**, the launcher prints the reason and the tail of
-`/tmp/wisepack_perception.log`, stops anything it started, and exits
-with status `6`. It never continues into simulated perception behind a UI that
-claims a camera.
+**If it cannot start**, what happens depends on which of the two things was
+asked for. With `WISEPACK_PERCEPTION_SOURCE=camera` — "start this session on the
+camera" — the launcher prints the reason and the tail of
+`/tmp/wisepack_perception.log`, stops anything it started, and exits with status
+`6`. It never opens on a generated scenario behind a UI that claims a camera.
+With `WISEPACK_PERCEPTION_ENABLE=1` — "have the camera ready" — it is a warning:
+nothing has claimed a camera yet, preset runs are unaffected, and the dashboard
+shows **Physical camera** as unavailable with the reason until a service
+appears.
 
 `WISEPACK_PERCEPTION_CAMERA` accepts a device index (`2`), a device path
 (`/dev/video2`) or a stream URL. **No `/dev/videoX` is hardcoded**; the default
@@ -3125,26 +3187,42 @@ again, and WISEPACK re-plans from exactly the objects now on the table - never
 those plus the ones that used to be there. A new batch is a new batch revision,
 so any outstanding approval is revoked and the workflow returns to the gate.
 
-In `sim` perception mode the command is **refused with a reason**. A button
-labelled "Detect physical objects" that quietly ran the simulator would be a
-lie, and a failed camera scan never falls back to simulated detections.
+With no camera available the command is **refused with a reason**. A button
+labelled "Detect" that quietly ran the preset generator would be a lie, and a
+failed camera scan never falls back to generated objects.
 
 #### Dashboard
 
-The **Physical Perception** panel appears only when the perception source is a
-real one. It shows the annotated detector result - bounding boxes, confidences,
-calibrated coordinates, orientation and the calibration overlay - the raw
-analysed frame, the live camera feed, and:
+The **Physical Perception** panel is shown whenever a camera is AVAILABLE — not
+only while a camera-selected run is on screen. The camera is a capability of the
+deployment, and an operator deciding whether to switch to it needs to see
+whether it is there; hiding the panel because the current run came from a preset
+made the capability invisible. It disappears only when there is no camera at
+all, because a "Physical Perception" heading over a deployment with no detector
+would claim one that does not exist.
+
+It names the **current run's** source rather than the draft, so a session that
+has selected the camera for the *next* run still reads honestly:
 
 ```text
-Source: PHYSICAL CAMERA          Detector: Faster R-CNN
-Model: loaded / unavailable      Calibration: VALID / INVALID
-Detected cylindrical objects: N  Last detection: <timestamp>
+Current run source: Preset scenario   Detector: Faster R-CNN     Next run: Physical camera
+Camera: connected                     Model: loaded
+Detected cylindrical objects: — (this run came from a preset)
+```
+
+and on a camera-selected run it is the acquisition panel:
+
+```text
+Current run source: Physical camera   Detector: Faster R-CNN
+Camera: connected                     Model: loaded              Calibration: VALID
+Detected cylindrical objects: N       Last detection: <timestamp>
 Frame: wisepack_workarea
 ```
 
-plus the per-object table of `x`, `y`, `yaw`, confidence and the configured
-geometry. The panel is **domain-neutral**: it says "cylindrical objects"
+It then shows the annotated detector result — bounding boxes, confidences,
+calibrated coordinates, orientation and the calibration overlay — the raw
+analysed frame, the live camera feed, and the per-object table of `x`, `y`,
+`yaw`, confidence and the configured geometry. The panel is **domain-neutral**: it says "cylindrical objects"
 throughout, and the fact that bottles are the physical stand-in is stated once
 in the proxy note served from the API. `tests/test_perception.py` fails the
 build if a detector-specific string is ever hard-coded into the page.
@@ -3161,8 +3239,10 @@ build if a detector-specific string is ever hard-coded into the page.
 | `/wisepack/perception/status_json` | ROS 2, `std_msgs/String` | perception status, published by the **orchestrator** |
 
 The WISEPACK topics are **not** in `all_topics()`, for the same reason the Isaac
-channel is not: that contract is what has a publisher in *every* run, and these
-two have one only with a real perception source. The orchestrator is their
+channel is not: that contract is what carries a MESSAGE in *every* run, and
+these two carry one only for a camera-selected run. (Their publishers exist
+whatever the source — the camera is a capability, so the machinery a switch
+needs is always there — but a preset run puts no observation on them.) The orchestrator is their
 single writer, so world state keeps one authority — and it publishes them from
 inside the containerized Vulcanexus runtime, not from the host.
 
@@ -3255,8 +3335,8 @@ is usable and, if not, why.
 
 | Symptom | Cause and fix |
 |---|---|
-| panel absent | `WISEPACK_PERCEPTION_SOURCE` is unset or `sim`. It is the default. |
-| launcher exits with status `6` | camera perception was requested and no detector could be made available. The reason and the log tail are printed above it; the launcher deliberately refuses to fall back to simulated perception. |
+| panel absent | no camera is available at all. The panel is shown whenever one is — including while a preset run is current. Set `WISEPACK_PERCEPTION_ENABLE=1`, or start the perception service; the dashboard picks it up without a restart. |
+| launcher exits with status `6` | the camera was requested as the **initial** object source (`WISEPACK_PERCEPTION_SOURCE=camera`) and could not be made available. The reason and the log tail are printed above it; the launcher deliberately refuses to open on a generated scenario instead. Use `WISEPACK_PERCEPTION_ENABLE=1` to make the camera optional. |
 | `the WISEPACK perception environment is not usable` | run `./scripts/setup_perception.sh` (the message says so). `--check` prints the import error behind it. |
 | `ModuleNotFoundError: No module named 'uvicorn'` in the detector log | the service was run with the system `python3` instead of `.venv-perception/bin/python`. The launcher never does this; a hand-started service can. |
 | `unknown perception source 'harmony_camera'` | the value was renamed to `camera`. Update `config/local.env`. |
