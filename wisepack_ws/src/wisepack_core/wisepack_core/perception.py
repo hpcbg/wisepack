@@ -93,6 +93,52 @@ class PerceptionSource(str, Enum):
                 "camera": "PHYSICAL CAMERA"}[self.value]
 
     @property
+    def selector_label(self) -> str:
+        """What the OBJECT SOURCE selector calls this, in the operator's terms.
+
+        Deliberately different from `label`. `label` is the provenance badge on
+        a run that already exists — "this batch was measured by a camera". This
+        is the CHOICE offered before a run exists, and at that moment `sim` is
+        not "simulated perception" in the abstract: it is "generate a scenario
+        from the selected preset". Naming the choice after the internal enum
+        made the selector read like an architecture switch rather than an
+        operator's decision about where the next batch of objects comes from.
+        """
+        return {"sim": "Preset scenario",
+                "camera": "Physical camera"}[self.value]
+
+    @property
+    def selector_detail(self) -> str:
+        """One line of help under the selector."""
+        return {
+            "sim": ("objects come from the selected preset's deterministic "
+                    "generator — no camera and no detector are involved"),
+            "camera": ("objects are detected from a real camera frame and "
+                       "measured on the calibrated plane"),
+        }[self.value]
+
+    @property
+    def action_label(self) -> str:
+        """What the button that ACQUIRES a batch from this source is called.
+
+        One button, one meaning. Showing "Generate & plan" while the camera is
+        selected would either be a dead control or a silent fall back to the
+        simulator; both are worse than relabelling the control the operator is
+        about to press.
+        """
+        return {"sim": "Generate & plan", "camera": "Detect & plan"}[self.value]
+
+    @property
+    def provenance(self) -> str:
+        """How a run acquired its objects, for the audit trail and FIWARE.
+
+        Stamped from the run's OWN source — never inferred from the execution
+        backend or from where the dashboard reads its state.
+        """
+        return {"sim": "preset/generated",
+                "camera": "camera/measured"}[self.value]
+
+    @property
     def detail(self) -> str:
         return {
             "sim": ("object observations are the generated ground truth with a "
@@ -104,10 +150,41 @@ class PerceptionSource(str, Enum):
         }[self.value]
 
 
-#: The environment variable that selects the perception source, following the
-#: same convention as `WISEPACK_EXECUTION_BACKEND`. Unset == `sim`, so every
-#: existing invocation keeps its exact behaviour.
+#: The INITIAL object source — the dashboard's selection when the page first
+#: loads, and the source of the run every launcher starts automatically.
+#:
+#: IT IS NOT A MODE LOCK, and it used to be read as one. The operator changes
+#: the object source at runtime, per run, from the dashboard; this only decides
+#: where a session STARTS. Unset == `sim`, so every existing invocation keeps
+#: its exact behaviour: `./run_wisepack_dashboard.sh` opens on the preset
+#: workflow, unchanged.
 PERCEPTION_SOURCE_ENV = "WISEPACK_PERCEPTION_SOURCE"
+
+#: Ask the launcher to start the perception service WITHOUT making the camera
+#: the initial selection. The camera then appears as an available object source
+#: the operator can switch to, and preset runs are unaffected until they do.
+#:
+#: The distinction that matters: `WISEPACK_PERCEPTION_SOURCE=camera` says "start
+#: this session on the camera", this says "have the camera ready". Neither
+#: removes the other source.
+PERCEPTION_ENABLE_ENV = "WISEPACK_PERCEPTION_ENABLE"
+
+
+def camera_capability_requested(env: Optional[Dict[str, str]] = None) -> bool:
+    """Should this host have a perception service running at all?
+
+    Answered from configuration, not from whether one happens to be up: the
+    launcher uses it to decide whether to START the service. Whether the camera
+    is actually USABLE is a separate, live question — see
+    `PerceptionClient.capability()` — because an operator may start the service
+    by hand at any time, and the dashboard must notice without a restart.
+    """
+    env = os.environ if env is None else env
+    enabled = str(env.get(PERCEPTION_ENABLE_ENV, "") or "").strip().lower()
+    if enabled in ("1", "true", "yes", "on"):
+        return True
+    return resolve_perception_source(
+        env.get(PERCEPTION_SOURCE_ENV, "")).is_physical
 
 #: WHICH PROVIDER processes the camera image. A SEPARATE axis from the source:
 #: `camera` says observations are measured from a real frame, this says how. One
@@ -707,6 +784,106 @@ class PerceptionHealth:
 
 
 # --------------------------------------------------------------------------- #
+# Object source: capability, selection, and what the current run actually used
+# --------------------------------------------------------------------------- #
+
+
+@dataclass
+class ObjectSourceState:
+    """THREE DIFFERENT THINGS, and conflating any two of them is the bug.
+
+        available   which sources this deployment CAN use right now. `camera`
+                    is available when a perception service answers, which an
+                    operator can make true at any moment by starting one — so it
+                    is re-evaluated, never latched at start-up.
+        selected    the source the NEXT run will acquire objects from. A DRAFT,
+                    owned by the operator, and inert until they start that run.
+        current     the source the RUNNING run actually used. Provenance: it is
+                    stamped on the scenario and travels to FIWARE, and it does
+                    not change when the operator edits the draft.
+
+    The failure this prevents is the one that made the feature unusable: a
+    single global "perception mode" meant selecting a camera reached back into
+    the run already on screen, and switching back required restarting WISEPACK.
+    Following the robot selector's pattern — draft versus active — makes the two
+    independent and makes "Running now: Physical camera / Next run: Preset
+    scenario" a state the dashboard can simply display.
+    """
+
+    current: str = PerceptionSource.SIM.value
+    selected: str = PerceptionSource.SIM.value
+    available: List[str] = field(
+        default_factory=lambda: [PerceptionSource.SIM.value])
+    #: Why `camera` is not available, when it is not. Empty when it is.
+    camera_unavailable_reason: str = ""
+    #: The perception service this deployment would use, for the diagnostic.
+    service_url: str = ""
+
+    @property
+    def camera_available(self) -> bool:
+        return PerceptionSource.CAMERA.value in self.available
+
+    @property
+    def changes_next_run(self) -> bool:
+        """True when the draft differs from what is running — worth saying so."""
+        return self.selected != self.current
+
+    def to_dict(self) -> Dict[str, Any]:
+        current = PerceptionSource(self.current)
+        selected = PerceptionSource(self.selected)
+        return {
+            "current": current.value,
+            "current_label": current.selector_label,
+            "current_provenance": current.provenance,
+            "selected": selected.value,
+            "selected_label": selected.selector_label,
+            "selected_detail": selected.selector_detail,
+            "action_label": selected.action_label,
+            "changes_next_run": self.changes_next_run,
+            "available": list(self.available),
+            "camera_available": self.camera_available,
+            "camera_unavailable_reason": self.camera_unavailable_reason,
+            "service_url": self.service_url,
+            "options": [
+                {"value": source.value,
+                 "label": source.selector_label,
+                 "detail": source.selector_detail,
+                 "action_label": source.action_label,
+                 "available": source.value in self.available,
+                 "reason": (self.camera_unavailable_reason
+                            if source is PerceptionSource.CAMERA
+                            and not self.camera_available else "")}
+                for source in PerceptionSource
+            ],
+        }
+
+
+def resolve_object_source(value: Optional[str], available: Sequence[str],
+                          fallback: str = PerceptionSource.SIM.value
+                          ) -> PerceptionSource:
+    """Resolve a REQUESTED next-run source against what is actually available.
+
+    NEVER SILENTLY SUBSTITUTES. An unknown value raises, and a value that is
+    known but unavailable raises with the reason — because the one behaviour
+    this must not have is "you asked for the camera, so here is a generated
+    scenario". `fallback` is the operator's standing selection, used when this
+    particular request named no source; it is checked for availability too,
+    because a camera that has gone away since it was selected must produce a
+    refusal rather than a preset run wearing a camera label.
+    """
+    requested = (str(value).strip() if value is not None and str(value).strip()
+                 else str(fallback))
+    source = resolve_perception_source(requested)
+    if source.value not in available:
+        raise PerceptionConfigError(
+            f"object source {source.selector_label!r} is not available on this "
+            "deployment (available: "
+            + ", ".join(PerceptionSource(a).selector_label for a in available)
+            + ")")
+    return source
+
+
+# --------------------------------------------------------------------------- #
 # Staleness
 # --------------------------------------------------------------------------- #
 
@@ -762,5 +939,6 @@ __all__ = [
     "BatchStatus", "ObservationBatch", "ModelResolution", "resolve_model_path",
     "ARISE_MODEL_PATH", "HUGGINGFACE_REPO", "HUGGINGFACE_MODEL_URL",
     "PerceptionHealth", "DEFAULT_OBSERVATION_TTL_S", "observation_age_s",
-    "is_stale",
+    "is_stale", "ObjectSourceState", "resolve_object_source",
+    "PERCEPTION_ENABLE_ENV", "camera_capability_requested",
 ]

@@ -298,7 +298,7 @@ Everything in this list was executed and verified on this machine.
 7. **The demo runs with nothing installed.** `./run_wisepack_demo.sh --core-only`
    needs only Python 3.
 8. **A real camera drives the real workflow.** With
-   `WISEPACK_PERCEPTION_SOURCE=camera` a USB camera, a Faster R-CNN detector and
+   the **Object source** set to **Physical camera**, a USB camera, a Faster R-CNN detector and
    an ArUco-calibrated plane produced two measured observations — x/y in
    millimetres and yaw in degrees — which became ordinary WISEPACK items, were
    packed by the same optimizer, validated by the same independent Digital Twin
@@ -347,8 +347,8 @@ Reading the table:
   grasp or a displaced item there has a mechanical cause that can be inspected;
 * **neither mode is a real robot experiment**, and no result here is evidence
   about hardware;
-* **camera perception is real but planar**: `WISEPACK_PERCEPTION_SOURCE=camera`
-  measures x/y/yaw from a real frame; depth, 6-DoF pose and object dimensions
+* **camera perception is real but planar**: the **Physical camera** object
+  source measures x/y/yaw from a real frame; depth, 6-DoF pose and object dimensions
   are not measured;
 * **the Isaac scene is still built from ground-truth scenario poses** — the
   physical observations are not yet synchronized into it.
@@ -451,17 +451,23 @@ WISEPACK has **three independent selections**, and collapsing any two of them is
 the mistake this section exists to prevent. Every combination is legal, and none
 is implied by another.
 
-| Axis | Values | What it decides | Set with |
-|---|---|---|---|
-| **Dashboard / data source** | `sim` \| `ros` \| `fiware` | where the DASHBOARD reads state from | the launcher argument: `./run_wisepack_dashboard.sh [sim\|ros\|fiware]` |
-| **Perception source** | `sim` \| `camera` | where the OBJECT OBSERVATIONS come from | `WISEPACK_PERCEPTION_SOURCE` |
-| **Execution backend** | `simulated` \| `isaac` | what PERFORMS the pick-and-place the operator approved | `WISEPACK_EXECUTION_BACKEND`, or the `isaac` launcher modes |
+| Axis | Values | What it decides | Chosen | Set with |
+|---|---|---|---|---|
+| **Dashboard / data source** | `sim` \| `ros` \| `fiware` | where the DASHBOARD reads state from | per process | the launcher argument: `./run_wisepack_dashboard.sh [sim\|ros\|fiware]` |
+| **Object / perception source** | `preset` \| `camera` | where each run's OBJECTS come from | **per run, at runtime** | the dashboard's **Object source** selector. `WISEPACK_PERCEPTION_SOURCE` only picks the INITIAL one |
+| **Execution backend** | `simulated` \| `isaac` | what PERFORMS the pick-and-place the operator approved | per run | `WISEPACK_EXECUTION_BACKEND`, or the `isaac` launcher modes |
 
 ```
    data source        sim ──── ros ──── fiware        where the dashboard reads
-   perception         sim ──── camera                 where the objects come from
+   object source      preset ──── camera              where each run's objects come from
    execution          simulated ──── isaac            what moves them
 ```
+
+**The object source is the one an operator changes mid-session.** One running
+WISEPACK can plan a generated `mixed_pipes_dense` batch, then detect two real
+bottles on a table, then generate another preset — no restart, and each run is
+stamped with the source it actually used (`preset/generated` or
+`camera/measured`).
 
 **A camera is not an execution backend. Isaac is not a perception source. FIWARE
 is not an execution backend.** Selecting a real camera does not touch the
@@ -540,10 +546,14 @@ FIWARE and no simulator.
 
 ### Real camera perception (optional)
 
+**The camera is an additional input, not a different application mode.** Preset
+scenarios and the physical camera are both available in the SAME running
+WISEPACK, and switching between them is a dropdown — never a restart.
+
 Put two lines in `config/local.env`:
 
 ```bash
-WISEPACK_PERCEPTION_SOURCE=camera
+WISEPACK_PERCEPTION_ENABLE=1                  # have the camera ready
 WISEPACK_PERCEPTION_CAMERA=0                  # your camera index / device / URL
 ```
 
@@ -553,9 +563,21 @@ then start WISEPACK **exactly as always** — any mode, no extra step:
 ./run_wisepack_dashboard.sh                # full ROS 2 / DDS stack
 ./run_wisepack_dashboard.sh sim            # dashboard only, no ROS
 ./run_wisepack_dashboard.sh fiware         # + Orion-LD read-back
-./run_wisepack_dashboard.sh isaac          # camera perception + PHYSICAL execution
+./run_wisepack_dashboard.sh isaac          # + PHYSICAL execution
 ./run_wisepack_dashboard.sh isaac-fiware
 ```
+
+The session opens on the **ordinary preset workflow, unchanged**. From the
+dashboard's Scenario panel:
+
+```text
+Object source: [ Preset scenario ▼ ]      ->   [ Generate & plan ]
+Object source: [ Physical camera ▼ ]      ->   [ Detect & plan   ]
+```
+
+Choose either, at any time, as often as you like. **No restart, and the run on
+screen is never touched by the choice** — a source change applies to the NEXT
+run, exactly as the preset and the robot selectors do.
 
 The launcher creates the WISEPACK perception environment on the first camera run,
 starts the perception service, waits for it to be healthy, and stops it again
@@ -564,6 +586,11 @@ when you Ctrl-C. **You do not activate a virtual environment, start
 another project's Python interpreter** — and nothing is installed into the system
 Python. Manual startup exists only as an advanced debugging procedure
 ([§15a](#15a-real-camera-perception)).
+
+`WISEPACK_PERCEPTION_SOURCE=camera` still works and means one specific thing:
+**start this session on the camera**. It is the INITIAL selection, not a lock —
+the dropdown still switches both ways afterwards. Without any of these variables
+WISEPACK behaves exactly as it always has.
 
 Objects on the table are detected, and their measured position and orientation
 become the objects WISEPACK plans from. **Perception source is a THIRD axis**,
@@ -1359,7 +1386,7 @@ and Logistics status panels alongside the ROS topic and FIWARE mapping diagnosti
 | Anomaly source | simulator/adapter | architectural demo | mapped |
 | ROS 2 / DDS transport | Vulcanexus Fast DDS | **real** | - |
 | FIWARE event mapping | Orion-LD DDS bridge | **live** | - |
-| Physical 2-D camera | **live with `WISEPACK_PERCEPTION_SOURCE=camera`** | real | detected count |
+| Physical 2-D camera | **live — selectable per run as Object source: Physical camera** | real | detected count |
 | Physical RGB-D camera (the proposal's depth pipeline) | future | not implemented | no |
 | MoveIt2 execution | future | not implemented | no |
 
@@ -1419,7 +1446,7 @@ rate with zero attempts is **`not measured`**, never `0` - "no attempts yet" and
 "0% success" are different statements.
 
 **KPI1, and why a real detector does not produce it.** With
-`WISEPACK_PERCEPTION_SOURCE=camera` a real Faster R-CNN runs on a real frame and
+the **Physical camera** object source a real Faster R-CNN runs on a real frame and
 routinely reports confidences of **1.00**. That is the network's own certainty
 about the boxes it drew. It is **not** a detection rate, and WISEPACK never
 publishes it as one:
@@ -1877,7 +1904,7 @@ automatically and says so. `WISEPACK_ISAAC_HEADLESS=1` forces it.
 
 **No perception INTO ISAAC.** Item poses in the Isaac scene are **ground
 truth** - the simulator spawned the items, so it knows where they are. This is
-not "WISEPACK has no perception": `WISEPACK_PERCEPTION_SOURCE=camera` runs a real
+not "WISEPACK has no perception": the **Physical camera** object source runs a real
 detector and produces measured observations (§15a), and those observations drive
 the planning and the Digital Twin. What is missing is the last hop — building the
 Isaac scene from a physical `ObservationBatch` instead of from the generated
@@ -2545,6 +2572,69 @@ are used only as physical proxies for cylindrical workpieces.
 > the selected execution backend — and independently of which provider produced
 > it.
 
+### Choosing the object source, per run
+
+**The camera is an additional input capability, not a replacement application
+mode.** Both sources are available in one running WISEPACK, and the Scenario
+panel offers the choice:
+
+```text
+Object source: [ Preset scenario ▼ ]        Object source: [ Physical camera ▼ ]
+Preset:        [ mixed_pipes_dense ▼ ]      Preset:        (de-emphasised)
+     [ Generate & plan ]                         [ Detect & plan ]
+```
+
+THREE THINGS ARE KEPT SEPARATE, and conflating any two of them is the bug this
+design exists to prevent:
+
+| | What it is | Where it shows |
+|---|---|---|
+| **available** | what this deployment can do, asked LIVE | the selector; an unavailable camera is offered **disabled with its reason**, never hidden |
+| **selected** | the source the NEXT run will use — a DRAFT | `Next run: …` beside the selector |
+| **current** | the source the RUNNING run actually used — PROVENANCE | `Running now: …`, the Physical Perception panel, the audit trail, FIWARE |
+
+**Changing the selector never touches the run on screen.** Its plan, its
+approval and its Digital Twin are exactly as they were; the choice applies when
+the operator starts the next acquisition. This is the same draft-versus-active
+rule the robot selector follows, and for the same reason.
+
+**Every acquisition is a new run.** Whichever source it came from, it creates a
+new scenario revision, revokes any outstanding approval, plans from exactly the
+new input, publishes a coherent `run_id`/`scenario_revision` set, and requires
+approval again. **An approval never crosses a source or batch change.**
+
+A typical session, with no restart anywhere:
+
+```text
+Object source: Preset scenario  ->  Generate & plan  ->  40 generated objects  -> approve?
+Object source: Physical camera  ->  Detect & plan    ->   2 measured objects   -> approve?
+Object source: Preset scenario  ->  Generate & plan  ->  16 generated objects  -> approve?
+```
+
+The Digital Twin simply shows the current plan, so the switch is visible: forty
+items, then two small proxy cylinders, then sixteen.
+
+#### When the camera is not there
+
+Preset generation **always** works. If no perception service is answering:
+
+* the Object source selector still lists **Physical camera**, disabled, with the
+  reason — "no perception service is answering at …";
+* `Detect & plan` is refused with that reason. **There is no silent fall back to
+  a generated scenario**, in either direction;
+* everything else behaves exactly as it always has.
+
+Availability is re-checked continuously, so starting the perception service —
+from the launcher, or by hand in another terminal — makes the camera selectable
+**without restarting the dashboard**.
+
+#### One control, one meaning
+
+The Scenario panel's button and the Physical Perception panel's button send the
+**same** command: `detect_physical_objects` acquires a batch and, when the run on
+screen came from a preset, starts a camera run first. They are two entry points
+to one operation, not two variants of it.
+
 ### The demonstration, end to end
 
 This is not a design sketch. The images below are captures of a running stack —
@@ -2636,8 +2726,8 @@ feature existed** - `tests/test_perception.py` asserts exactly that.
 
 ### Real camera perception
 
-```bash
-WISEPACK_PERCEPTION_SOURCE=camera
+```text
+Scenario panel  ->  Object source: Physical camera  ->  [ Detect & plan ]
 ```
 
 Objects on a calibrated table are detected by the configured perception
@@ -2708,9 +2798,9 @@ a git-ignored, WISEPACK-owned virtualenv in the working directory:
 ./scripts/setup_perception.sh --isolated # do not reuse host packages
 ```
 
-You do not normally run any of that: with `WISEPACK_PERCEPTION_SOURCE=camera`
-the launcher creates the environment on the first camera start and finds it
-every time after. `WISEPACK_PERCEPTION_AUTO_SETUP=0` turns the bootstrap off and
+You do not normally run any of that: with `WISEPACK_PERCEPTION_ENABLE=1` (or
+`WISEPACK_PERCEPTION_SOURCE=camera`) the launcher creates the environment on the
+first camera start and finds it every time after. `WISEPACK_PERCEPTION_AUTO_SETUP=0` turns the bootstrap off and
 turns a missing environment into one printed command instead.
 
 By default the venv is created with `--system-site-packages`, so a host that
@@ -2845,8 +2935,8 @@ objects on your table.
 Configure it once, in `config/local.env`:
 
 ```bash
-WISEPACK_PERCEPTION_SOURCE=camera
-WISEPACK_PERCEPTION_CAMERA=2
+WISEPACK_PERCEPTION_ENABLE=1               # have the camera ready
+WISEPACK_PERCEPTION_CAMERA=0
 ```
 
 and then start WISEPACK the way you always do:
@@ -2855,18 +2945,31 @@ and then start WISEPACK the way you always do:
 ./run_wisepack_dashboard.sh sim            # or ros / fiware / isaac / isaac-fiware
 ```
 
+The session opens on the preset workflow; set **Object source** to **Physical
+camera** whenever you want a real batch, and back again afterwards. Use
+`WISEPACK_PERCEPTION_SOURCE=camera` instead if you want the session to START on
+the camera — it is the initial selection, not a lock.
+
 The launcher prints what it is doing and waits for the detector to be ready:
 
 ```text
-[perception] perception source : camera
+[perception] camera capability requested — the session starts on the
+[perception] preset workflow; switch the dashboard's Object source to
+[perception] Physical camera whenever you like.
 [perception] service URL       : http://127.0.0.1:22101
 [perception] detector service  : starting
 [perception] perception python : /path/to/wisepack/.venv-perception/bin/python (WISEPACK perception environment)
-[perception] camera            : 2
+[perception] camera            : 0
 [perception] service log       : /tmp/wisepack_perception.log
 [perception] detector service  : ready
 [perception] provider          : fasterrcnn_bottle (Faster R-CNN)
+[dashboard]  initial object source: sim (switchable in the dashboard)
 ```
+
+With `WISEPACK_PERCEPTION_ENABLE=1` an unavailable camera is a **warning** and
+preset scenarios carry on normally. With `WISEPACK_PERCEPTION_SOURCE=camera` it
+is a **launch failure** (exit 6): the session was asked to START on a camera, and
+opening on a generated scenario instead would claim one that does not exist.
 
 On the very first camera start it creates the environment first, once:
 
@@ -2940,8 +3043,9 @@ under the operator while they read it would not be reproducible.
 
 #### Every mode, unchanged
 
-With `WISEPACK_PERCEPTION_SOURCE=camera` in `config/local.env`, the
-ordinary commands are the ordinary commands:
+With `WISEPACK_PERCEPTION_ENABLE=1` in `config/local.env`, the ordinary
+commands are the ordinary commands — and the Object source selector works in
+every one of them:
 
 ```bash
 ./run_wisepack_dashboard.sh sim            # dashboard only, no ROS
@@ -3156,6 +3260,9 @@ is usable and, if not, why.
 | `the WISEPACK perception environment is not usable` | run `./scripts/setup_perception.sh` (the message says so). `--check` prints the import error behind it. |
 | `ModuleNotFoundError: No module named 'uvicorn'` in the detector log | the service was run with the system `python3` instead of `.venv-perception/bin/python`. The launcher never does this; a hand-started service can. |
 | `unknown perception source 'harmony_camera'` | the value was renamed to `camera`. Update `config/local.env`. |
+| "I have to restart WISEPACK to use the camera" | you do not, and have not since the object source became a per-run selection. Set `WISEPACK_PERCEPTION_ENABLE=1`, then switch **Object source** in the Scenario panel. |
+| `Physical camera` is greyed out in the selector | no perception service is answering. The reason is on the option's tooltip and beside the selector; start one and the option becomes selectable **without a restart**. |
+| `the physical camera is not available as an object source` | the same thing, reported when a detection was actually requested. Nothing was substituted — there is no fall back to a generated scenario. |
 | `WISEPACK_HARMONY_PATH` / `WISEPACK_PERCEPTION_PYTHON` appear to do nothing | correct — they were removed. Perception runs entirely from this repository; see *The perception environment*. |
 | "Vulcanexus is not installed on the host" in diagnostics | expected and correct. WISEPACK uses the **containerized** Vulcanexus runtime; the host needs no middleware for camera perception. |
 | `perception service unreachable` | the service is not running, or `WISEPACK_PERCEPTION_SERVICE_URL` points elsewhere. |
@@ -3236,8 +3343,8 @@ Figures in `images/generated/` are produced by running the real pipeline -
 Stated plainly, because a demonstrator that hides its edges is not evidence.
 
 1. **Perception is real but PLANAR, and optional.**
-   `WISEPACK_PERCEPTION_SOURCE=camera` runs a real USB camera through a real
-   Faster R-CNN detector and an ArUco-calibrated plane, and the resulting
+   selecting **Object source: Physical camera** runs a real USB camera through
+   a real Faster R-CNN detector and an ArUco-calibrated plane, and the resulting
    observations are what the planner packs ([§15a](#15a-real-camera-perception)).
    What that gives, and what it does not:
 

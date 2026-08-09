@@ -33,6 +33,7 @@ import json
 import os
 import sys
 import threading
+import time
 from typing import Any, Dict, Optional
 
 import rclpy
@@ -53,7 +54,8 @@ from wisepack_core.packing import OptimizerConfig
 from wisepack_core.anomaly import AnomalyEvent
 from wisepack_core.correlation import RunCorrelation
 from wisepack_core.perception import (
-    ObservationBatch, ProxyGeometry, WorkAreaFrame, resolve_perception_source,
+    ObjectSourceState, ObservationBatch, PerceptionSource, ProxyGeometry,
+    WorkAreaFrame, resolve_object_source, resolve_perception_source,
 )
 from wisepack_core.perception_client import PerceptionClient
 from wisepack_core.workflow import (
@@ -66,6 +68,13 @@ from wisepack_core.workflow import (
 # Behaviours
 # --------------------------------------------------------------------------- #
 
+
+#: How long a camera-capability answer is reused before the perception service
+#: is asked again. Long enough that the tick and the state timer do not turn a
+#: health check into a load generator; short enough that starting the service by
+#: hand shows up in the dashboard within a second or two, which is the whole
+#: point of treating the camera as a capability rather than a launch mode.
+CAMERA_CAPABILITY_TTL_S = 2.0
 
 class _EngineBehaviour(py_trees.behaviour.Behaviour):
     """Base: holds the orchestrator node so behaviours can reach the engine."""
@@ -341,8 +350,20 @@ class HitLOrchestrator(Node):
         # Same discipline as the backend: an unknown name raises here, before
         # any publisher exists, rather than silently running the simulator while
         # every surface claims a camera.
+        #
+        # THIS IS THE INITIAL SELECTION, NOT A MODE LOCK. It decides which
+        # source the run this node starts automatically uses, and therefore what
+        # the dashboard opens on. The operator changes the object source per run
+        # at runtime (`set_object_source` + `reset`), and neither direction
+        # needs a restart. `self.perception_source` below always means "the
+        # source of the run that exists right now".
         self.perception_source = resolve_perception_source(
             self.get_parameter("perception_source").value or None)
+        #: The DRAFT: the source the NEXT run will acquire objects from. Seeded
+        #: from the initial selection and owned by the operator afterwards.
+        #: Editing it never touches the run already on screen — the same rule
+        #: the robot draft follows, and for the same reason.
+        self.next_perception_source = self.perception_source
         self.proxy_geometry = ProxyGeometry.from_env()
         self.work_area = WorkAreaFrame.from_env()
         #: The newest batch the perception service published, waiting to be
@@ -354,6 +375,10 @@ class HitLOrchestrator(Node):
         #: two concurrent requests would fight over one camera and one CUDA
         #: context in the service.
         self._detection_in_flight = False
+        #: Cached answer to "is the camera source usable", with the instant it
+        #: was taken. See `_camera_capability`.
+        self._camera_capability_cache = (False, "")
+        self._camera_capability_at = None
 
         events = []
         if bool(self.get_parameter("dynamic_events").value):
@@ -483,15 +508,21 @@ class HitLOrchestrator(Node):
         # writer per topic, keeps the NGSI-LD path on the runtime whose
         # TypeObject propagation Orion-LD's DDS Enabler needs, and requires no
         # middleware on the host at all.
-        self.p_perception_objects = None
-        self.p_perception_status = None
-        self.perception_client = None
-        if self.perception_source.is_physical:
-            self.p_perception_objects = self.create_publisher(
-                String, T.PERCEPTION_OBJECTS, qos_for(T.PERCEPTION_OBJECTS))
-            self.p_perception_status = self.create_publisher(
-                String, T.PERCEPTION_STATUS, qos_for(T.PERCEPTION_STATUS))
-            self.perception_client = PerceptionClient()
+        #
+        # CREATED UNCONDITIONALLY, because the camera is a CAPABILITY of this
+        # deployment and not a mode this process was launched into. An earlier
+        # revision created them only when the initial source was physical, which
+        # is what made switching to the camera require a restart: the publishers
+        # and the client the switch needs did not exist. Both are cheap —
+        # `PerceptionClient` opens no socket until it is asked a question, and
+        # the two publishers are latched String topics nobody subscribes to on a
+        # preset run — so an ordinary preset session pays nothing for them and
+        # loads no detector.
+        self.p_perception_objects = self.create_publisher(
+            String, T.PERCEPTION_OBJECTS, qos_for(T.PERCEPTION_OBJECTS))
+        self.p_perception_status = self.create_publisher(
+            String, T.PERCEPTION_STATUS, qos_for(T.PERCEPTION_STATUS))
+        self.perception_client = PerceptionClient()
 
         # Every action event goes out on DDS the moment it is recorded. This is
         # the audit path; nothing batches it and nothing bypasses it.
@@ -769,8 +800,13 @@ class HitLOrchestrator(Node):
         engine's contract is unchanged — call it, get a batch — which is why the
         same engine works behind HTTP in the dashboard's sim mode.
         """
-        if self.perception_source.is_physical:
+        # Keyed on the ENGINE's own source, not on a node-wide setting: the
+        # source changes per run, and a provider attached to a preset run would
+        # be as wrong as one missing from a camera run.
+        if self.engine.config.perception_source.is_physical:
             self.engine.observation_provider = self._take_pending_observation
+        else:
+            self.engine.observation_provider = None
 
     def _take_pending_observation(self) -> ObservationBatch:
         batch, self._pending_observation = self._pending_observation, None
@@ -834,7 +870,7 @@ class HitLOrchestrator(Node):
         try:
             self.p_perception_objects.publish(
                 String(data=json.dumps(batch.to_dict(), default=str)))
-            self.p_perception_status.publish(String(data=json.dumps({
+            self._perception_status = {
                 "status": batch.status.value,
                 "source": batch.source,
                 "count": batch.count,
@@ -842,7 +878,13 @@ class HitLOrchestrator(Node):
                 "captured_at": batch.captured_at,
                 "requested_at": batch.requested_at,
                 "error": batch.error,
-            })))
+                "object_source": self.object_source_state().to_dict(),
+                "run_object_source": self.engine.config.perception_source.value,
+                "run_object_provenance":
+                    self.engine.config.perception_source.provenance,
+            }
+            self.p_perception_status.publish(
+                String(data=json.dumps(self._perception_status, default=str)))
         except Exception as exc:                            # noqa: BLE001
             self.get_logger().error(f"perception publish failed: {exc}")
 
@@ -891,6 +933,66 @@ class HitLOrchestrator(Node):
         self.publish_detection()
         self.publish_plans()
         self.publish_state()
+
+    # -- object source: capability, draft, and the running run's own ------- #
+
+    def object_source_state(self) -> "ObjectSourceState":
+        """What sources exist, what the operator picked next, what is running.
+
+        RE-EVALUATED, NOT LATCHED. `camera` is available when a perception
+        service answers right now — an operator can start one at any moment and
+        the dashboard must offer the source without a restart, and a service
+        that dies must stop being offered.
+        """
+        available = [PerceptionSource.SIM.value]
+        reason = ""
+        if self.perception_client is not None:
+            ok, reason = self._camera_capability()
+            if ok:
+                available.append(PerceptionSource.CAMERA.value)
+        else:
+            reason = "this build has no perception client"
+        return ObjectSourceState(
+            current=self.engine.config.perception_source.value,
+            selected=self.next_perception_source.value,
+            available=available,
+            camera_unavailable_reason=reason,
+            service_url=(self.perception_client.url
+                         if self.perception_client else ""))
+
+    def _camera_capability(self) -> tuple:
+        """(usable, reason), cached briefly so the tick does not poll HTTP hard.
+
+        The tick runs several times a second and `publish_state` runs on its own
+        timer; asking the perception service on every one of them would turn a
+        capability check into a load generator. A second of staleness cannot
+        matter here — the answer changes when someone starts or stops a process.
+        """
+        now = time.monotonic()
+        if (self._camera_capability_at is not None
+                and now - self._camera_capability_at < CAMERA_CAPABILITY_TTL_S):
+            return self._camera_capability_cache
+        ok, reason = self.perception_client.capability()
+        self._camera_capability_cache = (ok, reason)
+        self._camera_capability_at = now
+        return ok, reason
+
+    def set_object_source(self, value: str) -> "PerceptionSource":
+        """Choose the source for the NEXT run. Never touches the current one.
+
+        The draft is validated against what is actually available, so selecting
+        a camera that is not there fails HERE, with the reason, instead of at
+        the moment the operator presses the acquire button — and never by
+        quietly generating a preset scenario instead.
+        """
+        state = self.object_source_state()
+        source = resolve_object_source(value, state.available)
+        self.next_perception_source = source
+        self.get_logger().info(
+            f"next-run object source -> {source.selector_label} "
+            f"(running run stays {self.engine.config.perception_source.selector_label})")
+        self.publish_state()
+        return source
 
     def publish_perception(self) -> None:
         """Stamp the engine's adoption of a batch onto the scenario projection.
@@ -977,7 +1079,38 @@ class HitLOrchestrator(Node):
             # dashboard change.
             backend["visualization"] = self.isaac.visualization
         self.p_backend.publish(String(data=json.dumps(backend, default=str)))
+        # THE OBJECT SOURCE travels on the perception status topic, latched, so
+        # a dashboard attaching mid-session learns three things it cannot infer:
+        # which sources exist here, which one the operator has selected for the
+        # next run, and which one the run on screen actually used. It rides the
+        # perception topic rather than the backend one because it is a
+        # perception fact — the execution backend has no opinion about where
+        # objects came from, and merging the two is the conflation this whole
+        # change exists to undo.
+        self.publish_object_source()
         self.publish_correlation("system")
+
+    def publish_object_source(self) -> None:
+        """Latch the object-source state for whoever attaches next."""
+        if self.p_perception_status is None:
+            return
+        state = self.object_source_state()
+        document = dict(self._perception_status or {})
+        document["object_source"] = state.to_dict()
+        # Provenance of the RUN, alongside the batch's own status. A consumer
+        # reading only this topic can still tell a generated batch from a
+        # measured one without having to ask what a `source` value implies.
+        document.setdefault("source",
+                            self.engine.config.perception_source.value)
+        document["run_object_source"] = state.current
+        document["run_object_provenance"] = (
+            self.engine.config.perception_source.provenance)
+        self._perception_status = document
+        try:
+            self.p_perception_status.publish(
+                String(data=json.dumps(document, default=str)))
+        except Exception as exc:                            # noqa: BLE001
+            self.get_logger().error(f"object-source publish failed: {exc}")
 
     def publish_execution(self) -> None:
         engine = self.engine
@@ -1208,15 +1341,32 @@ class HitLOrchestrator(Node):
                 confidence=args.get("confidence"))
             self._ingest_anomaly(event)
 
+        elif command == "set_object_source":
+            # THE DRAFT ONLY. Nothing about the running run changes here — see
+            # `set_object_source` and `_reset_run`.
+            self.set_object_source(str(args.get("source", "")))
+
         elif command == "detect_physical_objects":
-            # REFUSED WITH A REASON when perception is simulated. A button
-            # labelled "Detect physical objects" that quietly ran the simulator
-            # would be the exact deception §15 forbids.
-            if not self.perception_source.is_physical:
+            # ACQUIRE A BATCH FROM THE CAMERA — and, when the run on screen came
+            # from a preset, start a camera run first.
+            #
+            # REFUSED WITH A REASON, NEVER SILENTLY SIMULATED. A control that
+            # says "detect" and quietly returns generated objects is the exact
+            # deception §15 forbids, so an unavailable camera raises here with
+            # the capability's own explanation.
+            state = self.object_source_state()
+            if not state.camera_available:
                 raise ValueError(
-                    "perception source is `sim` — there is no camera. Relaunch "
-                    "with perception_source:=camera (or "
-                    "WISEPACK_PERCEPTION_SOURCE=camera).")
+                    "the physical camera is not available as an object source: "
+                    + (state.camera_unavailable_reason or "no reason reported"))
+            if not self.engine.config.perception_source.is_physical:
+                # A NEW RUN, because the objects are about to come from
+                # somewhere else entirely. Re-using the preset run's engine
+                # would leave its generated items, its plan and its approval in
+                # place until the batch arrived. `detect=False` because the
+                # detection is requested below, once, rather than twice.
+                self._reset_run({**args, "object_source":
+                                 PerceptionSource.CAMERA.value, "detect": False})
             if not self.request_physical_detection():
                 raise ValueError("no perception service client is available")
             # The batch arrives on a worker thread and is adopted on the next
@@ -1513,6 +1663,22 @@ class HitLOrchestrator(Node):
         seed = int(args.get("seed", self.engine.config.seed))
         strategy = Strategy(args.get("strategy", self.engine.config.strategy.value))
 
+        # WHERE THE NEXT RUN'S OBJECTS COME FROM, decided HERE and nowhere else.
+        #
+        # A reset is the moment a new run begins, which is exactly when changing
+        # the object source is safe: the old engine is replaced, the old
+        # approval goes with it, and nothing that was on screen can be carried
+        # across. Editing the draft mid-run does not reach this code — which is
+        # the whole reason draft and current are separate.
+        #
+        # An unavailable source raises out of here, and the command handler
+        # reports it; the run then continues on the PREVIOUS one rather than
+        # silently becoming a generated scenario.
+        state = self.object_source_state()
+        object_source = resolve_object_source(
+            args.get("object_source"), state.available,
+            fallback=self.next_perception_source.value)
+
         # THE ROBOT CHANGES HERE AND NOWHERE ELSE. A reset is a NEW run, which
         # is exactly the moment at which changing the arm is safe: the old run
         # is aborted, the engine is replaced, and the physical scene is rebuilt
@@ -1578,9 +1744,13 @@ class HitLOrchestrator(Node):
             generator_overrides=overrides,
             auto_approve=self.auto_approve,
             execution_backend=self.execution_backend,
-            perception_source=self.perception_source,
+            perception_source=object_source,
             proxy_geometry=self.proxy_geometry,
             work_area=self.work_area))
+        # The run that now exists IS this source, and the draft follows it: a
+        # selection the operator has spent is no longer pending.
+        self.perception_source = object_source
+        self.next_perception_source = object_source
         self._attach_observation_provider()
         self.engine.log.add_sink(self._publish_event)
 
@@ -1637,25 +1807,47 @@ class HitLOrchestrator(Node):
             # and every pick on a SCENE_READY correlated with this exact run.
             self.isaac.request_scene_reset(self.engine,
                                            self.engine.scenario_revision)
-        self.engine.scan_and_detect()
-        self.engine.generate_plans()
-        self.engine.digital_twin_validate()
-        self.engine.request_approval()
-
         self._artifacts_written = False
         self.auto_step = False
         self.tree = build_tree(self)
         self.tree.setup_with_descendants()
 
-        self.publish_scenario()
-        self.publish_detection()
-        self.publish_plans()
-        self.publish_state()
+        # TWO SOURCES, TWO WAYS TO ACQUIRE A BATCH — and only one of them can
+        # finish synchronously.
+        #
+        # A preset run has its objects the moment the scenario is generated, so
+        # it plans straight through to the gate exactly as it always did.
+        #
+        # A camera run has NOTHING until a frame has been analysed, which takes
+        # seconds (tens on a cold model load) and must not block this callback.
+        # So the run is created and left waiting at the scan; the detection is
+        # requested asynchronously and adopted on a later tick, which then plans
+        # and re-enters the gate. Calling `scan_and_detect()` here would raise
+        # `PerceptionUnavailable` and abort a reset that is proceeding perfectly.
+        detected_now = False
+        if object_source.is_physical:
+            self.publish_scenario()
+            self.publish_state()
+            if args.get("detect", True):
+                detected_now = self.request_physical_detection()
+        else:
+            self.engine.scan_and_detect()
+            self.engine.generate_plans()
+            self.engine.digital_twin_validate()
+            self.engine.request_approval()
+
+            self.publish_scenario()
+            self.publish_detection()
+            self.publish_plans()
+            self.publish_state()
         self.get_logger().info(
-            f"reset -> preset={preset} seed={seed} strategy={strategy.value}"
+            f"reset -> source={object_source.value} preset={preset} seed={seed} "
+            f"strategy={strategy.value}"
+            + ("; awaiting detection" if object_source.is_physical
+               and detected_now else "")
             + (f" robot={robot_id}" if robot_id else "")
             + (" (HOST RESTART requested)" if robot_switch else "")
-            + "; awaiting approval")
+            + ("" if object_source.is_physical else "; awaiting approval"))
         if switch_refusal:
             # Surfaced as a command refusal too, so the dashboard shows it
             # rather than an approval gate that quietly never opens.

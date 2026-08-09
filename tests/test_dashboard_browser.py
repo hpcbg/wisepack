@@ -95,10 +95,20 @@ def assert_no_refresh_failure(page, context=""):
 class DashboardServer:
     """A sim-mode dashboard on its own port, torn down with the test."""
 
-    def __init__(self, preset="mixed_pipes_dense", seed=42):
+    def __init__(self, preset="mixed_pipes_dense", seed=42,
+                 perception_url=None):
         self.port = _free_port()
         self.url = f"http://127.0.0.1:{self.port}"
-        env = dict(os.environ, WISEPACK_STEP_PERIOD_S="0.35")
+        # SELF-CONTAINED BY DEFAULT. Without this the dashboard inherits
+        # WISEPACK_PERCEPTION_SERVICE_URL from the developer's shell and finds
+        # whatever detector happens to be running on that machine — so a test
+        # about "no camera is available" passed or failed depending on whether
+        # someone had a service up. Pointed at a port nothing listens on, the
+        # answer is deterministic.
+        env = dict(os.environ, WISEPACK_STEP_PERIOD_S="0.35",
+                   WISEPACK_PERCEPTION_SERVICE_URL=(
+                       perception_url or f"http://127.0.0.1:{_free_port()}"))
+        env.pop("WISEPACK_PERCEPTION_SOURCE", None)
         self.proc = subprocess.Popen(
             [sys.executable, "app.py", "--source", "sim", "--port", str(self.port),
              "--preset", preset, "--seed", str(seed)],
@@ -625,3 +635,332 @@ def test_diagnostics_has_cut_inventory_logistics_status(page, sim_server):
     assert "inventory status" in body
     assert "logistics status" in body
     errors.assert_clean("diagnostics whole-process")
+
+
+# --------------------------------------------------------------------------- #
+# Object source: both workflows in ONE dashboard session
+# --------------------------------------------------------------------------- #
+
+
+#: A 1x1 JPEG. The smallest thing that decodes in a browser, so the panel's
+#: <img> resolves instead of reporting a failed request.
+_PIXEL_JPEG = bytes.fromhex(
+    "ffd8ffe000104a46494600010100000100010000ffdb004300ffffffffffffffffffff"
+    "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+    "ffffffffffffffffffffffffffffffffffffffffffc2000b080001000101011100ffc4"
+    "001400010000000000000000000000000000000affda0008010100013f10")
+
+
+class StubPerceptionService:
+    """A perception service that answers /health and returns one batch.
+
+    A REAL HTTP SERVER, on a real port, because the whole property under test is
+    "the dashboard notices a service that appears and offers the camera without
+    being restarted" — and a monkeypatched client would not exercise that at
+    all. No torch, no camera, no model: the two endpoints the dashboard uses.
+    """
+
+    OBJECTS = [
+        {"observation_id": "physical-cylinder-001", "object_type": "cylindrical_proxy",
+         "source": "camera", "frame_id": "wisepack_workarea",
+         "pose": {"x_mm": 184.5, "y_mm": 54.1, "z_mm": 0.0, "yaw_deg": 51.7},
+         "confidence": 0.99, "calibration_status": "valid",
+         "geometry": {"diameter_mm": 65, "length_mm": 215,
+                      "source": "configured_proxy"}},
+        {"observation_id": "physical-cylinder-002", "object_type": "cylindrical_proxy",
+         "source": "camera", "frame_id": "wisepack_workarea",
+         "pose": {"x_mm": 77.5, "y_mm": 53.9, "z_mm": 0.0, "yaw_deg": -21.1},
+         "confidence": 0.99, "calibration_status": "valid",
+         "geometry": {"diameter_mm": 65, "length_mm": 215,
+                      "source": "configured_proxy"}},
+    ]
+
+    def __init__(self):
+        import http.server
+        import json as _json
+        import threading as _threading
+
+        batch = {
+            "batch_id": "batch-001", "source": "camera", "status": "ok",
+            "count": len(self.OBJECTS), "frame_id": "wisepack_workarea",
+            "captured_at": "2026-08-09T10:00:00.000Z",
+            "requested_at": "2026-08-09T09:59:59.000Z",
+            "detector": "fasterrcnn_resnet50_fpn/bottle",
+            "model_id": "/stub/best_model.pth",
+            "calibration_status": "valid", "calibration_revision": "stub0001",
+            "error": "", "mean_confidence": 0.99,
+            "observations": self.OBJECTS, "detector_status": {},
+        }
+        health = {
+            "source": "camera", "service_reachable": True,
+            "camera_available": True, "model_available": True,
+            "model_loaded": True, "calibration_status": "valid",
+            "calibration_valid": True, "detector": "fasterrcnn_resnet50_fpn/bottle",
+            "detector_display_name": "Faster R-CNN", "provider": "fasterrcnn_bottle",
+            "last_error": "", "detected_objects": len(self.OBJECTS),
+        }
+
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def _send(self, payload):
+                body = _json.dumps(payload).encode()
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def do_GET(self):
+                if self.path == "/health":
+                    self._send(health)
+                elif self.path == "/api/v1/camera/last-detection":
+                    self._send(batch)
+                elif self.path.startswith("/api/v1/detection/image/"):
+                    # The panel shows the annotated frame, so the stub has to
+                    # return SOMETHING decodable: a 503 here would surface as a
+                    # failed request and fail the test for a reason that has
+                    # nothing to do with the workflow under examination.
+                    self.send_response(200)
+                    self.send_header("Content-Type", "image/jpeg")
+                    self.send_header("Content-Length", str(len(_PIXEL_JPEG)))
+                    self.end_headers()
+                    self.wfile.write(_PIXEL_JPEG)
+                else:
+                    self.send_response(404); self.end_headers()
+
+            def do_POST(self):
+                if self.path == "/api/v1/detect":
+                    self._send(batch)
+                else:
+                    self.send_response(404); self.end_headers()
+
+            def log_message(self, *a):
+                pass
+
+        self.port = _free_port()
+        self.url = f"http://127.0.0.1:{self.port}"
+        self.server = http.server.HTTPServer(("127.0.0.1", self.port), Handler)
+        self.thread = _threading.Thread(target=self.server.serve_forever,
+                                        daemon=True)
+        self.thread.start()
+
+    def close(self):
+        self.server.shutdown()
+        self.server.server_close()
+
+
+@pytest.fixture(scope="module")
+def camera_dashboard():
+    """A dashboard whose perception service exists, started on PRESETS.
+
+    `WISEPACK_PERCEPTION_SOURCE` is deliberately NOT set: the session opens on
+    the ordinary preset workflow, exactly as `./run_wisepack_dashboard.sh` does,
+    and the camera is merely available.
+    """
+    service = StubPerceptionService()
+    port = _free_port()
+    env = dict(os.environ, WISEPACK_STEP_PERIOD_S="0.35",
+               WISEPACK_PERCEPTION_SERVICE_URL=service.url)
+    env.pop("WISEPACK_PERCEPTION_SOURCE", None)
+    proc = subprocess.Popen(
+        [sys.executable, "app.py", "--source", "sim", "--port", str(port),
+         "--preset", "mixed_pipes_dense", "--seed", "42"],
+        cwd=WEB, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+
+    import urllib.request
+    deadline = time.time() + 90
+    while time.time() < deadline:
+        if proc.poll() is not None:
+            raise RuntimeError("dashboard exited early:\n"
+                               + proc.stdout.read().decode(errors="replace"))
+        try:
+            with urllib.request.urlopen(f"http://127.0.0.1:{port}/healthz",
+                                        timeout=2):
+                break
+        except Exception:                                # noqa: BLE001
+            time.sleep(1)
+    else:
+        raise RuntimeError("dashboard did not become ready")
+
+    class Harness:
+        pass
+
+    harness = Harness()
+    harness.url = f"http://127.0.0.1:{port}"
+    harness.service = service
+    yield harness
+    proc.terminate()
+    try:
+        proc.wait(timeout=10)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+    service.close()
+
+
+def _twin_rects(page) -> int:
+    return page.evaluate("() => document.querySelectorAll('#twin rect').length")
+
+
+def _object_source(page):
+    return page.evaluate(
+        "async () => (await (await fetch('/api/state')).json()).object_source")
+
+
+def test_object_source_switches_within_one_dashboard_session(page,
+                                                             camera_dashboard):
+    """THE HEADLINE: preset -> camera -> preset, one page, no restart.
+
+    Every step is driven through the real UI — the selector and the acquisition
+    button — not through the API, because the thing that was broken was the
+    workflow an operator can actually perform.
+    """
+    errors = PageErrors(page)
+    # STARTING A NEW RUN ASKS FIRST when one is active — including when the
+    # acquisition also switches the object source. Headless Chromium dismisses
+    # dialogs by default, which would silently turn every click below into a
+    # no-op, so the operator's "yes" is given explicitly.
+    page.on("dialog", lambda dialog: dialog.accept())
+    page.goto(camera_dashboard.url, wait_until="networkidle")
+    page.wait_for_timeout(2500)
+
+    # -- 2-5. the preset workflow, unchanged --------------------------------
+    assert page.query_selector("#s-objsrc") is not None, \
+        "the Object source selector must exist in the Scenario panel"
+    source = _object_source(page)
+    assert source["current"] == "sim" and source["selected"] == "sim"
+    assert source["camera_available"] is True, \
+        "an available camera must be offered even on a preset session"
+    page.wait_for_function(
+        "() => document.querySelectorAll('#twin rect').length > 20",
+        timeout=60_000)
+    preset_rects = _twin_rects(page)
+    assert "generate" in page.inner_text("#c-reset").strip().lower()
+    wait_for_stage(page, "WAIT_FOR_OPERATOR_APPROVAL")
+    assert page.eval_on_selector("#c-approve", "b => !b.disabled")
+
+    # -- 6. switch the NEXT run to the camera -------------------------------
+    page.select_option("#s-objsrc", "camera")
+    page.wait_for_function(
+        "async () => ((await (await fetch('/api/state')).json())"
+        ".object_source || {}).selected === 'camera'", timeout=20_000)
+    # The RUNNING run is untouched: same twin, still awaiting the same decision.
+    assert _twin_rects(page) == preset_rects, \
+        "selecting a source changed the running run"
+    assert _object_source(page)["current"] == "sim"
+    page.wait_for_function(
+        "() => document.querySelector('#c-reset')?.textContent?.includes('detect')"
+        " || document.querySelector('#c-reset')?.textContent?.includes('Detect')",
+        timeout=20_000)
+
+    # -- 7-9. acquire from the camera ---------------------------------------
+    page.click("#c-reset")
+    page.wait_for_function(
+        "async () => ((await (await fetch('/api/state')).json())"
+        ".object_source || {}).current === 'camera'", timeout=60_000)
+    page.wait_for_timeout(2500)
+    camera_rects = _twin_rects(page)
+    assert 0 < camera_rects < preset_rects, (
+        "the Digital Twin must now show the two detected objects, not the "
+        f"generated batch ({camera_rects} vs {preset_rects})")
+    items = page.evaluate(
+        "async () => ((await (await fetch('/api/state')).json())"
+        ".scenario || {}).totals?.items")
+    assert items == 2, f"expected the two detected objects, got {items}"
+    wait_for_stage(page, "WAIT_FOR_OPERATOR_APPROVAL")
+    assert page.eval_on_selector("#c-approve", "b => !b.disabled"), \
+        "a fresh decision must be available for the camera batch"
+
+    # -- 10-12. back to a preset, still the same page -----------------------
+    page.select_option("#s-objsrc", "sim")
+    page.wait_for_function(
+        "async () => ((await (await fetch('/api/state')).json())"
+        ".object_source || {}).selected === 'sim'", timeout=20_000)
+    page.click("#c-reset")
+    page.wait_for_function(
+        "async () => ((await (await fetch('/api/state')).json())"
+        ".object_source || {}).current === 'sim'", timeout=60_000)
+    page.wait_for_function(
+        "() => document.querySelectorAll('#twin rect').length > 20",
+        timeout=60_000)
+    assert _twin_rects(page) > camera_rects
+    wait_for_stage(page, "WAIT_FOR_OPERATOR_APPROVAL")
+
+    # -- 14. nothing restarted, nothing broke -------------------------------
+    assert_no_refresh_failure(page, "object-source switching")
+    errors.assert_clean("object-source switching")
+
+
+def test_the_perception_panel_stays_visible_during_a_preset_run(
+        page, camera_dashboard):
+    """The camera is a capability; the panel reports it whatever is running."""
+    page.goto(camera_dashboard.url, wait_until="networkidle")
+    page.wait_for_timeout(2500)
+    panel = page.query_selector("#perceppanel")
+    assert panel is not None and panel.is_visible(), (
+        "the Physical Perception panel must stay visible while a camera exists")
+    text = page.inner_text("#perceppanel")
+    assert "Current run source" in text
+    assert "Camera" in text
+
+
+def test_an_absent_camera_leaves_the_preset_workflow_working(page, sim_server):
+    """No perception service at all: an ordinary WISEPACK, plus a clear reason.
+
+    `sim_server` has no `WISEPACK_PERCEPTION_SERVICE_URL`, so nothing answers.
+    """
+    errors = PageErrors(page)
+    page.goto(sim_server.url, wait_until="networkidle")
+    page.wait_for_timeout(1500)
+    # The dashboard server is module-scoped and the workflow is STATEFUL, so put
+    # the engine back at the gate on a known scenario rather than inheriting
+    # whatever the previous test left behind.
+    reset_run(page)
+    page.wait_for_timeout(1500)
+
+    source = _object_source(page)
+    assert source["camera_available"] is False
+    assert source["camera_unavailable_reason"], \
+        "an unavailable camera must say why"
+    # OFFERED BUT DISABLED, never silently missing: an operator has to be able
+    # to see that the capability exists and what is wrong with it.
+    disabled = page.evaluate(
+        "() => [...document.querySelectorAll('#s-objsrc option')]"
+        ".map(o => [o.value, o.disabled])")
+    assert ["camera", True] in [list(x) for x in disabled], disabled
+
+    # ... and the preset workflow is completely unaffected.
+    page.wait_for_function(
+        "() => document.querySelectorAll('#twin rect').length > 20",
+        timeout=60_000)
+    wait_for_stage(page, "WAIT_FOR_OPERATOR_APPROVAL")
+    # The acquisition button names a GENERATION, never a detection — a run is
+    # active by now, so the label carries the reset wording too.
+    label = page.inner_text("#c-reset").strip()
+    assert "generate" in label.lower(), label
+    assert "detect" not in label.lower(), label
+    assert_no_refresh_failure(page, "absent camera")
+    errors.assert_clean("absent camera")
+
+
+def test_asking_to_detect_without_a_camera_is_refused_not_simulated(
+        page, sim_server):
+    """NO SILENT FALLBACK, asserted through the API the button uses."""
+    page.goto(sim_server.url, wait_until="networkidle")
+    page.wait_for_timeout(1500)
+    reset_run(page)
+    page.wait_for_timeout(1000)
+    before = page.evaluate(
+        "async () => ((await (await fetch('/api/state')).json())"
+        ".scenario || {}).totals?.items")
+    result = page.evaluate(
+        """async () => {
+             const r = await fetch('/api/command', {
+               method: 'POST', headers: {'Content-Type': 'application/json'},
+               body: JSON.stringify({command: 'detect_physical_objects', args: {}})});
+             return {status: r.status, body: await r.text()};
+           }""")
+    assert result["status"] == 409, result
+    assert "not available" in result["body"]
+    after = page.evaluate(
+        "async () => ((await (await fetch('/api/state')).json())"
+        ".scenario || {}).totals?.items")
+    assert after == before, "a refused detection changed the run"

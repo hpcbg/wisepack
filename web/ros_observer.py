@@ -129,6 +129,16 @@ async def start_ros_observer(state) -> None:
               qos_for(T.OPERATOR_APPROVAL))
             S(String, T.EXECUTION_BACKEND, self._backend,
               qos_for(T.EXECUTION_BACKEND))
+            # THE OBJECT SOURCE, latched by the orchestrator: which sources this
+            # deployment has, which the operator selected for the next run, and
+            # which the run on screen actually used. The dashboard cannot infer
+            # any of the three — it does not run the engine — and without this
+            # the selector would show a stale local guess.
+            S(String, T.PERCEPTION_STATUS, self._json_into("perception_status"),
+              qos_for(T.PERCEPTION_STATUS))
+            S(String, T.PERCEPTION_OBJECTS,
+              self._json_into("perception_objects"),
+              qos_for(T.PERCEPTION_OBJECTS))
             # The raw physical feedback, for the diagnostics panel only. The
             # workflow itself is driven entirely by the orchestrator: the
             # dashboard reading this topic is an OBSERVATION, and nothing here

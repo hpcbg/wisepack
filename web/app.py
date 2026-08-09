@@ -61,7 +61,8 @@ from wisepack_core.artifacts import (                              # noqa: E402
 from wisepack_core.domain import Strategy                          # noqa: E402
 from wisepack_core.execution import physical_presets              # noqa: E402
 from wisepack_core.perception import (                             # noqa: E402
-    PerceptionSource, ProxyGeometry, WorkAreaFrame, resolve_perception_source,
+    ObjectSourceState, PerceptionSource, ProxyGeometry, WorkAreaFrame,
+    resolve_object_source, resolve_perception_source,
 )
 from wisepack_core.events import (                                 # noqa: E402
     DynamicEvent, DynamicEventType, Stage,
@@ -103,6 +104,10 @@ ORION = os.environ.get("ORION", "http://localhost:1026").rstrip("/")
 # configuration that kills the ROS stack must not quietly run in the dashboard.
 PERCEPTION_SOURCE = resolve_perception_source()
 
+#: How long a camera-capability answer is reused before the perception service
+#: is asked again. See `camera_capability()`.
+CAMERA_CAPABILITY_TTL_S = 2.0
+
 #: Seconds between execution steps in sim mode. Slow enough to watch, fast
 #: enough that a 40-item scenario finishes inside a demo slot.
 STEP_PERIOD_S = float(os.environ.get("WISEPACK_STEP_PERIOD_S", "0.7"))
@@ -131,9 +136,13 @@ class DemoState:
         #: Populated by ros_observer in live mode: the latest value seen on each
         #: canonical topic. None in sim mode, where there is no ROS.
         self.ros_mirror: Optional[Dict[str, Any]] = None
-        #: The perception-service client, built on first use. None in `sim`
-        #: perception mode, where there is no service to talk to.
+        #: The perception-service client, built on first use. Built whatever
+        #: the selected source is: the camera is a capability, and the dashboard
+        #: asks about it while running preset scenarios.
         self.perception_client = None
+        #: (usable, reason) and when it was asked. See `camera_capability`.
+        self.camera_capability = (False, "")
+        self.camera_capability_at = None
         self.fiware_connected: Optional[bool] = None
         self.fiware_last_error = ""
         self.notice = ""
@@ -157,6 +166,13 @@ class DemoState:
             # NOT the active robot: changing this must never touch a running
             # scene, and only "Reset run & generate" carries it into a run.
             "robot_id": None,
+            # THE DRAFT OBJECT SOURCE for the NEXT run: `sim` (generate from the
+            # selected preset) or `camera` (detect from a real frame). Seeded
+            # from WISEPACK_PERCEPTION_SOURCE, which is the INITIAL selection
+            # and not a mode lock — the operator switches per run, in one
+            # session, without restarting anything. Like the robot draft, it is
+            # inert until an acquisition is actually started.
+            "object_source": PERCEPTION_SOURCE.value,
         }
 
     # -- event capture ---------------------------------------------------- #
@@ -228,6 +244,12 @@ def _generator_overrides(settings: Dict[str, Any]) -> Dict[str, Any]:
 def build_engine(settings: Dict[str, Any]) -> WorkflowEngine:
     preset = settings.get("preset", "mixed_pipes_dense")
     seed = int(settings.get("seed", 42))
+    # WHERE THIS RUN'S OBJECTS COME FROM. Validated against what is actually
+    # available, so asking for a camera that is not there fails here with the
+    # reason rather than quietly producing a generated scenario.
+    object_source = resolve_object_source(
+        settings.get("object_source"), available_object_sources(),
+        fallback=PERCEPTION_SOURCE.value)
     # The in-process demo engine is the LOGICAL backend and has no robot. The
     # draft robot is carried on the settings for the live modes, where the
     # orchestrator owns the run; recording it here would attach a robot name to
@@ -242,7 +264,10 @@ def build_engine(settings: Dict[str, Any]) -> WorkflowEngine:
         # PERCEPTION SOURCE AND EXECUTION BACKEND ARE SET INDEPENDENTLY. This
         # engine is the LOGICAL execution backend either way; selecting a camera
         # changes where the OBJECTS come from and nothing else.
-        perception_source=PERCEPTION_SOURCE,
+        #
+        # PER RUN, from the operator's draft — not from a process-wide setting.
+        # `PERCEPTION_SOURCE` is only where the draft STARTED.
+        perception_source=object_source,
         proxy_geometry=ProxyGeometry.from_env(),
         work_area=WorkAreaFrame.from_env(),
         strategy=Strategy(settings.get("strategy", "max_density")),
@@ -256,7 +281,7 @@ def build_engine(settings: Dict[str, Any]) -> WorkflowEngine:
         generator_overrides=overrides,
         auto_approve=False)
     engine = WorkflowEngine(config)
-    if PERCEPTION_SOURCE.is_physical:
+    if object_source.is_physical:
         # THE ONLY PLACE THE DASHBOARD LEARNS HOW OBSERVATIONS ARRIVE. The
         # engine stays transport-free; it calls a callable and gets a batch.
         from wisepack_core.perception_client import (              # noqa: PLC0415
@@ -268,7 +293,12 @@ def build_engine(settings: Dict[str, Any]) -> WorkflowEngine:
 
 
 def perception_client():
-    """The one shared client for the perception service. Built lazily."""
+    """The one shared client for the perception service. Built lazily.
+
+    Built REGARDLESS of which source is selected: the camera is a capability of
+    the deployment, and the dashboard has to be able to ask whether one is there
+    while running a preset scenario. Construction opens no socket.
+    """
     from wisepack_core.perception_client import PerceptionClient  # noqa: PLC0415
     with STATE.lock:
         if STATE.perception_client is None:
@@ -276,8 +306,80 @@ def perception_client():
         return STATE.perception_client
 
 
-def start_run(settings: Dict[str, Any]) -> WorkflowEngine:
+def camera_capability(health: Optional[Dict[str, Any]] = None):
+    """(camera usable, reason), asked live and cached for a second or two.
+
+    A LIVE QUESTION, NOT A START-UP ONE. An operator can start the perception
+    service at any moment — from the launcher, or by hand in another terminal —
+    and the object-source selector must offer the camera without the dashboard
+    being restarted. Equally, a service that dies must stop being offered. The
+    short cache exists only so a 1 Hz page poll does not become an HTTP load
+    generator against the detector.
+    """
+    now = time.monotonic()
+    with STATE.lock:
+        cached = STATE.camera_capability
+        stamped = STATE.camera_capability_at
+    if health is None and stamped is not None and now - stamped < CAMERA_CAPABILITY_TTL_S:
+        return cached
+    answer = perception_client().capability(health)
+    with STATE.lock:
+        STATE.camera_capability = answer
+        STATE.camera_capability_at = now
+    return answer
+
+
+def available_object_sources(health: Optional[Dict[str, Any]] = None):
+    """Which object sources this deployment can use right now."""
+    sources = [PerceptionSource.SIM.value]
+    if camera_capability(health)[0]:
+        sources.append(PerceptionSource.CAMERA.value)
+    return sources
+
+
+def object_source_state(health: Optional[Dict[str, Any]] = None
+                        ) -> ObjectSourceState:
+    """Capability + draft + what the RUNNING run actually used."""
+    usable, reason = camera_capability(health)
+    available = [PerceptionSource.SIM.value]
+    if usable:
+        available.append(PerceptionSource.CAMERA.value)
+    with STATE.lock:
+        selected = str(STATE.settings.get("object_source")
+                       or PERCEPTION_SOURCE.value)
+        engine = STATE.engine
+        mirror = STATE.ros_mirror
+    if SOURCE == "sim":
+        current = (engine.config.perception_source.value if engine
+                   else PERCEPTION_SOURCE.value)
+    else:
+        # LIVE MODES: the orchestrator owns the run, and it latches its own
+        # object-source document on the perception status topic. Its `current`
+        # is authoritative — this process does not run the engine and must not
+        # guess what the container is doing.
+        published = ((mirror or {}).get("perception_status") or {}
+                     ).get("object_source") or {}
+        current = str(published.get("current") or PERCEPTION_SOURCE.value)
+        if published.get("selected"):
+            # The orchestrator's draft is the one that will actually be used;
+            # the browser's copy is only a rendering of it.
+            selected = str(published["selected"])
+    return ObjectSourceState(
+        current=current, selected=selected, available=available,
+        camera_unavailable_reason="" if usable else reason,
+        service_url=perception_client().url)
+
+
+def start_run(settings: Dict[str, Any],
+              acquire: bool = True) -> WorkflowEngine:
     """Plan a fresh run and stop at the approval gate. Never auto-executes.
+
+    TWO SOURCES, TWO WAYS TO ACQUIRE A BATCH. A preset run has its objects the
+    moment the scenario is generated and plans straight through to the gate,
+    exactly as it always has. A camera run has nothing until a frame has been
+    analysed, so with `acquire=False` the run is created and left at the scan
+    for `detect_physical_objects` to fill — which is what lets the operator
+    switch source without the dashboard restarting.
 
     IN PHYSICAL PERCEPTION MODE THIS MAY LEGITIMATELY STOP EARLY. If the camera
     or the detector cannot deliver a batch there is nothing to plan, and §15
@@ -287,6 +389,8 @@ def start_run(settings: Dict[str, Any]) -> WorkflowEngine:
     """
     engine = build_engine(settings)
     engine.generate_or_load_scenario()
+    if not acquire:
+        return engine
     try:
         engine.scan_and_detect()
     except PerceptionUnavailable as exc:
@@ -670,6 +774,11 @@ def api_state():
     # running scenario: only "Generate & plan" does, and only when the operator
     # asks for it. The header and the Digital Twin keep showing the ACTIVE
     # scenario, so the two are always distinguishable.
+    # THE OBJECT SOURCE, resolved once per render: what is available, what the
+    # operator drafted, and what the run on screen actually used.
+    source_state = object_source_state()
+    run_source = PerceptionSource(source_state.current)
+
     running_stages = ("WAIT_FOR_OPERATOR_APPROVAL", "PICK_ITEM", "VERIFY_PICK",
                       "PLACE_ITEM", "VERIFY_PLACEMENT", "UPDATE_CONTAINER_STATE",
                       "NEXT_ITEM", "REPLAN")
@@ -751,12 +860,24 @@ def api_state():
         # THE THIRD AXIS, reported beside the other two and never folded into
         # either. The frontend shows the Physical Perception panel from this and
         # from nothing else.
+        #
+        # `source` here is THE RUNNING RUN'S — provenance, not configuration.
+        # The operator's selection for the NEXT run is `object_source.selected`,
+        # and the two are deliberately different fields: an operator who has
+        # picked the camera for the next run is still watching a preset run, and
+        # a panel that showed one number for both would be lying about one of
+        # them.
         "perception": {
-            "source": PERCEPTION_SOURCE.value,
-            "label": PERCEPTION_SOURCE.label,
-            "detail": PERCEPTION_SOURCE.detail,
-            "physical": PERCEPTION_SOURCE.is_physical,
+            "source": run_source.value,
+            "label": run_source.label,
+            "detail": run_source.detail,
+            "physical": run_source.is_physical,
+            "provenance": run_source.provenance,
         },
+        # WHERE THE NEXT BATCH OF OBJECTS COMES FROM: capability, draft, and
+        # what is running. Per run and switchable at runtime — no restart, and
+        # no application-wide "camera mode".
+        "object_source": source_state.to_dict(),
         "ts": time.time(),
     })
     return payload
@@ -834,7 +955,10 @@ def api_topology():
     what it does — one node, two possible implementations, the same edges.
     """
     topology = {**TOPOLOGY, "nodes": [dict(n) for n in TOPOLOGY["nodes"]]}
-    if PERCEPTION_SOURCE.is_physical:
+    # THE RUNNING RUN'S source, so the graph describes what actually produced
+    # the objects on screen — not what the operator has drafted for the next
+    # one.
+    if PerceptionSource(object_source_state().current).is_physical:
         for node in topology["nodes"]:
             if node["id"] == "perception":
                 node["label"] = "Physical perception"
@@ -892,11 +1016,18 @@ def _perception_payload() -> Dict[str, Any]:
     that perception is simulated rather than returning an empty physical panel
     that could be read as a broken camera.
     """
+    # THE RUNNING RUN'S source, not a process-wide setting: the panel describes
+    # the batch WISEPACK is planning from. The selector's draft travels
+    # separately in `object_source`, because "running now" and "next run" are
+    # different answers and the panel shows both.
+    source_state = object_source_state()
+    run_source = PerceptionSource(source_state.current)
     payload: Dict[str, Any] = {
-        "perception_source": PERCEPTION_SOURCE.value,
-        "perception_source_label": PERCEPTION_SOURCE.label,
-        "perception_source_detail": PERCEPTION_SOURCE.detail,
-        "physical": PERCEPTION_SOURCE.is_physical,
+        "perception_source": run_source.value,
+        "perception_source_label": run_source.label,
+        "perception_source_detail": run_source.detail,
+        "physical": run_source.is_physical,
+        "object_source": source_state.to_dict(),
         # THE PROXY DISCLOSURE (§9). Unobtrusive, but always present in the
         # payload so the panel cannot render real detections without it.
         "proxy_note": (
@@ -911,15 +1042,36 @@ def _perception_payload() -> Dict[str, Any]:
         # "camera perception" as "physical robot".
         "independent_of_execution_backend": True,
     }
-    if not PERCEPTION_SOURCE.is_physical:
-        payload["health"] = {"source": PERCEPTION_SOURCE.value,
-                             "service_reachable": None}
+    client = perception_client()
+    if not run_source.is_physical:
+        # THE PANEL DOES NOT DISAPPEAR because this run came from a preset.
+        #
+        # The camera is a capability of the deployment, and an operator about to
+        # switch to it needs to see whether it is there — "Camera: connected,
+        # Detector: ready, Current run source: Preset scenario" is exactly the
+        # state that makes the switch an informed one. Hiding the whole panel
+        # made the capability invisible until after a restart, which is the
+        # behaviour this change removes.
+        payload["health"] = (client.health() if source_state.camera_available
+                             else {"source": run_source.value,
+                                   "service_reachable": None})
+        payload["camera_available"] = source_state.camera_available
+        payload["camera_unavailable_reason"] = (
+            source_state.camera_unavailable_reason)
+        # NO BATCH, because this run has none: its objects were generated. The
+        # panel says so rather than showing a camera batch from an earlier run
+        # beside a plan that has nothing to do with it.
         payload["batch"] = None
         payload["scene_objects"] = []
+        if source_state.camera_available:
+            payload["live_url"] = client.live_url
+            payload["annotated_url"] = "/api/perception/image/annotated"
+            payload["raw_url"] = "/api/perception/image/raw"
         return payload
 
-    client = perception_client()
     payload["health"] = client.health()
+    payload["camera_available"] = source_state.camera_available
+    payload["camera_unavailable_reason"] = source_state.camera_unavailable_reason
     payload["live_url"] = client.live_url
     payload["annotated_url"] = "/api/perception/image/annotated"
     payload["raw_url"] = "/api/perception/image/raw"
@@ -964,11 +1116,15 @@ def api_perception_image(kind: str):
     from fastapi.responses import Response                        # noqa: PLC0415
     if kind not in ("annotated", "raw", "snapshot"):
         raise HTTPException(status_code=404, detail=f"unknown image {kind!r}")
-    if not PERCEPTION_SOURCE.is_physical:
+    # KEYED ON THE CAPABILITY, not on the selected source. A live preview is
+    # useful precisely while deciding whether to switch to the camera, and the
+    # frames come from the service rather than from any run.
+    usable, reason = camera_capability()
+    if not usable:
         raise HTTPException(
             status_code=409,
-            detail=("perception source is `sim` — there is no camera. Start "
-                    "with WISEPACK_PERCEPTION_SOURCE=camera."))
+            detail=("the physical camera is not available: "
+                    + (reason or "no reason reported")))
     image, error = perception_client().image(kind)
     if image is None:
         raise HTTPException(status_code=503, detail=error)
@@ -983,8 +1139,23 @@ def api_draft(payload: Dict[str, Any]):
     `reset` ("Generate & plan"). Recording it server-side is what lets the draft
     survive a page switch to Container Inventory or Diagnostics and back.
     """
+    incoming = dict(payload or {})
+    # THE OBJECT SOURCE IS NOT AN ORDINARY DRAFT FIELD. Every other setting is a
+    # preference the next run will honour; this one names a capability that may
+    # not exist, so it is validated here as well as on the command path. The
+    # draft form posts the whole form on any change, and a stale `camera` in it
+    # must not be able to re-select a camera that has since gone away.
+    if "object_source" in incoming:
+        # DROPPED, NOT RAISED, and checked without an exception handler: the
+        # operator was editing the preset, not the source, and failing their
+        # edit over a field they did not touch would be baffling. The source
+        # then keeps whatever is actually in force. Selecting a source
+        # DELIBERATELY goes through `set_object_source`, which refuses loudly.
+        if str(incoming.get("object_source") or "") not in (
+                object_source_state().available):
+            incoming.pop("object_source")
     with STATE.lock:
-        for key, value in (payload or {}).items():
+        for key, value in incoming.items():
             if key in STATE.settings:
                 STATE.settings[key] = value
         STATE.settings_touched = True
@@ -1282,14 +1453,49 @@ def _apply_command_locked(engine: WorkflowEngine, command: str,
         engine.acknowledge_anomaly(str(args.get("operator", "dashboard operator")))
         return {"ok": True}
 
+    if command == "set_object_source":
+        # THE DRAFT ONLY. The run on screen keeps its own source, its plan and
+        # its approval until the operator actually starts the next acquisition.
+        state = object_source_state()
+        source = resolve_object_source(str(args.get("source", "")),
+                                       state.available,
+                                       fallback=state.selected)
+        STATE.settings["object_source"] = source.value
+        STATE.settings_touched = True
+        return {"ok": True, "object_source": source.value,
+                "label": source.selector_label,
+                "action_label": source.action_label,
+                "current": state.current,
+                "changes_next_run": source.value != state.current}
+
     if command == "detect_physical_objects":
-        # REFUSED, NOT SILENTLY SIMULATED, when there is no physical source.
-        # Running the simulator behind a button labelled "Detect physical
-        # objects" is the exact deception §15 forbids.
-        if not PERCEPTION_SOURCE.is_physical:
+        # REFUSED, NOT SILENTLY SIMULATED. A control labelled "detect" that
+        # returns generated objects is the exact deception §15 forbids — so an
+        # unavailable camera raises here, with the capability's own reason, and
+        # no preset scenario is produced in its place.
+        usable, reason = camera_capability()
+        if not usable:
             raise ValueError(
-                "perception source is `sim` — there is no camera to detect "
-                "with. Restart with WISEPACK_PERCEPTION_SOURCE=camera.")
+                "the physical camera is not available as an object source: "
+                + (reason or "no reason reported"))
+        # The acquisition button carries the whole scenario form, exactly as
+        # "Generate & plan" does — the container spec and the packaging target
+        # still come from it even when the objects come from a camera.
+        STATE.settings.update({k: v for k, v in args.items()
+                               if k in STATE.settings})
+        awaiting = engine.config.perception_source.is_physical and not engine.detected
+        if not engine.config.perception_source.is_physical or awaiting:
+            # THE RUN ON SCREEN CAME FROM A PRESET (or is a camera run that has
+            # not acquired yet), so the objects are about to come from somewhere
+            # else entirely: start a NEW run rather than grafting a camera batch
+            # onto a generated scenario. The old approval goes with the old
+            # engine, which is the point.
+            STATE.settings["object_source"] = PerceptionSource.CAMERA.value
+            STATE.settings_touched = True
+            STATE.engine = engine = start_run(STATE.settings, acquire=False)
+            STATE.events.clear()
+            for event in engine.log.events():
+                STATE.events.append(event.to_dict())
         STATE.auto_step = False
         batch = perception_client().detect()
         try:
@@ -1330,11 +1536,22 @@ def _apply_command_locked(engine: WorkflowEngine, command: str,
                                if k in STATE.settings})
         STATE.events.clear()
         STATE.notice = ""
-        STATE.engine = start_run(STATE.settings)
+        # A RESET IS WHERE THE DRAFT SOURCE BECOMES REAL — and a camera run
+        # starts empty, waiting for a detection, rather than pretending to
+        # acquire a batch this call cannot wait for.
+        state = object_source_state()
+        source = resolve_object_source(
+            args.get("object_source"), state.available,
+            fallback=state.selected)
+        STATE.settings["object_source"] = source.value
+        STATE.engine = start_run(STATE.settings,
+                                 acquire=not source.is_physical)
         STATE.auto_step = False
         for event in STATE.engine.log.events():
             STATE.events.append(event.to_dict())
-        return {"ok": True, "scenario_id": STATE.engine.scenario.scenario_id}
+        return {"ok": True, "scenario_id": STATE.engine.scenario.scenario_id,
+                "object_source": source.value,
+                "awaiting_detection": source.is_physical}
 
     if command == "write_artifacts":
         _write_artifacts_locked()
@@ -1487,8 +1704,12 @@ if __name__ == "__main__":
     SOURCE = args.source
     STATE.source = args.source
     if args.perception_source:
+        # THE INITIAL SELECTION. It seeds the draft the dashboard opens on; the
+        # operator changes the object source per run afterwards, in the same
+        # session, without restarting anything.
         os.environ["WISEPACK_PERCEPTION_SOURCE"] = args.perception_source
         PERCEPTION_SOURCE = resolve_perception_source(args.perception_source)
+        STATE.settings["object_source"] = PERCEPTION_SOURCE.value
     if args.preset:
         STATE.settings["preset"] = args.preset
     if args.seed is not None:

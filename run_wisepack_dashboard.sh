@@ -232,15 +232,51 @@ fi
 # reach it from the orchestrator inside the CONTAINERIZED Vulcanexus stack, which
 # is where the WISEPACK-domain perception topics are published. Nothing here
 # installs or sources a host ROS 2.
-if [ "${WISEPACK_PERCEPTION_SOURCE:-sim}" = "camera" ]; then
+# TWO WAYS TO ASK FOR THE CAMERA, and they mean different things.
+#
+#   WISEPACK_PERCEPTION_SOURCE=camera   start this session ON the camera. The
+#                                       first run detects, and a camera that
+#                                       cannot be made available ABORTS the
+#                                       launch (exit 6) rather than quietly
+#                                       becoming a generated scenario.
+#   WISEPACK_PERCEPTION_ENABLE=1        have the camera READY. The session
+#                                       starts on the preset workflow and the
+#                                       operator switches to the camera from the
+#                                       dashboard whenever they like. A camera
+#                                       that fails to start is a WARNING here,
+#                                       not a failure: nothing has been claimed
+#                                       yet, and preset runs are unaffected.
+#
+# Neither removes the other source, and neither has to be set again to switch:
+# the object source is chosen per run, at runtime, in the dashboard. The service
+# can also be started by hand at any time — the dashboard notices it without a
+# restart, because availability is a live question, not a launch decision.
+PERCEPTION_WANTED="${WISEPACK_PERCEPTION_SOURCE:-sim}"
+if [ "$PERCEPTION_WANTED" = "camera" ]; then
     if ! perception_ensure_service "$REPO"; then
-        echo "[perception] ABORTING: camera perception was requested and no" >&2
-        echo "[perception]           detector is available. WISEPACK will not" >&2
-        echo "[perception]           start with simulated perception instead —" >&2
-        echo "[perception]           that would claim a camera it does not have." >&2
-        echo "[perception]           Use WISEPACK_PERCEPTION_SOURCE=sim to run" >&2
-        echo "[perception]           the simulated demonstrator." >&2
+        echo "[perception] ABORTING: camera perception was requested as the" >&2
+        echo "[perception]           INITIAL object source and no detector is" >&2
+        echo "[perception]           available. WISEPACK will not start with a" >&2
+        echo "[perception]           generated scenario instead — that would" >&2
+        echo "[perception]           claim a camera it does not have." >&2
+        echo "[perception]           Start on presets with" >&2
+        echo "[perception]           WISEPACK_PERCEPTION_SOURCE=sim (the" >&2
+        echo "[perception]           default), or make the camera optional with" >&2
+        echo "[perception]           WISEPACK_PERCEPTION_ENABLE=1." >&2
         exit 6
+    fi
+elif [ "${WISEPACK_PERCEPTION_ENABLE:-0}" = "1" ]; then
+    echo "[perception] camera capability requested — the session starts on the"
+    echo "[perception] preset workflow; switch the dashboard's Object source to"
+    echo "[perception] Physical camera whenever you like."
+    if ! perception_ensure_service "$REPO"; then
+        # NOT FATAL. Nothing has claimed a camera yet: preset scenarios work
+        # exactly as they always have, and the dashboard reports the camera
+        # source as unavailable with the reason instead of breaking WISEPACK.
+        echo "[perception] WARNING: the camera could not be made available." >&2
+        echo "[perception]          Preset scenarios are unaffected; the" >&2
+        echo "[perception]          dashboard will show Physical camera as" >&2
+        echo "[perception]          unavailable until a service is running." >&2
     fi
 fi
 
@@ -281,7 +317,7 @@ if [ "$MODE" = "sim" ]; then
         --name wisepack-dashboard-sim
         --net=host
         -e "WISEPACK_DASH_PORT=$PORT" -e "WISEPACK_PRESET=$PRESET" -e "WISEPACK_SEED=$SEED"
-        -e WISEPACK_PERCEPTION_SOURCE -e WISEPACK_PERCEPTION_SERVICE_URL
+        -e WISEPACK_PERCEPTION_SOURCE -e WISEPACK_PERCEPTION_ENABLE -e WISEPACK_PERCEPTION_SERVICE_URL
         -e WISEPACK_PHYSICAL_PROXY_DIAMETER_MM -e WISEPACK_PHYSICAL_PROXY_LENGTH_MM
         -e WISEPACK_PHYSICAL_PROXY_WALL_MM -e WISEPACK_PHYSICAL_PROXY_MATERIAL
         -e WISEPACK_PHYSICAL_PROXY_GROUP -e WISEPACK_PHYSICAL_FRAME_ID
@@ -626,7 +662,7 @@ fi
 
 echo "[dashboard] live mode ($SOURCE) — WISEPACK ROS 2/DDS stack + dashboard"
 echo "[dashboard] execution backend: $EXECUTION_BACKEND"
-echo "[dashboard] perception source: ${WISEPACK_PERCEPTION_SOURCE:-sim}"
+echo "[dashboard] initial object source: ${WISEPACK_PERCEPTION_SOURCE:-sim} (switchable in the dashboard)"
 echo "[dashboard] open $URL   (Ctrl-C to stop everything)"
 open_browser
 
@@ -651,7 +687,7 @@ DOCKER_RUN=(docker run --rm -i $([ -t 1 ] && echo -t) \
     -e "WISEPACK_MODE=$MODE" \
     -e WISEPACK_SKIP_BUILD \
     -e ORION \
-    -e WISEPACK_PERCEPTION_SOURCE -e WISEPACK_PERCEPTION_SERVICE_URL \
+    -e WISEPACK_PERCEPTION_SOURCE -e WISEPACK_PERCEPTION_ENABLE -e WISEPACK_PERCEPTION_SERVICE_URL \
     -e WISEPACK_PHYSICAL_PROXY_DIAMETER_MM -e WISEPACK_PHYSICAL_PROXY_LENGTH_MM \
     -e WISEPACK_PHYSICAL_PROXY_WALL_MM -e WISEPACK_PHYSICAL_PROXY_MATERIAL \
     -e WISEPACK_PHYSICAL_PROXY_GROUP -e WISEPACK_PHYSICAL_FRAME_ID \

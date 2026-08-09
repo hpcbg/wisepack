@@ -269,14 +269,39 @@ def test_the_active_scenario_is_reported_separately_from_the_draft():
 
 
 def test_generate_and_plan_is_the_only_path_from_draft_to_active():
+    """ONE button turns the draft into a run — whichever source it acquires from.
+
+    It sends `reset` for a preset and `detect_physical_objects` for the camera,
+    and both carry `readSettings()`: the container spec and the packaging target
+    still come from the form even when the objects come from a frame.
+    """
     html = _read(INDEX)
     assert '$("#c-reset").onclick' in html
-    assert 'command("reset", readSettings())' in html
+    assert "const settings = readSettings();" in html
+    assert 'command("detect_physical_objects", settings)' in html
+    assert 'command("reset", settings)' in html
     # A dropdown change must not start anything.
     changed = html[html.index("async function onDraftChanged()"):
                    html.index("function syncScenarioControls(")]
-    for forbidden in ('command("reset"', "readSettings()"):
+    for forbidden in ('command("reset"', 'command("detect_physical_objects"',
+                      "readSettings()"):
         assert forbidden not in changed, "changing a control must not start a run"
+
+
+def test_changing_the_object_source_does_not_start_a_run():
+    """The selector edits a DRAFT. It must not acquire anything by itself.
+
+    `set_object_source` is the only command it sends, and that command is
+    defined as touching nothing that is running.
+    """
+    html = _read(INDEX)
+    start = html.index('objsrc.addEventListener("change"')
+    handler = html[start:start + 1400]
+    assert 'command("set_object_source"' in handler
+    for forbidden in ('command("reset"', 'command("detect_physical_objects"',
+                      "readSettings()"):
+        assert forbidden not in handler, (
+            "changing the object source must not start a run")
 
 
 def test_an_active_run_requires_explicit_confirmation_before_being_discarded():
@@ -284,7 +309,21 @@ def test_an_active_run_requires_explicit_confirmation_before_being_discarded():
     assert "window.confirm" in html
     assert "A PHYSICAL Isaac Sim run is in progress" in html, \
         "a physical run deserves its own, stronger wording"
-    assert "Reset it and generate a new plan?" in html
+    # The prompt names what the button is about to do, which now depends on the
+    # selected object source: "generate a new plan" or "detect a new batch".
+    assert 'Reset it and ${verb}?' in html
+    assert '"detect a new batch"' in html and '"generate a new plan"' in html
+
+
+def test_switching_the_object_source_is_confirmed_before_a_run_is_discarded():
+    """A source change is the consequence an operator is least likely to expect.
+
+    They have pressed this button a hundred times to regenerate a scenario; the
+    one time it also swaps where the objects come from, it has to say so.
+    """
+    html = _read(INDEX)
+    assert "This also switches the object source from" in html
+    assert "os.changes_next_run" in html
 
 
 def test_the_generate_button_renames_itself_when_a_run_is_active():
@@ -293,13 +332,29 @@ def test_the_generate_button_renames_itself_when_a_run_is_active():
     # text, so they cannot drift. It moved into a helper when the robot selector
     # started quoting it too; the property is unchanged — one source, three
     # readers.
-    assert ('return s.run_active ? "Reset run & generate" : "Generate & plan";'
-            in html)
+    assert 'return os.selected === "camera" ? "Reset run & detect" : "Reset run & generate";' in html
     assert "const genLabel = genLabelFor(s);" in html
     assert "gen.textContent = genLabel" in html
     assert 'press “${genLabel}”' in html, "the help must quote the actual button"
     assert "${genLabelFor(s)}" in html, \
         "the robot help must quote the same button"
+
+
+def test_the_acquisition_button_is_named_after_the_selected_object_source():
+    """One button, named for what pressing it will actually do.
+
+    "Generate & plan" with the camera selected would either be a dead control or
+    a silent fall back to the simulator. The label comes from the backend, which
+    is also what validates the selection, so the two cannot disagree.
+    """
+    html = _read(INDEX)
+    assert "os.action_label" in html, \
+        "the button label must come from the backend's object-source state"
+    # Both labels exist in the domain, and neither is hard-coded in the frontend
+    # as the only possibility.
+    core = _read(os.path.join(REPO, "wisepack_ws", "src", "wisepack_core",
+                              "wisepack_core", "perception.py"))
+    assert '"sim": "Generate & plan", "camera": "Detect & plan"' in core
 
 
 def test_the_draft_survives_page_switches():

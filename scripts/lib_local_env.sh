@@ -69,7 +69,8 @@ wisepack_load_local_env() {
             # the same reason as the two above — an allowlisted key is honoured,
             # and a key that is NOT listed is silently ignored, which would
             # make a documented variable quietly do nothing.
-            WISEPACK_PERCEPTION_SOURCE|WISEPACK_PERCEPTION_DETECTOR|\
+            WISEPACK_PERCEPTION_SOURCE|WISEPACK_PERCEPTION_ENABLE|\
+            WISEPACK_PERCEPTION_DETECTOR|\
             WISEPACK_PERCEPTION_SERVICE_URL|WISEPACK_PERCEPTION_CAMERA|\
             WISEPACK_PERCEPTION_READY_TIMEOUT|WISEPACK_PERCEPTION_LOG|\
             WISEPACK_PERCEPTION_MODEL_PATH|WISEPACK_PERCEPTION_MODEL_CACHE|\

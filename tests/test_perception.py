@@ -1323,7 +1323,10 @@ def test_the_dashboard_panel_stays_domain_neutral():
         html = fh.read()
     assert 'id="perceppanel"' in html
     assert "Physical Perception" in html
-    assert "Detect physical objects" in html
+    # The acquisition control. Named for the ACTION, never for the object: it
+    # says "Detect & plan", not "Detect bottles".
+    assert 'id="c-detect-physical"' in html
+    assert "Detect &amp; plan" in html
     # THE PROXY DISCLOSURE IS SERVED FROM THE API, not hard-coded here, so the
     # markup never has to name the physical stand-in object at all. That is what
     # keeps the dashboard from becoming detector-specific (§18).

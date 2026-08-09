@@ -284,9 +284,43 @@ def test_sim_perception_never_creates_the_perception_environment(tmp_path):
 def test_the_launcher_only_acts_on_the_exact_camera_value():
     """Guarded on `camera`, so a future source cannot start it by luck."""
     text = open(DASHBOARD, encoding="utf-8").read()
-    assert '"${WISEPACK_PERCEPTION_SOURCE:-sim}" = "camera"' in text
+    assert 'PERCEPTION_WANTED="${WISEPACK_PERCEPTION_SOURCE:-sim}"' in text
+    assert '[ "$PERCEPTION_WANTED" = "camera" ]' in text
     # Unset must behave as `sim` — the `:-sim` default is what guarantees it.
     assert "WISEPACK_PERCEPTION_SOURCE:-sim" in text
+
+
+def test_the_camera_can_be_made_available_without_starting_on_it():
+    """`WISEPACK_PERCEPTION_ENABLE=1` is a CAPABILITY, not a mode.
+
+    The session opens on the preset workflow and the operator switches source
+    from the dashboard. A camera that fails to start is a WARNING on this path,
+    not a launch failure: nothing has claimed a camera yet, and preset runs must
+    be unaffected.
+    """
+    text = open(DASHBOARD, encoding="utf-8").read()
+    assert '[ "${WISEPACK_PERCEPTION_ENABLE:-0}" = "1" ]' in text
+
+    port = _free_port()
+    env = {
+        **os.environ,
+        "WISEPACK_PERCEPTION_ENABLE": "1",
+        "WISEPACK_PERCEPTION_VENV": "/nonexistent/venv",
+        "WISEPACK_PERCEPTION_AUTO_SETUP": "0",
+        "WISEPACK_PERCEPTION_SERVICE_URL": f"http://127.0.0.1:{_free_port()}",
+        "PORT": str(port),
+    }
+    env.pop("WISEPACK_PERCEPTION_SOURCE", None)
+    proc = subprocess.run(["timeout", "--signal=INT", "20", DASHBOARD, "sim"],
+                          capture_output=True, text=True, env=env, cwd=REPO,
+                          timeout=120)
+    combined = proc.stdout + proc.stderr
+    assert proc.returncode != EXIT_PERCEPTION_UNAVAILABLE, (
+        "an unavailable OPTIONAL camera must not abort the launch:\n" + combined)
+    assert "WARNING" in combined
+    assert "Preset scenarios are unaffected" in combined
+    # ... and the preset workflow really did start.
+    assert "sim mode — no ROS" in combined, combined
 
 
 # --------------------------------------------------------------------------- #
@@ -570,7 +604,14 @@ def test_the_launcher_aborts_rather_than_running_simulated_perception():
     combined = proc.stdout + proc.stderr
     assert proc.returncode == EXIT_PERCEPTION_UNAVAILABLE, combined
     assert "ABORTING" in combined
-    assert "will not" in combined and "simulated perception" in combined
+    # NO SILENT SUBSTITUTION. The camera was asked for as the INITIAL source and
+    # could not be provided, so the launch stops and says so — it does not open
+    # on a generated scenario while the operator believes a camera is live.
+    assert "will not start with a" in combined
+    assert "generated scenario instead" in combined
+    # And it names both ways out: start on presets, or make the camera optional.
+    assert "WISEPACK_PERCEPTION_SOURCE=sim" in combined
+    assert "WISEPACK_PERCEPTION_ENABLE=1" in combined
     # The dashboard must never have been started.
     assert "sim mode — no ROS" not in proc.stdout
 

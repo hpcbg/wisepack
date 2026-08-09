@@ -339,7 +339,16 @@
     <div class="panel">
       <h3>Scenario</h3>
       <div class="ctl">
-        <label class="f">Preset<select id="s-preset"></select><div class="note" id="s-lock-note" style="margin-top:4px"></div></label>
+        <!-- OBJECT SOURCE — where the NEXT run's objects come from.
+             A per-run selection, not an application mode: changing it touches
+             nothing that is running, and the run on screen keeps its own
+             source, its plan and its approval until the operator starts the
+             next acquisition. The options are filled from the backend, which
+             also says whether the camera is actually available. -->
+        <label class="f" id="s-objsrc-field">Object source
+          <select id="s-objsrc"></select>
+          <div class="note" id="s-objsrc-note" style="margin-top:4px"></div></label>
+        <label class="f" id="s-preset-field">Preset<select id="s-preset"></select><div class="note" id="s-lock-note" style="margin-top:4px"></div></label>
         <!-- ROBOT. The options are EMPTY here on purpose and are filled from
              GET /api/config/robots. A hard-coded <option> list would be a second
              robot list that agrees with config/isaac_robots.yaml only until one
@@ -364,6 +373,11 @@
         <label class="f">Dynamic events<input id="s-dyn" type="checkbox" checked/></label>
       </div>
       <div class="btns">
+        <!-- ONE acquisition button, relabelled by the selected source:
+             "Generate & plan" for a preset, "Detect & plan" for the camera.
+             Two buttons, one of which is inapplicable, is how an operator ends
+             up pressing the wrong one — or reading the disabled one as
+             broken. -->
         <button class="pri" id="c-reset">Generate &amp; plan</button>
         <button id="c-strategies">Compare strategies</button>
       </div>
@@ -407,9 +421,16 @@
         <button data-v="raw">analysed frame</button>
         <button data-v="live">live camera</button>
       </div>
+      <!-- THE SAME ACTION as the Scenario panel's acquisition button, not a
+           second variant of it: both send `detect_physical_objects`, which
+           acquires a batch and — when the run on screen came from a preset —
+           starts a camera run first. Two controls that did different versions
+           of one operation would be the ambiguity worth avoiding; two entry
+           points to the identical one are a convenience. -->
       <div class="btns">
-        <button class="pri" id="c-detect-physical">Detect physical objects</button>
+        <button class="pri" id="c-detect-physical">Detect &amp; plan</button>
       </div>
+      <div class="note" id="percep-action-note" style="margin-top:6px"></div>
       <div class="scroll"><table id="percep-objects"><tbody></tbody></table></div>
       <div class="note" id="percep-proxy" style="margin-top:8px"></div>
       <div class="note" id="percep-confidence" style="margin-top:4px"></div>
@@ -1268,6 +1289,10 @@ function readSettings() {
   return {
     preset: $("#s-preset").value, seed: parseInt($("#s-seed").value || "42", 10),
     strategy: $("#s-strategy").value,
+    // WHERE THE NEXT RUN'S OBJECTS COME FROM. Carried on the acquisition, which
+    // is the only path that turns the draft into a running run — exactly like
+    // the preset and the robot above it.
+    object_source: $("#s-objsrc") ? $("#s-objsrc").value : null,
     item_count: parseInt($("#s-count").value || "0", 10) || null,
     length_range_mm: parsePair($("#s-len").value),
     diameter_range_mm: parsePair($("#s-dia").value),
@@ -1283,6 +1308,7 @@ function readSettings() {
     // name of an arm that never moved.
     robot_id: (STATE && STATE.robot_selector && $("#s-robot"))
       ? ($("#s-robot").value || null) : null,
+    object_source: $("#s-objsrc") ? $("#s-objsrc").value : null,
   };
 }
 // THE DRAFT. The scenario controls edit a draft for the NEXT run; they never
@@ -1312,6 +1338,7 @@ function currentDraft() {
     strategy: $("#s-strategy") ? $("#s-strategy").value : null,
     robot_id: (STATE && STATE.robot_selector && $("#s-robot"))
       ? ($("#s-robot").value || null) : null,
+    object_source: $("#s-objsrc") ? $("#s-objsrc").value : null,
   };
 }
 
@@ -1335,12 +1362,89 @@ async function onDraftChanged() {
 // anything: an active run is a reason to CONFIRM, not a reason to lock the
 // operator out of the only control that could start a different one.
 function genLabelFor(s) {
-  return s.run_active ? "Reset run & generate" : "Generate & plan";
+  // ONE BUTTON, NAMED AFTER WHAT IT WILL ACTUALLY DO. With the camera selected
+  // it detects; with a preset it generates. A control labelled "Generate" that
+  // ran a detector — or sat disabled beside a second button — is how an
+  // operator ends up unsure which one applies.
+  const os = (s && s.object_source) || {};
+  const base = os.action_label || "Generate & plan";
+  if (!s || !s.run_active) return base;
+  return os.selected === "camera" ? "Reset run & detect" : "Reset run & generate";
+}
+
+// The object-source selector, built from the backend. An unavailable source is
+// offered but DISABLED with its reason, never hidden: "Physical camera
+// (unavailable — no perception service is answering)" tells an operator what to
+// do; a missing option tells them nothing.
+let OBJSRC_OPTIONS_KEY = "";
+
+function fillObjectSources(s) {
+  const sel = $("#s-objsrc");
+  const os = (s && s.object_source) || {};
+  if (!sel || !os.options) return;
+  const key = JSON.stringify(os.options.map(o => [o.value, o.available, o.reason]));
+  if (key !== OBJSRC_OPTIONS_KEY) {
+    OBJSRC_OPTIONS_KEY = key;
+    const keep = sel.value;
+    sel.textContent = "";
+    for (const opt of os.options) {
+      const label = opt.available ? opt.label
+        : `${opt.label} — unavailable`;
+      const node = el("option", { value: opt.value }, label);
+      node.disabled = !opt.available;
+      node.title = opt.reason || opt.detail || "";
+      sel.append(node);
+    }
+    if (keep && [...sel.options].some(o => o.value === keep && !o.disabled)) {
+      sel.value = keep;
+    }
+  }
+  // Seeded from the backend while untouched, then owned by the operator — the
+  // same rule the preset and the robot follow, so a poll can never revert a
+  // selection mid-edit.
+  if (!DRAFT_TOUCHED && os.selected && sel.value !== os.selected
+      && [...sel.options].some(o => o.value === os.selected)) {
+    sel.value = os.selected;
+  }
+}
+
+// Grey out and disable the fields that describe a GENERATED batch while the
+// camera is selected. Called at the end of syncScenarioControls — see there.
+function applyObjectSourceEmphasis() {
+  const sel = $("#s-objsrc");
+  const cameraSelected = Boolean(sel) && sel.value === "camera";
+  for (const id of ["s-preset", "s-count", "s-len", "s-dia"]) {
+    const node = $("#" + id);
+    if (!node) continue;
+    const field = (node.closest && node.closest("label")) || node;
+    field.style.opacity = cameraSelected ? "0.45" : "";
+    node.disabled = cameraSelected;
+    node.title = cameraSelected
+      ? "the next run's objects come from the camera — this field describes the "
+        + "generated scenario only"
+      : "";
+  }
 }
 
 function syncScenarioControls(s) {
   const p = $("#s-preset");
   if (!p) return;
+
+  fillObjectSources(s);
+  const objsrc = (s.object_source || {});
+  const objNote = $("#s-objsrc-note");
+  if (objNote) {
+    const bits = [];
+    if (objsrc.current_label) bits.push(`Running now: ${objsrc.current_label}`);
+    if (objsrc.changes_next_run && objsrc.selected_label) {
+      bits.push(`Next run: ${objsrc.selected_label}`);
+    }
+    if (objsrc.selected_detail) bits.push(objsrc.selected_detail);
+    if (!objsrc.camera_available && objsrc.camera_unavailable_reason) {
+      bits.push(`Physical camera unavailable — ${objsrc.camera_unavailable_reason}`);
+    }
+    objNote.textContent = bits.join(" · ");
+  }
 
   const rb = $("#s-robot");
   if (!DRAFT_TOUCHED) {
@@ -1459,6 +1563,18 @@ function syncScenarioControls(s) {
     opt.textContent = why ? `${base} — unavailable (${why})` : base;
   }
 
+  // PRESET FIELDS ARE DE-EMPHASISED, NOT REMOVED, while the camera is selected.
+  // They still describe the container and the packaging target the plan is
+  // built against; what they no longer decide is where the OBJECTS come from.
+  // Removing them would make the switch look destructive and would hide the
+  // settings the operator is about to come back to.
+  //
+  // LAST, DELIBERATELY. The loop above re-enables every scenario control on
+  // every render, so anything applied before it is undone — which is exactly
+  // what happened: the item-count field greyed out and the preset dropdown did
+  // not, because only one of them was in that list.
+  applyObjectSourceEmphasis();
+
   const active = (s.active_scenario || {});
   const draftPreset = p.value;
   // Same label the button carries. One source for both, because they drifted
@@ -1569,9 +1685,18 @@ $("#c-reset").onclick = async () => {
   // scenario; changing a dropdown never is.
   if (STATE.run_active) {
     const physical = (STATE.execution || {}).physical;
+    const os = STATE.object_source || {};
+    const verb = os.selected === "camera" ? "detect a new batch" : "generate a new plan";
     let what = physical
-      ? "A PHYSICAL Isaac Sim run is in progress. Reset it and generate a new plan?"
-      : "A run is active or awaiting your decision. Reset it and generate a new plan?";
+      ? `A PHYSICAL Isaac Sim run is in progress. Reset it and ${verb}?`
+      : `A run is active or awaiting your decision. Reset it and ${verb}?`;
+    if (os.changes_next_run && os.current_label && os.selected_label) {
+      // A SOURCE CHANGE IS A BIGGER THING THAN A NEW SCENARIO, and it is the
+      // one the operator is least likely to have in mind while pressing a
+      // button they have pressed a hundred times.
+      what += `\n\nThis also switches the object source from ` +
+              `${os.current_label} to ${os.selected_label}.`;
+    }
     if (STATE.robot_change_requires_reset) {
       // A ROBOT SWITCH IS A BIGGER THING THAN A NEW SCENARIO. The adapter and
       // the USD model are chosen when Isaac starts, so this restarts the
@@ -1590,7 +1715,17 @@ $("#c-reset").onclick = async () => {
     }
     if (!window.confirm(what)) return;
   }
-  await command("reset", readSettings());
+  // ONE BUTTON, TWO ACQUISITIONS. With the camera selected the acquisition IS
+  // the detection: `detect_physical_objects` starts the camera run and fills it
+  // from a real frame. Sending `reset` there would create a run with no objects
+  // and leave the operator looking at a button that appeared to do nothing.
+  const selected = ((STATE.object_source || {}).selected) || "sim";
+  const settings = readSettings();
+  if (selected === "camera") {
+    await command("detect_physical_objects", settings);
+  } else {
+    await command("reset", settings);
+  }
   // The draft has become the active scenario; stop treating it as pending.
   DRAFT_TOUCHED = false;
   try { localStorage.removeItem(draftKey()); } catch (e) {}
@@ -1631,6 +1766,31 @@ async function refreshState() {
       node.dataset.draftBound = "1";
       node.addEventListener("change", onDraftChanged);
     }
+  }
+  // THE OBJECT SOURCE GOES THROUGH THE COMMAND PATH, not through the local
+  // draft endpoint. In a live mode the orchestrator owns the selection and
+  // validates it against what is actually available; posting it as a local
+  // draft would leave the two disagreeing, and would let the UI offer a camera
+  // this deployment does not have. A refusal is reported and the selector
+  // snaps back to what the backend still says.
+  const objsrc = $("#s-objsrc");
+  if (objsrc && !objsrc.dataset.draftBound) {
+    objsrc.dataset.draftBound = "1";
+    objsrc.addEventListener("change", async () => {
+      await command("set_object_source", { source: objsrc.value });
+      await refreshState();
+      // THE BACKEND IS THE AUTHORITY for this one field, so the selector is
+      // snapped to whatever it now says. A refusal — an unavailable camera, a
+      // service that went away between the render and the click — therefore
+      // shows the reason in the notice AND leaves the control on the value that
+      // is actually in force, instead of displaying a selection nothing holds.
+      const settled = ((STATE || {}).object_source || {}).selected;
+      if (settled && objsrc.value !== settled
+          && [...objsrc.options].some(o => o.value === settled)) {
+        objsrc.value = settled;
+      }
+      syncScenarioControls(STATE);
+    });
   }
   renderHeader(STATE);
 }
@@ -1726,9 +1886,19 @@ async function refreshPerception() {
   const box = $("#perceppanel");
   if (!box) return;
   const doc = await api("/api/perception");
-  // Shown only for a real perception source. A "Physical Perception" heading
-  // over a simulated run would claim a camera that does not exist.
-  if (!doc || !doc.physical) { box.style.display = "none"; return; }
+  const os = (doc && doc.object_source) || {};
+  // SHOWN WHENEVER THE CAPABILITY EXISTS, not only while a camera run is on
+  // screen. The camera is a capability of this deployment, and an operator
+  // deciding whether to switch to it needs to see "Camera: connected, Model:
+  // loaded, Current run source: Preset scenario". Hiding the panel because the
+  // run happened to come from a preset made the capability invisible — which is
+  // what made switching feel like it needed a restart.
+  //
+  // Still hidden when there is no camera at all: a "Physical Perception"
+  // heading over a deployment with no detector would claim one that does not
+  // exist.
+  const haveCamera = Boolean(doc && (doc.physical || os.camera_available));
+  if (!haveCamera) { box.style.display = "none"; return; }
   box.style.display = "";
 
   const h = doc.health || {};
@@ -1738,9 +1908,14 @@ async function refreshPerception() {
   // Neither is the name of whoever wrote the implementation — that is
   // provenance and lives in Diagnostics.
   const detector = h.detector_display_name || h.detector || "";
+  // WHICH SOURCE THE RUNNING RUN USED — never the draft. An operator who has
+  // selected the camera for the next run is still watching a preset run, and
+  // one line claiming both would be wrong about one of them.
   $("#percep-source").textContent =
-    `Source: ${doc.perception_source_label || ""}` +
-    (detector ? ` · Detector: ${detector}` : "");
+    `Current run source: ${os.current_label || doc.perception_source_label || ""}` +
+    (detector ? ` · Detector: ${detector}` : "") +
+    (os.changes_next_run && os.selected_label
+      ? ` · Next run: ${os.selected_label}` : "");
   const badge = $("#percep-badge");
   // The badge tracks the CAMERA, not the panel's existence: a panel that always
   // says "CAMERA" while the camera is unplugged is worse than no badge.
@@ -1755,13 +1930,39 @@ async function refreshPerception() {
     percepTri(h.model_available, "available, not loaded", "unavailable", "unknown"), "unknown"));
   bits.push("Calibration: " + (h.calibration_valid ? "VALID"
     : (h.calibration_status || "unknown").toUpperCase()));
-  bits.push("Detected cylindrical objects: " + (b && b.status !== "error" ? b.count : "—"));
+  bits.push("Detected cylindrical objects: "
+    + (b && b.status !== "error" ? b.count
+       : (doc.physical ? "—" : "— (this run came from a preset)")));
   bits.push("Last detection: " + ((b && b.captured_at) || h.last_inference_at || "never"));
   if (doc.observation_stale) bits.push("OBSERVATION STALE");
   // The frame the coordinates are in, always named. Three numbers without a
   // frame are not a pose.
   if (b && b.frame_id) bits.push("Frame: " + b.frame_id);
   $("#percep-status").textContent = bits.join(" · ");
+
+  // The acquisition control, named for what pressing it will actually do. When
+  // a preset run is on screen it will also SWITCH the source, and saying so is
+  // the difference between an informed press and a surprise.
+  const detectBtn = $("#c-detect-physical");
+  if (detectBtn && !detectBtn.disabled) {
+    detectBtn.textContent = "Detect & plan";
+    detectBtn.disabled = !(os.camera_available !== false);
+  }
+  const actionNote = $("#percep-action-note");
+  if (actionNote) {
+    if (os.camera_available === false) {
+      actionNote.textContent = "Physical camera unavailable — "
+        + (os.camera_unavailable_reason || doc.camera_unavailable_reason || "");
+    } else if (!doc.physical) {
+      actionNote.textContent = "This run came from a preset. “Detect & plan” "
+        + "starts a new run from the camera — the same action as the Scenario "
+        + "panel’s button with Object source set to Physical camera. The current "
+        + "plan and its approval are replaced.";
+    } else {
+      actionNote.textContent = "Detecting again replaces the current "
+        + "observation and requires a fresh approval.";
+    }
+  }
 
   // FAILURES ARE SHOWN, never smoothed into "0 objects". A failed scan and an
   // empty table are different facts.

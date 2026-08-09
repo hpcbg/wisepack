@@ -269,10 +269,14 @@ OPERATOR_COMMANDS = (
     "compare_strategies",       # decision support: run + validate every strategy
     "inject_anomaly",           # SIMULATED Topic #2 anomaly (deterministic)
     "acknowledge_anomaly",      # operator acknowledges the held anomaly
-    # -- physical perception (§6). Rejected with a reason when the perception
-    # source is `sim`, rather than quietly doing nothing or quietly running the
-    # simulator and calling it a scan.
-    "detect_physical_objects",  # one-shot real detection -> replaces observations
+    # -- object source (§6). WHERE THE NEXT RUN'S OBJECTS COME FROM. A per-run
+    # selection, not an application mode: `set_object_source` edits the draft
+    # and touches nothing that is running, and the next `reset` /
+    # `detect_physical_objects` makes it authoritative. Rejected with a reason
+    # when the requested source is not available, rather than quietly falling
+    # back to the other one.
+    "set_object_source",        # choose preset|camera for the NEXT run (draft)
+    "detect_physical_objects",  # acquire a batch from the camera -> new run/revision
     # -- cut-aware HITL controls (brief §6) --
     "compare_cut_aware",        # generate the no-cut vs cut-aware comparison
     "select_cut_alternative",   # choose a specific cut alternative

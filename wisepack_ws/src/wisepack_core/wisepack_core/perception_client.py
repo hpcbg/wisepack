@@ -116,6 +116,40 @@ class PerceptionClient:
             "or point WISEPACK_PERCEPTION_SERVICE_URL at the host running it.")
         return health
 
+    def capability(self, health: Optional[Dict[str, Any]] = None
+                   ) -> Tuple[bool, str]:
+        """(camera source is usable, reason if not). NEVER raises.
+
+        THIS IS A LIVE QUESTION, ASKED REPEATEDLY — not a start-up decision.
+        An operator can start the perception service at any moment, from the
+        launcher or by hand, and the dashboard has to notice without being
+        restarted; equally, a service that dies mid-session must stop being
+        offered as a source. So availability is "a compatible service answered
+        just now", and the reason travels with the negative answer because
+        "Physical camera (unavailable)" with no explanation is a dead end.
+
+        `health` can be passed in when the caller has already fetched it, so a
+        page render costs one HTTP round trip rather than two.
+        """
+        document = self.health() if health is None else health
+        if not isinstance(document, dict):
+            return False, "the perception service returned an unreadable health document"
+        if not document.get("service_reachable"):
+            return False, (
+                f"no perception service is answering at {self.url}. Start "
+                "WISEPACK with WISEPACK_PERCEPTION_ENABLE=1 (or "
+                "WISEPACK_PERCEPTION_SOURCE=camera), or start the service by "
+                "hand — the dashboard picks it up without a restart.")
+        # REACHABLE IS NOT THE SAME AS USABLE. A service whose weights never
+        # arrived answers /health perfectly and fails every detection; offering
+        # it as a selectable source would move the failure to the moment the
+        # operator presses the button, which is the worst possible time.
+        if document.get("model_available") is False:
+            message = document.get("model", {}).get("message") or ""
+            return False, ("the perception service is running but has no "
+                           "detector weights. " + message).strip()
+        return True, ""
+
     def detect(self) -> ObservationBatch:
         """Request ONE detection. A failure comes back as a failed batch."""
         status, body, error = self._request("/api/v1/detect", method="POST",
