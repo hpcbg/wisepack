@@ -411,10 +411,11 @@ def foundationpose_capability(force: bool = False) -> Dict[str, Any]:
                 "./scripts/setup_foundationpose.sh."],
         }
     else:
-        # RGB-D CAMERA: FALSE, AND SAID SO. No depth camera is attached to this
-        # host. It is passed explicitly rather than defaulted inside the
-        # provider so the single place that decides it is visible here.
-        answer = provider.capability(rgbd_camera_available=False)
+        # THE WORKER ANSWERS THIS NOW. RGB-D acquisition lives in the
+        # container, so the camera's presence is the worker's observation, not
+        # a constant here — and a camera plugged in while WISEPACK runs is
+        # noticed without a restart, which a hard-coded False could never do.
+        answer = provider.capability()
     # WHO HOLDS THE CAMERA. Carried with the capability so the panel can say
     # what a method switch would require, rather than discovering it when two
     # providers both open one device.

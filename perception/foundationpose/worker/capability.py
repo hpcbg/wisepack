@@ -214,6 +214,21 @@ class Capabilities:
     def scorer_weights(self) -> Probe:
         return _weight_probe("scorer_weights", SCORER_DIR)
 
+    def rgbd_camera(self) -> Probe:
+        """Is an RGB-D camera usable BY THIS WORKER? Cheap; never cached.
+
+        Not cached because a camera can be plugged in while the container runs
+        and the dashboard must notice without a restart — the same rule the
+        weight probes follow.
+        """
+        try:
+            from camera import available                     # noqa: PLC0415
+        except Exception as exc:                             # noqa: BLE001
+            return Probe("rgbd_camera", False,
+                         f"the RGB-D acquisition module is unavailable: {exc}")
+        usable, reason = available()
+        return Probe("rgbd_camera", usable, "" if usable else reason)
+
     def datasets(self) -> Probe:
         if not os.path.isdir(DATASETS_DIR):
             return Probe("datasets", False,
@@ -259,7 +274,12 @@ class Capabilities:
         refiner = self.refiner_weights()
         scorer = self.scorer_weights()
         datasets = self.datasets()
+        camera = self.rgbd_camera()
 
+        # INFERENCE READINESS IS NOT CAMERA READINESS. The offline reference
+        # regression runs with no camera at all, so the camera is reported as
+        # its own capability and is NOT folded into `inference_available` —
+        # which answers "can this worker estimate a pose from data it is given".
         inference = (gpu.available and runtime.available
                      and refiner.available and scorer.available)
         blockers = [p.reason for p in (gpu, runtime, refiner, scorer)
@@ -278,6 +298,9 @@ class Capabilities:
             "scorer_weights_available": scorer.available,
             "refiner_weights_available": refiner.available,
             "inference_available": inference,
+            # THE CAMERA, SEPARATELY. Live acquisition needs both.
+            "rgbd_camera_available": camera.available,
+            "live_inference_available": bool(inference and camera.available),
             "last_error": self.last_error,
             # WHY, per capability. A single "unavailable" tells an operator
             # nothing about which of five different fixes to apply.
@@ -288,6 +311,7 @@ class Capabilities:
                 "refiner_weights": refiner.to_dict(),
                 "scorer_weights": scorer.to_dict(),
                 "datasets": datasets.to_dict(),
+                "rgbd_camera": camera.to_dict(),
             },
             "versions": dict(self._versions),
             "foundationpose_revision": revision,

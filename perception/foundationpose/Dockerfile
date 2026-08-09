@@ -137,6 +137,15 @@ RUN python -m pip install pybind11     && cd ${FOUNDATIONPOSE_DIR}/mycpp     && 
 # weights inside a WISEPACK artefact.
 RUN ln -sfn /weights ${FOUNDATIONPOSE_DIR}/weights
 
+# --- RealSense runtime deps -------------------------------------------------
+#
+# `pyrealsense2` ships the librealsense runtime in its wheel; these are the
+# system libraries that wheel links against for USB access. Installed here
+# rather than on the host: the container owns RGB-D acquisition.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        libusb-1.0-0 udev \
+    && rm -rf /var/lib/apt/lists/*
+
 # --- the WISEPACK worker ----------------------------------------------------
 COPY worker /opt/wisepack-fp-worker
 # `mycpp/build` is where CMake leaves that module. Upstream appends it to

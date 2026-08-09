@@ -46,6 +46,9 @@ WEIGHTS_DIR="${WISEPACK_FP_WEIGHTS_DIR:-$REPO/.cache-perception/foundationpose/w
 #: it is MOUNTED rather than copied — duplicating a 183 MB tree to satisfy a
 #: container layout would be waste, and a second copy is a second thing to drift.
 DATASETS_DIR="${WISEPACK_FP_DATASETS_DIR:-$(cd "$REPO/.." 2>/dev/null && pwd)/references}"
+#: Where the worker writes controlled RGB-D captures. WISEPACK-owned and
+#: git-ignored: these are measurements, not source, and they are large.
+CAPTURES_DIR="${WISEPACK_FP_CAPTURES_DIR:-$REPO/.cache-perception/rgbd-captures}"
 
 DO_BUILD=1
 DO_WEIGHTS=0
@@ -73,6 +76,41 @@ say() { echo "[foundationpose] $*"; }
 # --- preconditions ----------------------------------------------------------
 
 have_docker() { command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; }
+
+# --- RealSense USB passthrough ----------------------------------------------
+#
+# THE WORKER OWNS RGB-D ACQUISITION, so the container needs access to the
+# camera's USB node — and to NOTHING ELSE. `--privileged` would work and is
+# refused: it grants every device on the host to a container that needs one.
+#
+# NARROWEST THING THAT WORKS: `--device /dev/bus/usb/<bus>/<dev>` for the
+# RealSense itself, found by its Intel vendor id in sysfs. Not `/dev/video*` —
+# that is the planar webcam's identity and a RealSense presents several such
+# nodes anyway, none of which carry intrinsics, depth scale or alignment.
+#
+# THE TRADE-OFF, STATED: a USB node number changes when the camera is replugged,
+# so the worker must be restarted after a replug. That is the price of not
+# mounting the whole USB bus, and it is the right way round for a camera that is
+# plugged in once and left.
+INTEL_VENDOR_ID="8086"
+
+#: Echoes `--device /dev/bus/usb/BBB/DDD` for each RealSense found, or nothing.
+realsense_usb_args() {
+    local sysfs bus dev vendor node
+    for sysfs in /sys/bus/usb/devices/*/; do
+        vendor="$(cat "${sysfs}idVendor" 2>/dev/null)"
+        [ "$vendor" = "$INTEL_VENDOR_ID" ] || continue
+        bus="$(cat "${sysfs}busnum" 2>/dev/null)"
+        dev="$(cat "${sysfs}devnum" 2>/dev/null)"
+        [ -n "$bus" ] && [ -n "$dev" ] || continue
+        node="$(printf '/dev/bus/usb/%03d/%03d' "$bus" "$dev")"
+        [ -e "$node" ] && printf -- '--device\n%s\n' "$node"
+    done
+}
+
+host_sees_realsense() {
+    [ -n "$(realsense_usb_args)" ]
+}
 
 #: Does GPU passthrough ACTUALLY WORK, rather than merely appear configured?
 #:
@@ -226,6 +264,8 @@ if [ "$CHECK_ONLY" = "1" ]; then
     echo "weights dir  : $WEIGHTS_DIR"
     echo "weights      : $(weights_state)/2 checkpoints present"
     echo "datasets dir : $DATASETS_DIR $( [ -d "$DATASETS_DIR" ] && echo '(present)' || echo '(MISSING)')"
+    echo "captures dir : $CAPTURES_DIR"
+    echo "realsense    : $(host_sees_realsense && echo "host sees $(( $(realsense_usb_args | wc -l) / 2 )) Intel USB device(s)" || echo 'NOT present on the host USB bus')"
     exit 0
 fi
 
@@ -326,6 +366,20 @@ if [ "$DO_RUN" = "1" ]; then
     MOUNTS=()
     [ -d "$WEIGHTS_DIR" ] && MOUNTS+=(-v "$WEIGHTS_DIR:/weights:ro")
     [ -d "$DATASETS_DIR" ] && MOUNTS+=(-v "$DATASETS_DIR:/datasets:ro")
+    # CAPTURES ARE WRITABLE — they are the one thing the worker produces that
+    # must outlive the container.
+    mkdir -p "$CAPTURES_DIR" 2>/dev/null || true
+    [ -d "$CAPTURES_DIR" ] && MOUNTS+=(-v "$CAPTURES_DIR:/captures")
+
+    USB_ARGS=()
+    if host_sees_realsense; then
+        mapfile -t USB_ARGS < <(realsense_usb_args)
+        say "RealSense: passing through $(( ${#USB_ARGS[@]} / 2 )) USB device node(s)"
+    else
+        say "RealSense: no Intel USB device on this host — the worker starts"
+        say "           without camera access and reports rgbd_camera_available"
+        say "           false. Plug the camera in, then re-run --run."
+    fi
 
     say "starting $CONTAINER on port $PORT"
     # `--label wisepack.owned=true` is the ownership record: cleanup keys on the
@@ -338,6 +392,7 @@ if [ "$DO_RUN" = "1" ]; then
         --label wisepack.owned=true \
         --label wisepack.component=foundationpose-worker \
         "${GPU_ARGS[@]}" \
+        "${USB_ARGS[@]}" \
         -p "127.0.0.1:${PORT}:22201" \
         "${MOUNTS[@]}" \
         "$IMAGE" >/dev/null || {

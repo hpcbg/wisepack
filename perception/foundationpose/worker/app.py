@@ -449,6 +449,66 @@ def create_app(capabilities: Optional[Capabilities] = None):
                 "datasets": [d.describe() for d in found],
                 "not_a_foundationpose_dataset": unrecognised}
 
+    @app.get("/segmentation")
+    def segmentation_methods() -> Dict[str, Any]:
+        """Which mask sources exist, and which are only planned.
+
+        Listed so the dashboard can say what does NOT exist yet, rather than
+        implying `depth_plane_foreground` is the answer for a cluttered scene.
+        """
+        from segmentation import (DEFAULTS, METHODS,            # noqa: PLC0415
+                                  PLANNED_METHODS, VALIDATION)
+        return {
+            "available": sorted(METHODS),
+            "planned": PLANNED_METHODS,
+            "supplied_with_dataset": "dataset",
+            "defaults": DEFAULTS,
+            "validation": VALIDATION,
+        }
+
+    @app.get("/camera")
+    def camera_info(serial: str = ""):
+        """The RGB-D device: model, serial, firmware, streams, depth scale.
+
+        ANSWERS EVEN WITH NO CAMERA, with the reason — the same rule as
+        /health. A 404 here would be indistinguishable from a broken worker.
+        """
+        from camera import CameraUnavailable, available, describe  # noqa: PLC0415
+        usable, reason = available()
+        if not usable:
+            return {"available": False, "reason": reason, "device": None}
+        try:
+            return {"available": True, "reason": "", "device": describe(serial)}
+        except CameraUnavailable as exc:
+            return {"available": False, "reason": str(exc), "device": None}
+
+    @app.post("/camera/capture")
+    def camera_capture(request: Dict[str, Any]):
+        """Capture a controlled RGB-D dataset for ONE known CAD part.
+
+        `model_id` is REQUIRED and is never inferred from the image: which part
+        is on the table is known because an operator put it there.
+        """
+        from camera import CameraUnavailable, capture_dataset  # noqa: PLC0415
+        model_id = str(request.get("model_id", "")).strip()
+        if not model_id:
+            raise HTTPException(
+                400, "`model_id` is required: which CAD part is in view. It is "
+                     "known because you placed it there, and it is never "
+                     "inferred from the image.")
+        try:
+            return capture_dataset(
+                model_id=model_id,
+                frames=int(request.get("frames", 30)),
+                name=str(request.get("name", "")),
+                serial=str(request.get("serial", "")),
+                width=int(request.get("width", 0)),
+                height=int(request.get("height", 0)),
+                fps=int(request.get("fps", 0)),
+                align=bool(request.get("align", True)))
+        except CameraUnavailable as exc:
+            raise HTTPException(409, str(exc)) from exc
+
     @app.post("/estimate")
     def estimate(request: Dict[str, Any]) -> Dict[str, Any]:
         """One registration against a mounted dataset.
@@ -493,6 +553,42 @@ def create_app(capabilities: Optional[Capabilities] = None):
             colour, depth, mask = dataset.load(
                 index, depth_scale_mm=depth_scale_mm,
                 mask_name=request.get("mask"))
+            # WHERE THE MASK COMES FROM, chosen explicitly and never guessed.
+            #
+            #   "dataset"                the mask supplied WITH the data. The
+            #                            tutorial bolt regression uses this and
+            #                            keeps using it: it is the known
+            #                            reference input, and replacing it would
+            #                            stop the regression testing what it was
+            #                            built to test.
+            #   "depth_plane_foreground" measured from the depth: fit the work
+            #                            surface, keep what stands on it.
+            #
+            # NO SILENT FALLBACK between them. A mask whose provenance nobody
+            # can state is the one thing `mask_source` exists to prevent.
+            mask_source = str(request.get("mask_source", "dataset")).strip()
+            segmentation_document: Dict[str, Any] = {"mask_source": "dataset"}
+            if mask_source != "dataset":
+                from segmentation import (SegmentationError,  # noqa: PLC0415
+                                          segment)
+                import numpy as np                        # noqa: PLC0415
+                # `dataset.load()` has already converted depth to METRES;
+                # segmentation works in millimetres, so the conversion happens
+                # here, once, explicitly. Zero stays zero — it means "no
+                # measurement", not "at the lens".
+                depth_mm = (depth * 1000.0).astype(np.uint16)
+                try:
+                    segmented = segment(
+                        mask_source, depth_mm, dataset.intrinsics(),
+                        dict(request.get("segmentation") or {}))
+                except SegmentationError as exc:
+                    raise DatasetError(str(exc)) from exc
+                segmentation_document = segmented.to_dict()
+                if not segmented.valid:
+                    raise DatasetError(
+                        f"segmentation produced no usable mask: "
+                        f"{segmented.reason}")
+                mask = segmented.mask
             if mask is None:
                 raise DatasetError(
                     f"{dataset_name} has no registration mask; FoundationPose "
@@ -528,6 +624,7 @@ def create_app(capabilities: Optional[Capabilities] = None):
             "frame_file": dataset.rgb_files[index],
             "mesh_path": mesh_path,
             "mesh_scale_to_metres": scale,
+            "segmentation": segmentation_document,
             "refine_iterations": iterations,
             "depth_scale_mm": depth_scale_mm,
             "intrinsics": [[float(v) for v in row] for row in intrinsics],

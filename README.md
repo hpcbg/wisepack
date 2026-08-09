@@ -2928,8 +2928,57 @@ dashboard — is exercised against the saved tutorial dataset. It is labelled
 `acquisition="reference"`, and is never routed into a run as though a camera had
 produced it.
 
+**The worker owns RGB-D acquisition.** The camera is opened inside the
+container, by librealsense, alongside the estimator — because FoundationPose
+needs colour, depth *aligned to that colour*, and the intrinsics both share, and
+splitting that across a host capture stack and a container estimator would mean
+two alignment implementations and two places a depth scale can be assumed. The
+host consumes only the worker's generic result; `pyrealsense2` is installed in
+**no** host environment, and the planar provider's `.venv-perception` is
+untouched.
+
+`/dev/video0` is **not** the RealSense — that is the planar webcam. A RealSense
+presents several `/dev/video*` nodes, none carrying intrinsics, depth scale or
+alignment, so streams are selected by role through the SDK. USB access is passed
+as **only the camera's own device node**, never `--privileged`.
+
+```bash
+./scripts/realsense_diagnose.sh     # seven checks, host -> container -> SDK -> streams
+```
+
+Because "pyrealsense2 imports" is not "the camera works", that script reports
+which of seven layers failed: host USB, container visibility, SDK enumeration,
+model/serial, stream start, verified alignment, intrinsics and depth scale.
+
 > **Not validated on live hardware.** No RGB-D camera is attached to this
-> deployment. Nothing here has been checked against a live depth sensor.
+> deployment — no Intel device is on the USB bus at all — so nothing here has
+> been checked against a live depth sensor.
+
+#### Calibration: show the sheet once
+
+The printed ArUco sheet is a **calibration reference, not part of detection**.
+
+1. **Saved calibration exists** → it is loaded and used for x/y/yaw. **The sheet
+   is not required**, so "Detect & plan" works over a table covered in the
+   objects being measured, and across restarts.
+2. **No saved calibration, markers visible** → the homography is computed and
+   **saved**, then detection proceeds.
+3. **No saved calibration, no markers** → a clear *"the camera is not
+   calibrated"* error naming what to do. Never a fabricated coordinate.
+4. **Sheet shown again** → recalibrates and replaces the saved calibration. A
+   fresh measurement always wins; the change is visible as a new `revision`.
+
+Following HARMONY's config approach, the work area lives in configuration —
+extended with the one thing its template does not hold, the **computed
+homography**, which is what separates calibrating from detecting.
+`config/perception_calibration.json` stores the matrix, the **image resolution**
+it was measured at, and the marker/work-area definition. All three are checked
+before it is used: a homography maps *pixels*, so one measured at another
+resolution, or for another board, is refused with the reason rather than silently
+misapplied.
+
+The file is **git-ignored**: it measures one camera looking at one table.
+Delete it to force recalibration.
 
 #### Prerequisites
 

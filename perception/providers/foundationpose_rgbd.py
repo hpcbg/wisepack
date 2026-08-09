@@ -221,8 +221,11 @@ class FoundationPoseProvider:
         worker_ok, worker_reason = self.client.capability(document)
 
         usable_models = [m for m in self.models() if m["usable"]]
-        camera = (bool(rgbd_camera_available)
-                  if rgbd_camera_available is not None else False)
+        # THE WORKER OWNS THE CAMERA, so its answer is the default. The
+        # parameter remains for tests and for a caller that genuinely knows
+        # better; it is not a place to guess from.
+        camera = (bool(rgbd_camera_available) if rgbd_camera_available is not None
+                  else bool(document.get("rgbd_camera_available")))
 
         capability: Dict[str, Any] = {
             "method": METHOD,
@@ -261,10 +264,15 @@ class FoundationPoseProvider:
                 "method; a model-based estimator needs the CAD geometry of the "
                 "object it is looking at")
         if not camera:
-            blockers.append(
-                "no RGB-D camera is attached, so no live frame can be "
-                "acquired. The FoundationPose runtime is unaffected by this and "
-                "the offline reference regression still runs.")
+            # THE WORKER'S OWN REASON when it gave one: it knows whether the
+            # device is absent, unreadable or ambiguous, and this layer only
+            # knows the flag came back false.
+            reason = ((document.get("probes") or {}).get("rgbd_camera") or {}
+                      ).get("reason") or ""
+            blockers.append(reason or (
+                "no RGB-D camera is available to the FoundationPose worker, so "
+                "no live frame can be acquired. The runtime is unaffected and "
+                "the offline reference regression still runs."))
         capability["blocked_by"] = blockers
         return capability
 

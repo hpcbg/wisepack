@@ -36,5 +36,13 @@ results/*
 # The TEMPLATE config/local.env.example IS tracked; the filled-in file is not.
 config/local.env
 
+# The saved planar calibration. A MEASUREMENT of one camera looking at one
+# table — a homography in the pixels of one sensor at one resolution — so it is
+# machine-specific in exactly the way local.env is. Committing it would hand
+# every other deployment a calibration for somebody else's table, which would be
+# used silently and would be wrong. It is written by showing the calibration
+# sheet once; delete it to force recalibration.
+config/perception_calibration.json
+
 # NVIDIA WebRTC runtime traces
 NvStreamer-*.etli

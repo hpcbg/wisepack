@@ -34,9 +34,161 @@ the same way.
 from __future__ import annotations
 
 import hashlib
-from typing import Any, Optional, Tuple
+import json
+import os
+import time
+from typing import Any, Dict, List, Optional, Tuple
 
 from perception_config import CalibrationBoard, PerceptionConfigurationError
+
+#: Where the saved calibration lives. A WISEPACK CONFIG FILE, following
+#: HARMONY's approach of describing the work area in configuration rather than
+#: rediscovering it every run — extended with the one thing HARMONY's template
+#: does not hold, the COMPUTED HOMOGRAPHY, because that is what makes detection
+#: work with the calibration sheet off the table.
+CALIBRATION_FILE_ENV = "WISEPACK_PERCEPTION_CALIBRATION_FILE"
+DEFAULT_CALIBRATION_FILE = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+    "config", "perception_calibration.json")
+
+
+def calibration_file() -> str:
+    return os.environ.get(CALIBRATION_FILE_ENV, DEFAULT_CALIBRATION_FILE)
+
+
+class SavedCalibration:
+    """A calibration read back from disk, and whether it may be used.
+
+    WHY THE HOMOGRAPHY IS STORED AND NOT JUST THE BOARD. Recomputing it needs
+    all four markers in the frame, which means the calibration sheet has to be
+    on the table during every detection — including the ones where the table is
+    covered in the objects being measured. Storing the computed matrix is what
+    separates CALIBRATING from DETECTING: the sheet is a calibration reference,
+    shown once, and normal detection never needs it again.
+
+    WHAT IS STORED WITH IT, AND WHY EACH IS LOAD-BEARING:
+      * `width`/`height` — a homography maps PIXELS. The same board at a
+        different capture resolution gives a different matrix, so a saved one
+        must be refused rather than silently misapplied.
+      * the marker ids, corner coordinates and dictionary — these define WHICH
+        work area was measured. A calibration for a 130 mm board must not be
+        used after someone reconfigures a 200 mm one.
+    """
+
+    def __init__(self, homography: Any, width: int, height: int,
+                 marker_ids: Tuple[int, ...],
+                 corners_mm: Tuple[Tuple[float, float], ...],
+                 dictionary: str, saved_at: str = "", revision: str = "") -> None:
+        self.homography = homography
+        self.width = int(width)
+        self.height = int(height)
+        self.marker_ids = tuple(int(m) for m in marker_ids)
+        self.corners_mm = tuple(tuple(float(v) for v in c) for c in corners_mm)
+        self.dictionary = str(dictionary)
+        self.saved_at = saved_at
+        self.revision = revision
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "homography": [[float(v) for v in row] for row in self.homography],
+            "width": self.width,
+            "height": self.height,
+            "marker_ids": list(self.marker_ids),
+            "corners_mm": [list(c) for c in self.corners_mm],
+            "dictionary": self.dictionary,
+            "saved_at": self.saved_at,
+            "revision": self.revision,
+            "note": ("Computed by WISEPACK from the printed ArUco sheet. The "
+                     "homography maps image pixels at the resolution above to "
+                     "millimetres on the work area. Delete this file to force "
+                     "recalibration."),
+        }
+
+    def usable_for(self, board: CalibrationBoard,
+                   width: Optional[int] = None,
+                   height: Optional[int] = None) -> Tuple[bool, str]:
+        """(may this calibration be used, reason if not). NEVER raises."""
+        rows = self.homography
+        if rows is None or len(rows) != 3 or any(len(r) != 3 for r in rows):
+            return False, "the saved homography is not a 3x3 matrix"
+        flat = [float(v) for row in rows for v in row]
+        if any(v != v or abs(v) == float("inf") for v in flat):
+            return False, "the saved homography contains a non-finite value"
+        if abs(_determinant_3x3(rows)) < 1e-12:
+            # A degenerate matrix projects every pixel onto one line. It would
+            # produce coordinates rather than an error, which is worse.
+            return False, "the saved homography is degenerate (not invertible)"
+        if tuple(self.marker_ids) != tuple(board.marker_ids):
+            return False, (f"the saved calibration used markers "
+                           f"{list(self.marker_ids)} but the configured board "
+                           f"uses {list(board.marker_ids)}")
+        configured = tuple(tuple(float(v) for v in c) for c in board.corners_mm)
+        if self.corners_mm != configured:
+            return False, ("the saved calibration measured a different work "
+                           "area than the configured board")
+        if self.dictionary != board.dictionary:
+            return False, (f"the saved calibration used ArUco dictionary "
+                           f"{self.dictionary} but the board is configured for "
+                           f"{board.dictionary}")
+        if width and height and (self.width, self.height) != (int(width), int(height)):
+            return False, (f"the saved calibration was measured at "
+                           f"{self.width}x{self.height} but frames are "
+                           f"{int(width)}x{int(height)}; a homography maps "
+                           "pixels, so it does not carry across a resolution "
+                           "change")
+        return True, ""
+
+    @staticmethod
+    def from_dict(document: Dict[str, Any]) -> "SavedCalibration":
+        return SavedCalibration(
+            homography=document["homography"],
+            width=document["width"], height=document["height"],
+            marker_ids=tuple(document.get("marker_ids") or ()),
+            corners_mm=tuple(tuple(c) for c in document.get("corners_mm") or ()),
+            dictionary=str(document.get("dictionary", "")),
+            saved_at=str(document.get("saved_at", "")),
+            revision=str(document.get("revision", "")))
+
+
+def _determinant_3x3(m: Any) -> float:
+    a, b, c = (float(v) for v in m[0])
+    d, e, f = (float(v) for v in m[1])
+    g, h, i = (float(v) for v in m[2])
+    return a * (e * i - f * h) - b * (d * i - f * g) + c * (d * h - e * g)
+
+
+def load_calibration(path: str = "") -> Tuple[Optional[SavedCalibration], str]:
+    """Read the saved calibration. ([None], reason) when there is none or it is
+    unreadable — never an exception, because a missing calibration is an
+    ordinary first-run state and a corrupt one must be reported, not crash the
+    service."""
+    resolved = path or calibration_file()
+    if not os.path.isfile(resolved):
+        return None, f"no saved calibration at {resolved}"
+    try:
+        with open(resolved, encoding="utf-8") as handle:
+            return SavedCalibration.from_dict(json.load(handle)), ""
+    except Exception as exc:                                 # noqa: BLE001
+        return None, f"{resolved} could not be read: {exc}"
+
+
+def save_calibration(calibration: SavedCalibration, path: str = "") -> str:
+    """Persist it. Returns the path, or "" with the reason printed nowhere —
+    saving is best-effort: a calibration that cannot be written is still usable
+    for THIS session, and losing the session over a read-only config directory
+    would be worse than losing the file."""
+    resolved = path or calibration_file()
+    try:
+        os.makedirs(os.path.dirname(resolved), exist_ok=True)
+        # Written via a temporary file and renamed, so a crash mid-write cannot
+        # leave a half-written calibration that loads as garbage.
+        temporary = f"{resolved}.tmp"
+        with open(temporary, "w", encoding="utf-8") as handle:
+            json.dump(calibration.to_dict(), handle, indent=2)
+        os.replace(temporary, resolved)
+        return resolved
+    except Exception:                                        # noqa: BLE001
+        return ""
 
 #: What `to_plane()` returns when there is no homography. Reproduced from the
 #: detector's original behaviour so the downstream sentinel check keeps working
@@ -54,6 +206,21 @@ MARKER_CENTRE = (0, 0, 255)
 MARKER_LABEL = (0, 150, 255)
 PLANE_OUTLINE = (0, 255, 0)
 
+#: Where a resolved calibration came from.
+CALIBRATION_SOURCE_MARKERS = "markers"
+CALIBRATION_SOURCE_SAVED = "saved"
+
+
+def _marker_revision(markers: Any) -> str:
+    """A short digest of the marker positions a calibration was measured from.
+
+    Makes a RECALIBRATION VISIBLE: moving the sheet changes every subsequent
+    coordinate, and without this nothing in the audit trail records that the
+    frame itself moved.
+    """
+    positions = getattr(markers, "tolist", lambda: markers)()
+    return hashlib.sha256(repr(positions).encode()).hexdigest()[:12]
+
 
 class CalibrationResult:
     """What one frame said about the plane.
@@ -62,15 +229,26 @@ class CalibrationResult:
     merely because this frame hid a marker — see the cache note above.
     """
 
-    __slots__ = ("corners", "ids", "markers", "homography", "seen_this_frame")
+    __slots__ = ("corners", "ids", "markers", "homography", "seen_this_frame",
+                 "source", "reason", "_revision")
 
     def __init__(self, corners: Any, ids: Any, markers: Any,
-                 homography: Any, seen_this_frame: bool) -> None:
+                 homography: Any, seen_this_frame: bool,
+                 source: str = CALIBRATION_SOURCE_MARKERS,
+                 reason: str = "", revision: str = "") -> None:
         self.corners = corners
         self.ids = ids
         self.markers = markers
         self.homography = homography
         self.seen_this_frame = seen_this_frame
+        #: WHERE THIS CALIBRATION CAME FROM — markers in this frame, or the
+        #: saved file. Reported so an operator can tell "measured just now" from
+        #: "loaded from disk", which is the difference between a calibration
+        #: that reflects the table as it is and one that reflects it as it was.
+        self.source = source
+        #: Why there is no calibration, when there is none.
+        self.reason = reason
+        self._revision = revision
 
     @property
     def calibrated(self) -> bool:
@@ -88,10 +266,11 @@ class CalibrationResult:
         subsequent coordinate and nothing in the audit trail records that the
         frame itself moved.
         """
+        if self._revision:
+            return self._revision
         if self.markers is None:
             return ""
-        positions = getattr(self.markers, "tolist", lambda: self.markers)()
-        return hashlib.sha256(repr(positions).encode()).hexdigest()[:12]
+        return _marker_revision(self.markers)
 
 
 class PlaneCalibration:
@@ -101,13 +280,15 @@ class PlaneCalibration:
     partially occluded board usable.
     """
 
-    def __init__(self, board: Optional[CalibrationBoard] = None) -> None:
+    def __init__(self, board: Optional[CalibrationBoard] = None,
+                 store_path: str = "", load_saved: bool = True) -> None:
         import cv2                                           # noqa: PLC0415
         import numpy as np                                   # noqa: PLC0415
 
         self._cv2 = cv2
         self._np = np
         self.board = board or CalibrationBoard()
+        self.store_path = store_path or calibration_file()
 
         dictionary_id = getattr(cv2.aruco, self.board.dictionary, None)
         if dictionary_id is None:
@@ -122,6 +303,28 @@ class PlaneCalibration:
         #: The cached, ordered corner-marker centres. None until all four have
         #: been seen together in one frame.
         self._markers = None
+
+        # -- the SAVED calibration ----------------------------------------- #
+        #
+        # Loaded once, here, so a restart does not put the operator back to
+        # "fetch the calibration sheet". This is the whole point of persisting
+        # it: calibrating and detecting are separate activities, and only the
+        # first one needs the board.
+        self.saved: Optional[SavedCalibration] = None
+        #: Why the saved calibration is unusable, when there is one and it is.
+        self.saved_error: str = ""
+        if load_saved:
+            saved, reason = load_calibration(self.store_path)
+            if saved is None:
+                self.saved_error = reason
+            else:
+                usable, why = saved.usable_for(self.board)
+                # REFUSED WITH THE REASON rather than repaired. A calibration
+                # that describes a different board or a different resolution is
+                # not a slightly-wrong calibration, it is a measurement of
+                # something else.
+                self.saved = saved if usable else None
+                self.saved_error = "" if usable else why
 
     # -- detection --------------------------------------------------------- #
 
@@ -157,14 +360,74 @@ class PlaneCalibration:
         return ordered, True
 
     def analyse(self, frame) -> CalibrationResult:
-        """Detect the board in one frame and resolve the plane."""
+        """Resolve the plane for one frame.
+
+        THE ORDER MATTERS AND IS THE BEHAVIOUR THIS FILE EXISTS TO PROVIDE:
+
+          1. markers visible in THIS frame  -> compute and SAVE. Showing the
+             sheet again is how an operator recalibrates; it always wins,
+             because it is the only input that is a fresh measurement.
+          2. otherwise, a usable SAVED calibration -> use it. No markers are
+             required, which is what lets "Detect & plan" run over a table
+             covered in the objects being measured.
+          3. otherwise, the in-memory marker cache from earlier in this session.
+          4. otherwise, UNCALIBRATED, with a reason a human can act on.
+        """
         corners, ids = self.detect_markers(frame)
         markers, seen = self._plane_markers(corners, ids)
+
+        if seen and markers is not None:
+            homography, _mask = self._cv2.findHomography(markers,
+                                                         self._plane_points)
+            if homography is not None:
+                self._persist(homography, frame, markers)
+                return CalibrationResult(corners, ids, markers, homography, True)
+
+        if self.saved is not None:
+            height, width = frame.shape[:2]
+            usable, why = self.saved.usable_for(self.board, width, height)
+            if usable:
+                return CalibrationResult(
+                    corners, ids, markers,
+                    self._np.array(self.saved.homography, dtype=self._np.float64),
+                    False, source=CALIBRATION_SOURCE_SAVED,
+                    revision=self.saved.revision)
+            # A saved calibration that does not fit THIS frame is dropped once
+            # and the reason kept, so the next frame does not re-test it.
+            self.saved, self.saved_error = None, why
+
         homography = None
         if markers is not None:
             homography, _mask = self._cv2.findHomography(markers,
                                                          self._plane_points)
-        return CalibrationResult(corners, ids, markers, homography, seen)
+        return CalibrationResult(corners, ids, markers, homography, seen,
+                                 reason="" if homography is not None
+                                 else self.not_calibrated_reason())
+
+    def not_calibrated_reason(self) -> str:
+        """Why there is no calibration, in terms an operator can act on."""
+        detail = f" ({self.saved_error})" if self.saved_error else ""
+        return (
+            "the camera is not calibrated: no saved calibration is available"
+            f"{detail}, and the calibration markers "
+            f"{list(self.board.marker_ids)} are not all visible in this frame. "
+            "Place the calibration sheet in view once and detect again — it is "
+            "then saved and detection no longer needs it.")
+
+    def _persist(self, homography: Any, frame: Any, markers: Any) -> None:
+        """Save a freshly measured calibration, replacing any earlier one."""
+        height, width = frame.shape[:2]
+        saved = SavedCalibration(
+            homography=[[float(v) for v in row] for row in homography],
+            width=int(width), height=int(height),
+            marker_ids=self.board.marker_ids,
+            corners_mm=self.board.corners_mm,
+            dictionary=self.board.dictionary,
+            saved_at=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            revision=_marker_revision(markers))
+        self.saved = saved
+        self.saved_error = ""
+        self.saved_path = save_calibration(saved, self.store_path)
 
     # -- measurement ------------------------------------------------------- #
 

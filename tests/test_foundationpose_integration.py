@@ -939,3 +939,184 @@ def test_foundationpose_publishes_no_ros_or_dds_itself():
         code = _code_only(open(path, encoding="utf-8").read())
         for word in ("rclpy", "rmw_", "std_msgs", "create_publisher"):
             assert word not in code, f"{os.path.basename(path)} uses {word}"
+
+
+# --------------------------------------------------------------------------- #
+# RGB-D acquisition — owned by the WORKER, verified without a camera
+# --------------------------------------------------------------------------- #
+
+
+WORKER_CAMERA = os.path.join(REPO, "perception", "foundationpose", "worker",
+                             "camera.py")
+
+
+def _worker_camera_source():
+    return open(WORKER_CAMERA, encoding="utf-8").read()
+
+
+def test_rgbd_acquisition_lives_in_the_worker_not_on_the_host():
+    """One coherent acquisition. Colour, aligned depth and the intrinsics they
+    share must come from one SDK in one process; splitting them across a host
+    capture stack and a container estimator means two alignment implementations
+    and two places a depth scale can be assumed."""
+    assert os.path.isfile(WORKER_CAMERA)
+    # No second RealSense stack anywhere on the host side.
+    for directory in ("scripts", "perception/providers", "web"):
+        root = os.path.join(REPO, *directory.split("/"))
+        for name in os.listdir(root):
+            if not name.endswith(".py"):
+                continue
+            code = _code_only(open(os.path.join(root, name),
+                                   encoding="utf-8").read())
+            assert "pyrealsense2" not in code, (
+                f"{directory}/{name} imports the RealSense SDK on the host")
+
+
+def test_the_host_perception_venv_gains_no_realsense_dependency():
+    """The planar provider's environment is the working one; a new dependency
+    there to serve an optional feature is an unnecessary risk to it."""
+    requirements = open(os.path.join(REPO, "perception", "requirements.txt"),
+                        encoding="utf-8").read().lower()
+    assert "realsense" not in requirements
+
+
+def test_the_worker_image_carries_the_realsense_sdk():
+    requirements = open(os.path.join(REPO, "perception", "foundationpose",
+                                     "worker", "requirements.txt"),
+                        encoding="utf-8").read()
+    assert "pyrealsense2" in requirements
+
+
+def test_acquisition_never_uses_a_video_device_path():
+    """A RealSense presents several /dev/video* nodes and none of them carry
+    intrinsics, a depth scale or alignment. /dev/video0 is the planar webcam's
+    identity and stays that way."""
+    code = _code_only(_worker_camera_source())
+    assert "/dev/video" not in code
+    assert "VideoCapture" not in code
+
+
+def test_the_depth_scale_is_read_from_the_device():
+    code = _code_only(_worker_camera_source())
+    assert "get_depth_scale" in code
+    # No hard-coded metres-per-unit standing in for the device's own value.
+    assert "0.001" not in code
+
+
+def test_the_intrinsics_are_read_from_the_device():
+    assert "get_intrinsics" in _code_only(_worker_camera_source())
+
+
+def test_alignment_is_verified_rather_than_declared():
+    """`rs.align` to colour must actually yield the colour camera's geometry. A
+    dataset claiming alignment it did not get is a silent reprojection error in
+    every pose computed from it."""
+    code = _code_only(_worker_camera_source())
+    assert "alignment_verified" in code
+    # Verified against the colour intrinsics, not merely against image size.
+    assert "colour_intrinsics" in code
+
+
+def test_colour_and_depth_come_from_one_synchronised_bundle():
+    """Fetching them separately pairs a colour image with depth from another
+    instant — on a moving scene, a pose error with no symptom."""
+    code = _code_only(_worker_camera_source())
+    assert code.count("wait_for_frames") >= 1
+    assert "get_color_frame" in code and "get_depth_frame" in code
+
+
+def test_a_missing_camera_is_reported_not_raised():
+    """The capability probe runs on every /health, so it must not throw."""
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("wisepack_fp_camera",
+                                                  WORKER_CAMERA)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    usable, reason = module.available()
+    assert usable is False                    # no camera in CI
+    assert "RealSense" in reason
+    # AND IT SAYS WHY THE OBVIOUS GUESS IS WRONG.
+    assert "/dev/video" in reason
+
+
+def test_a_capture_requires_an_explicit_model_id():
+    """Which CAD part is on the table is known because an operator put it there.
+    Inferring it from appearance is what made the older capture data unusable."""
+    source = open(os.path.join(REPO, "perception", "foundationpose", "worker",
+                               "app.py"), encoding="utf-8").read()
+    assert "`model_id` is required" in source
+    assert "never" in source and "inferred from the image" in source
+
+
+def test_a_capture_records_that_it_has_no_masks_and_no_extrinsic():
+    """Both are needed downstream and neither can be produced by capturing."""
+    source = _worker_camera_source()
+    assert '"masks_present": False' in source
+    assert '"camera_to_workarea_extrinsic": None' in source
+
+
+def test_the_camera_is_a_separate_capability_from_inference():
+    """The offline reference regression runs with no camera at all, so the
+    camera must not be folded into `inference_available`."""
+    source = open(os.path.join(REPO, "perception", "foundationpose", "worker",
+                               "capability.py"), encoding="utf-8").read()
+    assert "rgbd_camera_available" in source
+    assert "live_inference_available" in source
+
+
+# --------------------------------------------------------------------------- #
+# USB passthrough and the seven-step verification chain
+# --------------------------------------------------------------------------- #
+
+
+def _setup_script_text():
+    return open(os.path.join(REPO, "scripts", "setup_foundationpose.sh"),
+                encoding="utf-8").read()
+
+
+def _executable_lines(text: str) -> str:
+    """Shell source with comments stripped.
+
+    These scripts DOCUMENT the rules they obey — including why --privileged is
+    refused and why /dev/video0 is not the RealSense — so the prohibited strings
+    appear in the prose that prohibits them. A check that cannot tell a rule
+    from its violation forbids writing the rule down.
+    """
+    return "\n".join(line for line in text.splitlines()
+                      if not line.lstrip().startswith("#"))
+
+
+def test_usb_access_is_narrow_and_never_privileged():
+    """--privileged would work and grants every device on the host to a
+    container that needs one."""
+    executable = _executable_lines(_setup_script_text())
+    assert "--privileged" not in executable
+    assert "--device" in executable
+    # The whole USB bus is not mounted either.
+    assert "-v /dev/bus/usb" not in executable
+    assert "/dev:/dev" not in executable
+
+
+def test_the_realsense_is_found_by_vendor_id_not_by_video_node():
+    text = _setup_script_text()
+    assert "8086" in text
+    assert "/dev/video" not in _executable_lines(text)
+
+
+def test_the_diagnostic_separates_all_seven_layers():
+    """Reporting one "camera unavailable" for seven independent failures sends
+    someone to re-seat a cable when the container was started too early."""
+    script = open(os.path.join(REPO, "scripts", "realsense_diagnose.sh"),
+                  encoding="utf-8").read()
+    for marker in ("HOST sees", "CONTAINER sees", "pyrealsense2",
+                   "model and serial", "streams", "aligned", "depth scale"):
+        assert marker in script, f"the diagnostic omits {marker!r}"
+
+
+def test_the_diagnostic_names_docker_passthrough_when_only_the_host_sees_it():
+    """§: if the host sees the camera and the container does not, that is a
+    Docker problem — not a reason to move acquisition back to the host."""
+    script = open(os.path.join(REPO, "scripts", "realsense_diagnose.sh"),
+                  encoding="utf-8").read()
+    assert "DOCKER USB PASSTHROUGH problem" in script
+    assert "not a perception one" in script

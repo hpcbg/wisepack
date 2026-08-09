@@ -14,3 +14,16 @@ opencv-python>=4.7      # Apache-2.0 — image decode/encode, overlay drawing
 trimesh>=4.0            # MIT — mesh loading, bounds, units
 pillow>=9.0             # MIT-CMU — PNG depth is read through it where needed
 pyyaml>=6.0             # MIT — dataset descriptors
+
+# THE RGB-D CAMERA LIVES HERE, NOT ON THE HOST.
+#
+# FoundationPose needs colour, depth ALIGNED to that colour, and the intrinsics
+# those two share — one coherent acquisition. Splitting that across a host
+# capture stack and a container inference stack would mean two SDK versions, two
+# alignment implementations and two places for a depth scale to be assumed;
+# whichever disagreed would show up as a plausible, wrong pose.
+#
+# So the worker owns the camera. The WISEPACK host consumes only this worker's
+# generic result and needs no RealSense stack of its own — in particular the
+# planar provider's .venv-perception is untouched.
+pyrealsense2>=2.54       # Apache-2.0 — official Intel RealSense SDK bindings

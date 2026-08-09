@@ -354,6 +354,11 @@ class BottleDetector:
                 "status": calibration.status,
                 "revision": calibration.revision,
                 "markers_in_frame": calibration.seen_this_frame,
+                # WHERE IT CAME FROM, and why detection did or did not need the
+                # sheet. `markers_in_frame: false` with `source: saved` is the
+                # ordinary, correct state for a working deployment.
+                "source": calibration.source,
+                "reason": calibration.reason,
             },
             "annotated_image": annotated,
             "detections_image": detections_image,
@@ -551,11 +556,20 @@ def observations_from_detections(
         else:
             resolved_calibration = "valid"
     if resolved_calibration == CALIBRATION_INVALID:
-        return fail(
-            "the detector resolved no valid ArUco calibration for this frame — "
-            "every coordinate is the uncalibrated sentinel "
-            f"{UNCALIBRATED_SENTINEL}, not a measurement. Place the calibration "
-            "sheet in view of the camera and detect again.")
+        # THE DETECTOR'S OWN REASON WHEN IT GAVE ONE. It knows whether a saved
+        # calibration was missing, unreadable or measured at another resolution;
+        # this layer only knows the coordinates came back as the sentinel, and
+        # telling an operator to fetch the sheet when the real problem is a
+        # resolution change sends them to the wrong fix.
+        detail = ""
+        if isinstance(payload, Mapping):
+            detail = str((payload.get("calibration") or {}).get("reason") or "")
+        return fail(detail or (
+            "the camera is not calibrated: no saved calibration is available "
+            "and the calibration markers are not visible in this frame — every "
+            f"coordinate is the uncalibrated sentinel {UNCALIBRATED_SENTINEL}, "
+            "not a measurement. Place the calibration sheet in view once and "
+            "detect again; it is then saved and detection no longer needs it."))
 
     for obs in observations:
         obs.calibration_status = resolved_calibration

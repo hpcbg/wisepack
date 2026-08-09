@@ -402,3 +402,79 @@ The missing extrinsic is represented as MISSING and never as identity. An
 identity transform standing in for an unmeasured one places objects wherever the
 camera happens to be, with total confidence. Nor is `frame_id` relabelled to
 `wisepack_workarea`: the frame is where the pose actually is.
+
+---
+
+# RGB-D acquisition lives in the worker
+
+The camera is opened by the FoundationPose container, not by the host. The
+reason is that FoundationPose needs three things that must agree with each
+other — colour, depth ALIGNED to that colour, and the intrinsics both share.
+Acquiring on the host and inferring in the container would mean two SDK
+versions, two alignment implementations and two places for a depth scale to be
+assumed; whichever pair disagreed would yield a plausible, wrong pose rather
+than an error.
+
+    perception/foundationpose/worker/camera.py   discovery, profiles,
+                                                 intrinsics, depth scale,
+                                                 alignment, synchronised capture
+    GET  /camera                                 what the device is
+    POST /camera/capture                         a controlled dataset
+
+The WISEPACK host consumes only the worker's generic result. `pyrealsense2` is
+in the worker image and in **no** host environment — in particular the planar
+provider's `.venv-perception` is untouched.
+
+## `/dev/video0` is not the RealSense
+
+That path is the planar webcam and stays that way. A RealSense presents several
+`/dev/video*` nodes (depth, colour, infrared, metadata), none of which carry
+intrinsics, a depth scale or alignment, so streams are selected by ROLE through
+librealsense. That is also why a device index can never collide with the planar
+camera's: librealsense enumerates RealSense hardware only.
+
+## USB access: narrow, never `--privileged`
+
+`setup_foundationpose.sh` finds the camera by Intel vendor id in sysfs and
+passes **only its own USB node** with `--device /dev/bus/usb/<bus>/<dev>`. The
+whole `/dev/bus/usb` tree is not mounted and `--privileged` is refused: it would
+grant every device on the host to a container that needs one.
+
+The trade-off, stated: a USB node number changes on replug, so the worker must
+be restarted after replugging. That is the price of not exposing the bus, and it
+is the right way round for a camera that is plugged in once and left.
+
+## Seven checks, not one boolean
+
+**pyrealsense2 importing is not a working camera.** `scripts/realsense_diagnose.sh`
+walks the chain and reports which layer failed:
+
+1. the HOST sees the device on USB — cable, port, power
+2. the CONTAINER sees that same node — Docker passthrough
+3. pyrealsense2 in the container enumerates it — SDK/permissions in the image
+4. model and serial are readable
+5. RGB and depth streams both start — USB bandwidth, profile support
+6. depth is aligned to colour — *verified against the colour intrinsics*
+7. intrinsics and depth scale are read from the device
+
+Step 2 is separated deliberately: if the host sees the camera and the container
+does not, that is a Docker passthrough problem — restart the worker so it picks
+up the node — and not a reason to move acquisition back to the host.
+
+## Current state: step 1 fails
+
+No RealSense is attached to this machine. Every USB device was enumerated:
+
+    09da:2704  A4Tech FHD 1080P PC Camera   <- the PLANAR camera (video0/video1)
+    05e3:0608  Genesys Logic hub            <- empty
+    05e3:0608  Genesys Logic hub            <- empty
+    0b05:19af  ASUS AURA LED controller
+    1d6b:0002 / 1d6b:0003                    root hubs
+
+No Intel (vendor `8086`) device is present, and the USB 3 bus is empty. The host
+tooling is installed and working — `rs-enumerate-devices` reports "No device
+detected", and `pyrealsense2` inside the container enumerates zero devices — so
+this is the camera not being on the bus, not a software gap.
+
+Nothing about the model, streams, intrinsics, depth scale or alignment can be
+reported until it enumerates, and none of it is guessed.
