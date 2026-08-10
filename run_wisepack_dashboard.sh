@@ -231,8 +231,25 @@ open_browser() {
 }
 
 if ss -ltn 2>/dev/null | grep -q ":${PORT} "; then
-    echo "[dashboard] ERROR: port ${PORT} is already in use." >&2
-    echo "[dashboard] pick another:  PORT=9000 ./run_wisepack_dashboard.sh $MODE" >&2
+    # A SECOND DASHBOARD IS NOT STARTED, and the refusal says WHAT is already
+    # there. "Port in use" sends an operator to look for a port conflict; the
+    # usual cause is the dashboard they already have open, and naming it is the
+    # difference between closing a tab and hunting a phantom.
+    echo "[dashboard] port ${PORT} is already in use — WISEPACK will not start a" >&2
+    echo "[dashboard] second dashboard on it." >&2
+    OWNER="$(docker ps --filter "publish=${PORT}" --filter "name=wisepack" \
+             --format '{{.Names}}' 2>/dev/null | head -1)"
+    [ -z "$OWNER" ] && OWNER="$(docker ps --format '{{.Names}}' 2>/dev/null \
+             | grep -E 'wisepack-dashboard' | head -1)"
+    if [ -n "$OWNER" ]; then
+        echo "[dashboard]   already running: container '$OWNER'" >&2
+        echo "[dashboard]   stop it:         docker rm -f $OWNER" >&2
+    else
+        LISTENER="$(ss -ltnp 2>/dev/null | grep ":${PORT} " | head -1)"
+        [ -n "$LISTENER" ] && echo "[dashboard]   listener: $LISTENER" >&2
+    fi
+    echo "[dashboard]   or open it:      $URL" >&2
+    echo "[dashboard]   or use another:  PORT=9000 ./run_wisepack_dashboard.sh $MODE" >&2
     exit 1
 fi
 
@@ -285,10 +302,35 @@ if [ "$PERCEPTION_WANTED" = "camera" ]; then
         echo "[perception]           WISEPACK_PERCEPTION_ENABLE=1." >&2
         exit 6
     fi
-elif [ "${WISEPACK_PERCEPTION_ENABLE:-0}" = "1" ]; then
-    echo "[perception] camera capability requested — the session starts on the"
-    echo "[perception] preset workflow; switch the dashboard's Object source to"
-    echo "[perception] Physical camera whenever you like."
+elif [ "${WISEPACK_PERCEPTION_ENABLE:-}" = "0" ]; then
+    # THE OPT-OUT, for a host where the camera must be left alone.
+    echo "[perception] WISEPACK_PERCEPTION_ENABLE=0 — the planar camera is not"
+    echo "[perception] started; the dashboard will offer it as unavailable."
+elif [ "${WISEPACK_PERCEPTION_ENABLE:-}" = "1" ] \
+     || { [ "$MODE" != "sim" ] && perception_planar_camera_present; }; then
+    # SELF-DISCOVERING, because whether a webcam is plugged in is a property of
+    # this machine and the machine can be asked.
+    #
+    # THE VARIABLE IS NO LONGER A PREREQUISITE. It used to be: without
+    # `WISEPACK_PERCEPTION_ENABLE=1` no detector was started, so the dashboard
+    # reported "Physical camera unavailable" on a host with a working camera —
+    # a runtime selector whose answer was fixed by a shell variable at launch,
+    # which is the opposite of what a runtime selector is for. `=1` still forces
+    # the attempt on a host where discovery finds nothing, and `=0` opts out.
+    #
+    # `sim` IS EXCLUDED FROM DISCOVERY, DELIBERATELY. That mode is documented as
+    # presentation only — no ROS, no FIWARE, no hardware — and a mode that
+    # silently opened a camera would not be that mode any more. Asking for the
+    # camera explicitly there still works; discovery is for the ordinary live
+    # launch, which is what `./run_wisepack_dashboard.sh` runs.
+    if [ "${WISEPACK_PERCEPTION_ENABLE:-}" = "1" ]; then
+        echo "[perception] camera capability requested explicitly"
+    else
+        echo "[perception] planar camera discovered at $(perception_planar_camera_node)"
+    fi
+    echo "[perception] the session starts on the preset workflow; switch the"
+    echo "[perception] dashboard's Object source to Physical camera whenever"
+    echo "[perception] you like. No environment variable is required."
     if ! perception_ensure_service "$REPO"; then
         # NOT FATAL. Nothing has claimed a camera yet: preset scenarios work
         # exactly as they always have, and the dashboard reports the camera

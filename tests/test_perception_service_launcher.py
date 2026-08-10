@@ -299,7 +299,18 @@ def test_the_camera_can_be_made_available_without_starting_on_it():
     be unaffected.
     """
     text = open(DASHBOARD, encoding="utf-8").read()
-    assert '[ "${WISEPACK_PERCEPTION_ENABLE:-0}" = "1" ]' in text
+    # THE PROPERTY, NOT THE OLD LITERAL. `=1` still forces the attempt, and it
+    # is now one of two ways in rather than the only one: an ordinary live
+    # launch DISCOVERS a planar camera and starts the detector without any
+    # variable at all, because whether a webcam is plugged in is a property of
+    # the machine. Pinning the exact former condition would have forbidden that
+    # while testing nothing about the behaviour this test is named for.
+    assert '"${WISEPACK_PERCEPTION_ENABLE:-}" = "1"' in text
+    assert "perception_planar_camera_present" in text, (
+        "the camera must also be discoverable without the variable")
+    # AND `=0` MUST STILL OPT OUT, or discovery would have removed the only way
+    # to keep a host's camera untouched.
+    assert '"${WISEPACK_PERCEPTION_ENABLE:-}" = "0"' in text
 
     port = _free_port()
     env = {
@@ -813,3 +824,55 @@ def test_cleanup_is_a_no_op_when_nothing_is_owned(tmp_path):
                        timeout=30)
     assert "RC=0" in r.stdout
     assert "stopping" not in r.stdout
+
+
+def test_an_ordinary_live_launch_needs_no_perception_variable():
+    """THE REPORTED USABILITY BUG. The planar camera could only be made
+    available by launching with `WISEPACK_PERCEPTION_ENABLE=1`, so a runtime
+    selector's answer was fixed by a shell variable before the dashboard even
+    started — and a host with a working webcam reported "Physical camera
+    unavailable" because of a missing export rather than missing hardware.
+
+    Whether a camera is plugged in is a property of the machine, so the machine
+    is asked. The variable survives as an override in both directions.
+    """
+    text = open(DASHBOARD, encoding="utf-8").read()
+    branch = text[text.index("PERCEPTION_WANTED="):text.index("# ---- ", text.index("PERCEPTION_WANTED="))]
+    assert "perception_planar_camera_present" in branch
+    # The ordinary launch is a LIVE mode, and that is the one discovery serves.
+    assert '"$MODE" != "sim"' in branch
+
+
+def test_discovery_never_offers_the_realsense_as_a_planar_camera():
+    """A D4xx presents several /dev/video* nodes and none of them is a webcam.
+
+    Handing one to the planar detector would take the RGB-D device away from the
+    FoundationPose worker that owns it — and the planar detector would be
+    measuring a depth-camera stream on a calibrated plane. Ownership is decided
+    by walking up to the USB device, never by node index.
+    """
+    library = open(os.path.join(REPO, "scripts", "lib_perception_service.sh"),
+                   encoding="utf-8").read()
+    body = library[library.index("perception_planar_camera_node()"):
+                   library.index("perception_planar_camera_present()")]
+    assert "idVendor" in body
+    assert "PERCEPTION_INTEL_VENDOR_ID" in body
+    assert "8086" in library
+
+
+def test_discovery_opens_no_camera():
+    """A probe that grabbed the device would be a second owner of the very
+    camera the service is about to take."""
+    library = open(os.path.join(REPO, "scripts", "lib_perception_service.sh"),
+                   encoding="utf-8").read()
+    body = library[library.index("perception_planar_camera_node()"):
+                   library.index("perception_planar_camera_present()")]
+    for forbidden in ("ffmpeg", "v4l2-ctl", "python", "cv2"):
+        assert forbidden not in body, f"discovery invokes {forbidden}"
+
+
+def test_sim_mode_stays_hardware_free():
+    """`sim` is documented as presentation only — no ROS, no FIWARE, no
+    hardware. A mode that silently opened a camera would not be that mode."""
+    text = open(DASHBOARD, encoding="utf-8").read()
+    assert '[ "$MODE" != "sim" ] && perception_planar_camera_present' in text

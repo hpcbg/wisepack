@@ -79,6 +79,52 @@ perception_service_url() {
     printf '%s' "${WISEPACK_PERCEPTION_SERVICE_URL:-$PERCEPTION_DEFAULT_URL}"
 }
 
+#: Intel's USB vendor id — a RealSense, which is NOT the planar camera.
+PERCEPTION_INTEL_VENDOR_ID="8086"
+
+#: Is there a planar (UVC) camera on this host at all?
+#:
+#: WHY DISCOVERY RATHER THAN A FLAG. Whether a webcam is plugged in is a
+#: property of the machine, and the machine can be asked. Requiring an operator
+#: to export `WISEPACK_PERCEPTION_ENABLE=1` to find out made the runtime
+#: selector depend on a launch decision: the dashboard reported "camera
+#: unavailable" on a host with a working camera, because of a missing shell
+#: variable rather than missing hardware.
+#:
+#: THE REALSENSE IS EXCLUDED, BY DEVICE AND NOT BY INDEX. A D4xx presents
+#: several /dev/video* nodes and none of them is the planar camera; treating one
+#: as a webcam would hand the RGB-D device to a planar detector and take it away
+#: from the FoundationPose worker that owns it. Ownership is decided here by
+#: walking up from each node to its USB device and skipping Intel's.
+#:
+#: NOTHING IS OPENED. This reads sysfs only: a probe that grabbed the device
+#: would be a second owner of the very camera the service is about to take.
+perception_planar_camera_node() {
+    local node name vendor sysfs
+    for node in /dev/video*; do
+        [ -e "$node" ] || continue
+        name="$(basename "$node")"
+        sysfs="/sys/class/video4linux/$name"
+        [ -d "$sysfs" ] || continue
+        # Up from the video node to the USB device that owns it.
+        vendor="$(cat "$(readlink -f "$sysfs/device")/../idVendor" 2>/dev/null)"
+        [ "$vendor" = "$PERCEPTION_INTEL_VENDOR_ID" ] && continue
+        # THE LOWEST-NUMBERED NON-INTEL NODE, which is what OpenCV index 0
+        # opens and therefore what the service will use. A UVC webcam also
+        # presents a metadata node beside its capture node; this does not try to
+        # tell them apart, because it does not need to — whether the chosen
+        # device yields frames is answered by the service actually opening it,
+        # and reported as its own health rather than guessed here.
+        printf '%s' "$node"
+        return 0
+    done
+    return 1
+}
+
+perception_planar_camera_present() {
+    [ -n "$(perception_planar_camera_node)" ]
+}
+
 # Parse the URL with Python's urllib rather than with `cut`/`sed`: an IPv6
 # literal, an explicit scheme and a missing port are all normal here and a
 # hand-rolled split gets at least one of them wrong.
