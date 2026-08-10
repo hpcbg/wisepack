@@ -644,6 +644,12 @@ def main() -> int:
     for key, value in checks.items():
         print(f"    {key:24} {value}")
 
+    # LIVE AND REPLAYED ARE DIFFERENT CLAIMS, and the difference is recorded
+    # here rather than inferred by whoever reads the file. Both are PHYSICAL —
+    # a replay reads frames a real D435 produced — but a recorded capture is not
+    # evidence that the camera worked just now, and a dashboard that showed one
+    # as the other would be claiming a live sensor on a machine with none.
+    live = not args.dataset
     document = {
         "device": device,
         "dataset": dataset_name,
@@ -651,6 +657,17 @@ def main() -> int:
         "selected_profile": {"width": WIDTH, "height": HEIGHT, "fps": FPS},
         "acquisition_backend": "realsense",
         "provenance": "measured",
+        "run_mode": "live" if live else "replay",
+        "run_label": ("LIVE PHYSICAL D435" if live
+                      else "RECORDED PHYSICAL D435 DATA"),
+        "run_note": ("Acquired from the physical D435 during this run."
+                     if live else
+                     "Replayed from frames a physical D435 recorded earlier. "
+                     "Real sensor data, NOT simulation, and NOT a live camera."),
+        "operator_roi_px": roi,
+        "roi_note": ("The ROI says WHERE to look. Object identity is model_id, "
+                     "stated by the operator, and is never inferred from it."),
+        "completed_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         "capture": capture_document,
         "segmentation": segmentation,
         "observation": observation,

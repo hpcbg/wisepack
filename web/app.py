@@ -1318,6 +1318,35 @@ def api_execution():
 SIMULATED_RGBD_DIR = os.path.join(REPO, ".cache-perception")
 SIMULATED_RGBD_RESULT = os.path.join(SIMULATED_RGBD_DIR, "stage-c", "stage_c.json")
 
+#: Where ./scripts/physical_c5.sh leaves the PHYSICAL D435 result.
+#:
+#: READ, NEVER RECOMPUTED, and deliberately NOT routed through Stage C. The
+#: simulated chain carries a camera-to-work-area transform that Isaac knows and
+#: the physical camera does not have; feeding a physical pose through it would
+#: place a real object in a frame nobody has measured. This stays in the camera
+#: optical frame all the way to the screen.
+PHYSICAL_C5_DIR = os.path.join(REPO, ".cache-perception", "physical-c5")
+PHYSICAL_C5_RESULT = os.path.join(PHYSICAL_C5_DIR, "physical_c5.json")
+
+#: The artifact files the panel shows, and the only ones it will serve.
+PHYSICAL_C5_IMAGES = {
+    "rgb": "rgb.jpg",
+    "depth": "depth_aligned.jpg",
+    "mask": "mask_overlay.jpg",
+    "overlay": "pose_overlay.jpg",
+}
+
+
+def _physical_c5_document():
+    """The last physical D435 result, or None. NEVER raises."""
+    if not os.path.isfile(PHYSICAL_C5_RESULT):
+        return None
+    try:
+        with open(PHYSICAL_C5_RESULT, encoding="utf-8") as handle:
+            return json.load(handle)
+    except Exception:                                            # noqa: BLE001
+        return None
+
 
 def _simulated_rgbd_observation():
     """The most recent simulated-RGB-D observation, or None.
@@ -1625,6 +1654,103 @@ def _REFERENCE_NOTE() -> str:
         return ""
     from providers.foundationpose_rgbd import REFERENCE_NOTE     # noqa: PLC0415
     return REFERENCE_NOTE
+
+
+@app.get("/api/perception/physical")
+def api_perception_physical():
+    """The PHYSICAL D435 result, exactly as ./scripts/physical_c5.sh left it.
+
+    WHAT THIS ROUTE WILL NOT DO. It does not estimate, does not open a camera,
+    does not re-run FoundationPose, and does not convert anything into the work
+    area. It reads one file and states what is in it. The pose stays in
+    `camera_color_optical_frame` because no validated camera-to-work-area
+    extrinsic exists for the physical camera — so this run is EVIDENCE OF
+    PERCEPTION, not an input to planning, and the panel says so rather than
+    leaving an operator to notice.
+    """
+    document = _physical_c5_document()
+    if document is None:
+        return {
+            "available": False,
+            "reason": ("no physical D435 result yet. Run "
+                       "./scripts/physical_c5.sh --model cylinder5 --frames 5 "
+                       "--roi 255,70,445,719, or replay a recorded capture "
+                       "with --dataset."),
+        }
+    observation = document.get("observation") or {}
+    pose = observation.get("pose") or {}
+    task = observation.get("task") or {}
+    device = document.get("device") or {}
+    return {
+        "available": True,
+        "reason": "",
+        # PROVENANCE FIRST, because everything below is only meaningful with it.
+        "acquisition": "Intel RealSense D435",
+        "acquisition_backend": document.get("acquisition_backend", "realsense"),
+        "provenance": document.get("provenance", "measured"),
+        "run_mode": document.get("run_mode", ""),
+        "run_label": document.get("run_label", ""),
+        "run_note": document.get("run_note", ""),
+        "perception_method": observation.get("perception_method", ""),
+        "object_model_id": observation.get("object_model_id",
+                                           document.get("model_id", "")),
+        "device": {k: device.get(k) for k in
+                   ("name", "serial_number", "firmware_version",
+                    "usb_type_descriptor")},
+        "selected_profile": document.get("selected_profile", {}),
+        "operator_roi_px": document.get("operator_roi_px"),
+        "roi_note": document.get("roi_note", ""),
+        "frame_id": observation.get("frame_id", ""),
+        "pose_valid": pose.get("valid"),
+        "workarea_pose_available": pose.get("workarea_pose_available"),
+        # THE PHYSICAL BODY CENTRE, in the CAMERA frame. Not a work-area
+        # coordinate: there is none for this camera, and showing the simulated
+        # run's work-area centre beside a physical pose would read as though
+        # this object had been located in the cell.
+        "object_centre_mm": task.get("object_center_mm"),
+        "model_frame_origin_mm": [pose.get("x_mm"), pose.get("y_mm"),
+                                  pose.get("z_mm")],
+        "tube_axis_line": task.get("tube_axis_line"),
+        "measured_dof": pose.get("measured_dof", []),
+        "segmentation": {k: (document.get("segmentation") or {}).get(k)
+                         for k in ("mask_source", "mask_valid", "mask_pixels",
+                                   "components", "roi_px",
+                                   "mask_extent_long_mm",
+                                   "mask_extent_across_mm",
+                                   "mask_median_range_mm")},
+        "repeatability": document.get("repeatability", {}),
+        "plausibility": document.get("plausibility", {}),
+        "images": sorted(k for k, name in PHYSICAL_C5_IMAGES.items()
+                         if os.path.isfile(os.path.join(PHYSICAL_C5_DIR, name))),
+        "completed_at": document.get("completed_at", ""),
+        # SAID IN THE DATA, not only in the markup, so no consumer can render
+        # this result as a planning input by omitting a label.
+        "planning_available": False,
+        "planning_blocked_reason": (
+            "Physical 6-DoF perception validated in camera coordinates. "
+            "Work-area calibration is required before planning or execution."),
+        "accuracy_note": document.get("accuracy_note", ""),
+    }
+
+
+@app.get("/api/perception/physical/image/{kind}")
+def api_perception_physical_image(kind: str):
+    """The REAL frames the physical estimate was computed from.
+
+    SERVED FROM THE ARTIFACT, not regenerated. These are the actual images the
+    run produced; re-rendering them here would put a different picture on screen
+    from the one the measurement came from.
+    """
+    from fastapi.responses import FileResponse                    # noqa: PLC0415
+    name = PHYSICAL_C5_IMAGES.get(kind)
+    if name is None:
+        raise HTTPException(status_code=404, detail=f"unknown image {kind!r}")
+    path = os.path.join(PHYSICAL_C5_DIR, name)
+    if not os.path.isfile(path):
+        raise HTTPException(
+            status_code=404,
+            detail=f"no {kind!r} image yet — run ./scripts/physical_c5.sh")
+    return FileResponse(path, media_type="image/jpeg")
 
 
 @app.get("/api/perception/foundationpose/image/{kind}")

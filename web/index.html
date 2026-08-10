@@ -492,6 +492,35 @@
           self-test</a>
         </div>
       </div>
+
+      <!-- PHYSICAL RGB-D RUN — the real Intel RealSense D435 and a real
+           Cylinder5. A SEPARATE BLOCK from the simulated one above, and it is
+           not routed through Stage C, because the simulated chain carries a
+           camera-to-work-area transform this camera does not have. The pose
+           stays in the camera optical frame from the sensor to this panel.
+
+           IT DEMONSTRATES PERCEPTION, NOT PLANNING. `workarea_pose_available`
+           is false, so no packing, no Digital Twin placement and no execution
+           may be driven from it — which is stated on screen rather than left
+           for an operator to infer from a missing button. -->
+      <div id="phys-block" style="display:none;margin-top:10px;border-top:1px solid var(--line);padding-top:8px">
+        <h4 style="margin:0 0 6px 0">Physical RGB-D 6-DoF — Intel RealSense D435
+          <span class="badge" id="phys-badge">PHYSICAL</span></h4>
+        <div id="phys-provenance" class="note" style="margin-bottom:6px"></div>
+        <div id="phys-object" class="note" style="margin-bottom:6px"></div>
+        <div id="phys-segmentation" class="note" style="margin-bottom:6px"></div>
+        <div id="phys-repeat" class="note" style="margin-bottom:6px"></div>
+        <div id="phys-blocked" class="percep-error" style="margin-bottom:6px"></div>
+        <div class="btns" id="phys-views" style="margin-top:6px">
+          <button data-v="overlay" aria-pressed="true">CAD pose overlay</button>
+          <button data-v="rgb">RGB</button>
+          <button data-v="depth">aligned depth</button>
+          <button data-v="mask">segmentation</button>
+        </div>
+        <div id="phys-caption" class="note" style="margin-top:4px"></div>
+        <img id="phys-image" alt="real frame from the physical Intel RealSense D435"
+             style="max-width:100%;border-radius:6px;display:none;margin-top:6px"/>
+      </div>
     </div>
 
     <!-- Physical execution diagnostics. HIDDEN unless a physical backend is
@@ -1981,6 +2010,120 @@ function showSimulatedImage(kind) {
     b.setAttribute("aria-pressed", String(b.dataset.v === kind));
 }
 
+// ------------------------------------------------- physical D435 + real C5
+//
+// FETCHED ON ITS OWN, not carried on the workflow document, because it is not
+// part of a run: nothing here was planned, approved or executed. It is the
+// evidence that WISEPACK can locate a real workpiece with a real depth camera,
+// and it holds its own state so a refresh of the run cannot clear it.
+let PHYS_VIEW = "overlay";
+let PHYS_LAST = null;
+
+const PHYS_CAPTIONS = {
+  overlay: "REAL / PHYSICAL D435 — the Cylinder5 CAD reprojected at the "
+         + "ESTIMATED pose. No simulator ground truth is used; none exists for "
+         + "a physical object.",
+  rgb: "REAL / PHYSICAL D435 — the actual colour frame the estimate was "
+     + "computed from.",
+  depth: "REAL / PHYSICAL D435 — depth from the same instant, aligned to "
+       + "colour and verified against the colour intrinsics.",
+  mask: "REAL / PHYSICAL D435 — the mask measured from the physical depth by "
+      + "depth_plane_foreground inside the operator ROI, drawn on the real "
+      + "photograph.",
+};
+
+// NAMED FOR THE DEVICE, not "physical": `refreshPhysical` already exists and
+// belongs to the PLANAR camera panel. Two function declarations of one name do
+// not collide loudly — the later one silently wins — so the one that never ran
+// would have been this, and the panel would simply have stayed empty.
+async function refreshPhysicalD435() {
+  let doc = null;
+  try {
+    const res = await fetch("/api/perception/physical");
+    doc = await res.json();
+  } catch (e) {
+    doc = null;
+  }
+  const block = $("#phys-block");
+  if (!block) return;
+  block.style.display = (doc && doc.available) ? "" : "none";
+  if (!doc || !doc.available) return;
+  PHYS_LAST = doc;
+
+  // LIVE AND REPLAYED ARE DIFFERENT CLAIMS. Both are physical sensor data; a
+  // recorded capture is not evidence that the camera worked just now, and the
+  // badge carries whichever the run actually was.
+  const badge = $("#phys-badge");
+  if (badge) badge.textContent = doc.run_label || "PHYSICAL";
+
+  const device = doc.device || {};
+  $("#phys-provenance").textContent = [
+    `Acquisition: ${doc.acquisition}`,
+    `Provenance: ${doc.provenance} / physical`,
+    `Perception: FoundationPose RGB-D`,
+    device.serial_number ? `serial ${device.serial_number}` : "",
+    device.firmware_version ? `firmware ${device.firmware_version}` : "",
+    doc.selected_profile && doc.selected_profile.width
+      ? `${doc.selected_profile.width}x${doc.selected_profile.height}@${doc.selected_profile.fps}` : "",
+    doc.run_note,
+  ].filter(Boolean).join(" · ");
+
+  // THE CAMERA FRAME, NAMED. Three numbers without a frame are not a pose, and
+  // the work-area centre of the SIMULATED run must never appear beside these.
+  const centre = (doc.object_centre_mm || []).map(v => Math.round(v * 10) / 10);
+  const axis = (doc.tube_axis_line || []).map(v => Math.round(v * 1000) / 1000);
+  $("#phys-object").textContent = [
+    `Object: ${doc.object_model_id}`,
+    `physical centre ${JSON.stringify(centre)} mm in ${doc.frame_id}`,
+    `tube axis ${JSON.stringify(axis)}`,
+    `pose_valid ${doc.pose_valid}`,
+    `workarea_pose_available ${doc.workarea_pose_available}`,
+  ].join(" · ");
+
+  const seg = doc.segmentation || {};
+  $("#phys-segmentation").textContent = [
+    `Mask: ${seg.mask_source || "?"} [measured]`,
+    seg.mask_pixels ? `${seg.mask_pixels} px` : "",
+    seg.mask_extent_long_mm
+      ? `region ${seg.mask_extent_long_mm} x ${seg.mask_extent_across_mm} mm (from depth)` : "",
+    doc.operator_roi_px ? `operator ROI ${JSON.stringify(doc.operator_roi_px)} px` : "",
+    doc.roi_note,
+  ].filter(Boolean).join(" · ");
+
+  // REPEATABILITY IS NOT ACCURACY, and the label says so every time it renders.
+  const rep = (doc.repeatability || {}).object_centre || {};
+  const axisRep = (doc.repeatability || {}).tube_axis_line_deg || {};
+  const repeat = $("#phys-repeat");
+  if (repeat) {
+    repeat.textContent = (rep.radial_mm === undefined) ? "" :
+      `Stationary repeatability (NOT accuracy — no ground truth exists for a `
+      + `physical object): centre spread max ${rep.radial_mm.max} mm, `
+      + `tube-axis-line spread max ${axisRep.max}°`;
+  }
+
+  const blocked = $("#phys-blocked");
+  if (blocked) blocked.textContent = doc.planning_blocked_reason || "";
+
+  showPhysicalImage(PHYS_VIEW);
+}
+
+function showPhysicalImage(kind) {
+  PHYS_VIEW = kind;
+  const img = $("#phys-image");
+  if (!img) return;
+  img.src = `/api/perception/physical/image/${kind}?t=${Date.now()}`;
+  img.style.display = "";
+  img.onerror = () => { img.style.display = "none"; };
+  const caption = $("#phys-caption");
+  if (caption) caption.textContent = PHYS_CAPTIONS[kind] || "";
+  for (const b of document.querySelectorAll("#phys-views button"))
+    b.setAttribute("aria-pressed", String(b.dataset.v === kind));
+}
+
+for (const b of document.querySelectorAll("#phys-views button")) {
+  b.onclick = () => showPhysicalImage(b.dataset.v);
+}
+
 // The FoundationPose block. EVERY PREREQUISITE IS ITS OWN LINE, because each
 // fails independently and each has a different fix: collapsing them into one
 // "unavailable" is what produces a dashboard nobody can act on.
@@ -2500,6 +2643,7 @@ async function refreshAll() {
   await panel("cut", refreshCut);
   await panel("topology", drawTopo);
   await panel("physical", refreshPhysical);
+  await panel("physical-d435", refreshPhysicalD435);
   await panel("perception", refreshPerception);
   await panel("simnav", refreshSimulatorNav);
 }
@@ -2535,6 +2679,10 @@ function startPolling() {
   setInterval(() => panel("cut", refreshCut), 2000);
   setInterval(() => panel("topology", drawTopo), 3000);
   setInterval(() => panel("physical", refreshPhysical), 2000);
+  // The physical D435 result is an ARTEFACT ON DISK, not a live stream: it
+  // changes only when ./scripts/physical_c5.sh runs, so it is polled slowly and
+  // in its own panel, where a failure cannot take the run view down with it.
+  setInterval(() => panel("physical-d435", refreshPhysicalD435), 5000);
   setInterval(() => panel("simnav", refreshSimulatorNav), 5000);
 })();
 </script>
