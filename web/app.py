@@ -1337,6 +1337,29 @@ PHYSICAL_C5_IMAGES = {
 }
 
 
+#: When this dashboard process started, in the same UTC form the pipeline
+#: stamps its results with.
+#:
+#: WHY A TIMESTAMP AND NOT A FLAG. "Was this acquired through this dashboard?"
+#: has to survive a page reload, a second browser tab and the panel's own poll,
+#: none of which a variable set by a button press would. An artefact written
+#: AFTER this process started, in live mode, was acquired by this dashboard;
+#: one written before it is a recording, however recent.
+_DASHBOARD_STARTED_AT = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+
+
+def _ensure_perception_path() -> None:
+    """`perception/` on sys.path, for the provider and the physical pipeline.
+
+    NOT AT MODULE IMPORT. The dashboard must start on a deployment that never
+    built any of this, so the perception packages are reached only when
+    something actually asks for them.
+    """
+    perception_dir = os.path.join(REPO, "perception")
+    if perception_dir not in sys.path:
+        sys.path.insert(0, perception_dir)
+
+
 def _physical_c5_document():
     """The last physical D435 result, or None. NEVER raises."""
     if not os.path.isfile(PHYSICAL_C5_RESULT):
@@ -1697,6 +1720,19 @@ def api_perception_physical():
         engine = STATE.engine
     batch = getattr(engine, "observation_batch", None) if engine else None
     current_run = getattr(batch, "acquisition", "") == ACQUISITION_REALSENSE
+    # TWO DIFFERENT "CURRENT"S, AND CONFLATING THEM IS THE WHOLE HAZARD.
+    #
+    #   current_run       did this pose drive the WISEPACK workflow on screen?
+    #                     No, and it cannot: there is no work-area extrinsic.
+    #   current_physical  is this the physical result THIS dashboard just
+    #                     acquired, rather than a recording of an earlier one?
+    #
+    # A fresh acquisition is legitimately the current physical result and must
+    # say so; it is still not part of the run, and the timeline note below stays
+    # exactly as it was.
+    current_physical = bool(
+        document.get("run_mode") == "live"
+        and str(document.get("completed_at", "")) >= _DASHBOARD_STARTED_AT)
     return {
         "available": True,
         "reason": "",
@@ -1705,8 +1741,13 @@ def api_perception_physical():
         "acquisition_backend": document.get("acquisition_backend", "realsense"),
         "provenance": document.get("provenance", "measured"),
         "is_current_run": current_run,
-        "status_label": ("Physical D435 6-DoF — current run" if current_run else
-                         "Recorded physical D435 evidence — not the current run"),
+        "is_current_physical": current_physical,
+        "status_label": (
+            "Physical D435 6-DoF — current run" if current_run else
+            ("CURRENT PHYSICAL D435 RESULT — acquired live from this dashboard. "
+             "It is a measurement in camera coordinates and is NOT part of the "
+             "workflow run below." if current_physical else
+             "Recorded physical D435 evidence — not the current run")),
         # HOW IT WAS ACQUIRED, which is a different question from WHEN. Kept,
         # because live-from-the-camera and replayed-from-a-capture are genuinely
         # different claims — but worded in the past tense so neither can be read
@@ -1759,6 +1800,90 @@ def api_perception_physical():
             "Physical 6-DoF perception validated in camera coordinates. "
             "Work-area calibration is required before planning or execution."),
         "accuracy_note": document.get("accuracy_note", ""),
+    }
+
+
+@app.post("/api/perception/physical/acquire")
+def api_perception_physical_acquire(payload: Optional[Dict[str, Any]] = None):
+    """A NEW physical D435 acquisition, on request.
+
+    ONE IMPLEMENTATION, CALLED FROM TWO PLACES. This runs
+    `perception.physical_pipeline.run` — the same function
+    `./scripts/physical_c5.sh` runs — so a pose seen in the browser is produced
+    by exactly the code the CLI produces it with. Nothing about acquisition,
+    segmentation or estimation is reimplemented here, and nothing is shelled
+    out to.
+    IT RUNS ONLY WHEN PRESSED. Changing the method selector configures the NEXT
+    run and acquires nothing: an operator who switched a dropdown and got a
+    camera capture would have no way to look before committing.
+    """
+    body = payload or {}
+    model_id = str(body.get("model_id", "")).strip()
+    if not model_id:
+        raise HTTPException(
+            400, "`model_id` is required: FoundationPose estimates the pose OF "
+                 "A KNOWN SHAPE, and which part is on the table is stated by "
+                 "the operator, never inferred from the image or the ROI.")
+    roi = body.get("roi_px")
+    if roi is not None:
+        try:
+            roi = [int(round(float(v))) for v in roi]
+        except (TypeError, ValueError) as exc:
+            raise HTTPException(400, f"roi_px must be four numbers "
+                                     f"x0,y0,x1,y1: {exc}") from exc
+        if len(roi) != 4:
+            raise HTTPException(400, f"roi_px needs four values, got {len(roi)}")
+
+    _ensure_perception_path()
+    from physical_pipeline import (PhysicalAcquisitionError,       # noqa: PLC0415
+                                   run as run_physical)
+    try:
+        document = run_physical(
+            model_id=model_id, roi_px=roi,
+            frames=int(body.get("frames", 5)),
+            refine_iterations=int(body.get("refine_iterations", 5)),
+            dataset=str(body.get("dataset", "")).strip())
+    except PhysicalAcquisitionError as exc:
+        # THE REFUSAL REACHES THE OPERATOR WITH ITS STAGE AND ITS REASON. A mask
+        # that broke into six components and a camera that is unplugged are
+        # different problems; one "acquisition failed" would be neither. No
+        # previous pose, no simulation and no planar result is substituted.
+        return {"ok": False, **exc.to_dict()}
+    observation = document.get("observation") or {}
+    return {
+        "ok": True,
+        "dataset": document.get("dataset", ""),
+        "model_id": document.get("model_id", ""),
+        "run_mode": document.get("run_mode", ""),
+        "completed_at": document.get("completed_at", ""),
+        "frame_id": observation.get("frame_id", ""),
+        "pose_valid": (observation.get("pose") or {}).get("valid"),
+    }
+
+
+@app.get("/api/perception/physical/models")
+def api_perception_physical_models():
+    """The CAD models a physical estimate can name.
+
+    FROM THE REGISTRY, never a hard-coded list, and filtered to those that both
+    HAVE a mesh and DECLARE `foundationpose_rgbd` — a model-based estimator can
+    only locate a shape it has.
+    """
+    try:
+        _ensure_perception_path()
+        from physical_pipeline import eligible_models              # noqa: PLC0415
+        models = eligible_models(REPO)
+    except Exception as exc:                                       # noqa: BLE001
+        return {"models": [], "error": f"{type(exc).__name__}: {exc}"}
+    document = _physical_c5_document() or {}
+    return {
+        "models": models,
+        "error": "",
+        # THE LAST SUCCESSFUL SETTINGS, so the operator does not retype them.
+        # Prefilled, never applied on their own: nothing acquires until the
+        # button is pressed.
+        "last_model_id": document.get("model_id", ""),
+        "last_roi_px": document.get("operator_roi_px"),
     }
 
 

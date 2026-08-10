@@ -82,6 +82,14 @@
      detector's own reason and that reason has to be readable. */
   .percep-error{color:var(--bad);background:var(--bad-bg);border:1px solid var(--bad);
     border-radius:6px;padding:6px 9px;font-size:12px;line-height:1.4}
+  /* THE SAME PROMINENCE, WITHOUT THE ALARM. Recorded evidence is valid data
+     that simply belongs to an earlier acquisition; rendering it in the failure
+     style said something was wrong, and an evaluator who learns to read red as
+     "ignore this" will ignore a real failure later. Full-width and bordered so
+     the wording stays impossible to miss. */
+  .percep-info{color:var(--fg);background:var(--panel2,transparent);
+    border:1px solid var(--line);border-left:3px solid var(--mut);
+    border-radius:6px;padding:6px 9px;font-size:12px;line-height:1.4}
   .conn::before{content:'';display:inline-block;width:7px;height:7px;border-radius:50%;
     margin-right:6px;vertical-align:1px;background:var(--mut)}
   .conn.on::before{background:var(--ok)} .conn.off::before{background:var(--bad)}
@@ -512,7 +520,23 @@
              D435 pose into a run, so what is shown is a recording of an earlier
              acquisition. A panel that only implied that with a badge would let
              a method switch make old evidence look freshly acquired. -->
-        <div id="phys-status" class="percep-error" style="margin-bottom:6px"></div>
+        <div id="phys-status" class="percep-info" style="margin-bottom:6px"></div>
+        <!-- ACQUIRE A NEW PHYSICAL RESULT, from the ordinary dashboard.
+             The controls are shown only when the NEXT run is configured for
+             the physical RGB-D method, so the planar path is untouched.
+             `model_id` is WHAT is expected and the ROI is WHERE to look; the
+             two are separate inputs and neither is derived from the other. -->
+        <div id="phys-acquire" style="display:none;margin-bottom:8px">
+          <label class="f" style="margin-bottom:4px">Object model (CAD)
+            <select id="phys-model"></select></label>
+          <label class="f" style="margin-bottom:4px">ROI x0,y0,x1,y1 — where to look
+            <input id="phys-roi" type="text" placeholder="255,70,445,719"
+                   style="width:100%"/></label>
+          <div class="btns">
+            <button class="pri" id="c-phys-acquire">Acquire &amp; estimate</button>
+          </div>
+          <div id="phys-acquire-note" class="note" style="margin-top:6px"></div>
+        </div>
         <div id="phys-provenance" class="note" style="margin-bottom:6px"></div>
         <div id="phys-object" class="note" style="margin-bottom:6px"></div>
         <div id="phys-segmentation" class="note" style="margin-bottom:6px"></div>
@@ -547,6 +571,15 @@
       <h3>Action event timeline
         <span class="note" id="log-note"></span>
       </h3>
+      <!-- WHOSE EVENTS THESE ARE. The physical D435 panel sits directly above
+           this timeline, and two blocks in a column read as one story: an
+           evaluator could take the camera-frame pose to have driven the
+           planning and approval events listed here. It did not, and cannot —
+           there is no camera-to-work-area extrinsic. Shown ONLY while recorded
+           physical evidence is on screen, so the ordinary dashboard is
+           unchanged when it is not. -->
+      <div id="log-scope" class="percep-info"
+           style="display:none;margin-bottom:6px"></div>
       <div class="btns" id="log-filters" style="margin-bottom:6px">
         <button data-f="all" aria-pressed="true">all</button>
         <button data-f="packing">packing</button>
@@ -1475,6 +1508,12 @@ async function onDraftChanged() {
     });
   } catch (e) { /* local copy still holds it */ }
   syncScenarioControls(STATE);
+  // THE PHYSICAL CONTROLS FOLLOW THE DRAFT IMMEDIATELY. They are shown by the
+  // physical panel's own 5 s poll, and waiting five seconds after choosing
+  // FoundationPose to be offered the model and the ROI reads as the selection
+  // not having taken. It still ACQUIRES NOTHING — this only decides what is on
+  // screen.
+  refreshPhysicalD435();
 }
 
 // Shows what is RUNNING versus what the controls would generate. Never disables
@@ -2054,7 +2093,14 @@ async function refreshPhysicalD435() {
   const block = $("#phys-block");
   if (!block) return;
   block.style.display = (doc && doc.available) ? "" : "none";
-  if (!doc || !doc.available) return;
+  if (!doc || !doc.available) {
+    // THE PANEL AND ITS TIMELINE NOTE GO TOGETHER. If the artefact disappears
+    // mid-session the note would otherwise be left pointing at a block that is
+    // no longer on screen.
+    const gone = $("#log-scope");
+    if (gone) { gone.style.display = "none"; gone.textContent = ""; }
+    return;
+  }
   PHYS_LAST = doc;
 
   // IS THIS THE CURRENT RUN, OR EVIDENCE FROM AN EARLIER ONE?
@@ -2067,7 +2113,8 @@ async function refreshPhysicalD435() {
   // how fresh it looks.
   const badge = $("#phys-badge");
   if (badge) {
-    badge.textContent = doc.is_current_run ? "CURRENT RUN" : "RECORDED EVIDENCE";
+    badge.textContent = doc.is_current_run ? "CURRENT RUN"
+      : (doc.is_current_physical ? "CURRENT PHYSICAL RESULT" : "RECORDED EVIDENCE");
     badge.title = doc.status_label || "";
   }
   const heading = $("#phys-status");
@@ -2083,7 +2130,11 @@ async function refreshPhysicalD435() {
     doc.acquired_how,
     doc.dataset ? `capture ${doc.dataset}` : "",
     doc.completed_at ? `estimated ${doc.completed_at}` : "",
-    device.serial_number ? `serial ${device.serial_number}` : "",
+    // THE SERIAL IS NOT SHOWN HERE. It identifies one specific unit and answers
+    // a question nobody asks of a demonstration; firmware, USB version and the
+    // stream profile say what an evaluator actually needs — that this is a real
+    // D4xx running a real profile. It stays in /api/perception/physical and in
+    // the saved artefact, where an audit can still find it.
     device.firmware_version ? `firmware ${device.firmware_version}` : "",
     doc.selected_profile && doc.selected_profile.width
       ? `${doc.selected_profile.width}x${doc.selected_profile.height}@${doc.selected_profile.fps}` : "",
@@ -2125,6 +2176,37 @@ async function refreshPhysicalD435() {
   const blocked = $("#phys-blocked");
   if (blocked) blocked.textContent = doc.planning_blocked_reason || "";
 
+  // AND THE TIMELINE BELOW IS NOT THIS. Set from here because this panel is the
+  // reason the ambiguity exists: it appears, the timeline is pushed under it,
+  // and the two read as one story unless the boundary is drawn.
+  // THE ACQUIRE CONTROLS FOLLOW THE SELECTOR, not the artefact. They appear
+  // when the NEXT run is configured for the physical RGB-D method — which is a
+  // statement of intent — and showing them always would offer a camera capture
+  // beside a planar run that is not using the camera that way.
+  const method = $("#s-method") ? $("#s-method").value : "";
+  const wantsPhysical = method === "foundationpose_rgbd";
+  const acquire = $("#phys-acquire");
+  if (acquire) {
+    acquire.style.display = wantsPhysical ? "" : "none";
+    if (wantsPhysical) fillPhysicalModels();
+  }
+
+  const scope = $("#log-scope");
+  if (scope) {
+    // SHOWN FOR EITHER KIND OF PHYSICAL RESULT. A freshly acquired pose is if
+    // anything MORE likely to be read as having driven the run below, because
+    // it was just produced by pressing a button on this page. It did not.
+    const separate = doc.available && !doc.is_current_run;
+    const which = doc.is_current_physical
+      ? "the physical D435 result" : "the recorded physical D435 evidence";
+    scope.style.display = separate ? "" : "none";
+    scope.textContent = separate
+      ? `CURRENT WORKFLOW — separate from ${which} above. Those events belong `
+        + "to the run on screen; the camera-frame pose drove no planning, no "
+        + "approval and no execution."
+      : "";
+  }
+
   showPhysicalImage(PHYS_VIEW);
 }
 
@@ -2144,6 +2226,83 @@ function showPhysicalImage(kind) {
 for (const b of document.querySelectorAll("#phys-views button")) {
   b.onclick = () => showPhysicalImage(b.dataset.v);
 }
+
+// ------------------------------------------- acquiring a NEW physical result
+//
+// THE BUTTON ACQUIRES. THE DROPDOWN DOES NOT. Selecting the RGB-D method
+// configures the NEXT run — the same rule every other selector follows — and an
+// operator who switched a dropdown and got a camera capture would have had no
+// chance to check the model or the ROI first.
+let PHYS_MODELS_FILLED = false;
+
+async function fillPhysicalModels() {
+  const sel = $("#phys-model");
+  if (!sel || PHYS_MODELS_FILLED) return;
+  let doc = null;
+  try {
+    doc = await (await fetch("/api/perception/physical/models")).json();
+  } catch (e) { return; }
+  if (!doc || !doc.models || !doc.models.length) return;
+  PHYS_MODELS_FILLED = true;
+  sel.textContent = "";
+  for (const m of doc.models) sel.append(el("option", { value: m.model_id }, m.label));
+  // PREFILLED FROM THE LAST SUCCESSFUL RUN, never applied on its own.
+  if (doc.last_model_id
+      && [...sel.options].some(o => o.value === doc.last_model_id)) {
+    sel.value = doc.last_model_id;
+  }
+  const roi = $("#phys-roi");
+  if (roi && !roi.value && doc.last_roi_px) roi.value = doc.last_roi_px.join(",");
+}
+
+async function acquirePhysical() {
+  const btn = $("#c-phys-acquire");
+  const note = $("#phys-acquire-note");
+  const model = $("#phys-model") ? $("#phys-model").value : "";
+  const roiRaw = ($("#phys-roi") ? $("#phys-roi").value : "").trim();
+  if (!model) {
+    if (note) note.textContent = "Choose the CAD model that is on the table. "
+      + "FoundationPose estimates the pose OF A KNOWN SHAPE.";
+    return;
+  }
+  let roi = null;
+  if (roiRaw) {
+    roi = roiRaw.split(",").map(v => Number(v.trim()));
+    if (roi.length !== 4 || roi.some(v => !Number.isFinite(v))) {
+      if (note) note.textContent = "ROI must be four numbers: x0,y0,x1,y1.";
+      return;
+    }
+  }
+  if (btn) { btn.disabled = true; btn.textContent = "Acquiring…"; }
+  if (note) note.textContent = "capturing from the physical D435, segmenting, "
+    + "then estimating — this takes a few seconds per frame";
+  try {
+    const res = await fetch("/api/perception/physical/acquire", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ model_id: model, roi_px: roi, frames: 5 }),
+    });
+    const doc = await res.json();
+    if (!res.ok) {
+      if (note) note.textContent = "Refused — " + JSON.stringify(doc.detail || doc);
+    } else if (!doc.ok) {
+      // THE REFUSAL, WITH ITS STAGE. No previous pose is substituted, and the
+      // panel above keeps whatever it held — clearly labelled as recorded.
+      if (note) note.textContent = `REFUSED at ${doc.stage}: ${doc.reason}`;
+    } else if (note) {
+      note.textContent = `Acquired ${doc.dataset} — ${doc.model_id}, `
+        + `pose_valid ${doc.pose_valid}, frame ${doc.frame_id}`;
+    }
+  } catch (e) {
+    if (note) note.textContent = "Failed — " + e;
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = "Acquire & estimate"; }
+    // The panel re-reads the artefact either way, so a refusal cannot leave a
+    // new result on screen and success cannot leave an old one.
+    await refreshPhysicalD435();
+  }
+}
+
+if ($("#c-phys-acquire")) $("#c-phys-acquire").onclick = acquirePhysical;
 
 // The FoundationPose block. EVERY PREREQUISITE IS ITS OWN LINE, because each
 // fails independently and each has a different fix: collapsing them into one
@@ -2213,7 +2372,16 @@ async function refreshState() {
   STATE = await api("/api/state");
   fillSelects(STATE);
   syncScenarioControls(STATE);
-  for (const sel of ["#s-preset", "#s-seed", "#s-strategy", "#s-robot"]) {
+  // `#s-method` IS IN THIS LIST, AND ITS ABSENCE WAS A BUG. Every control here
+  // notifies the draft on change, which does two things: it persists the
+  // selection (locally and through /api/draft) and it sets DRAFT_TOUCHED, which
+  // is what stops the 1 s poll re-applying the stored value. Unbound, the
+  // perception method did neither — a selection of FoundationPose was never
+  // recorded anywhere, and the next poll put the selector back on the stored
+  // planar draft within a second. The selector looked broken; the state model
+  // underneath it was always right, and the wire was simply missing.
+  for (const sel of ["#s-preset", "#s-seed", "#s-strategy", "#s-robot",
+                     "#s-method"]) {
     const node = $(sel);
     if (node && !node.dataset.draftBound) {
       node.dataset.draftBound = "1";

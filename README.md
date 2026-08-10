@@ -144,23 +144,44 @@ which is the Human-in-the-Loop architecture applied to perception.
 ## Run it — three commands
 
 ```bash
-# 1. The dashboard. Finds the planar camera, the D435 and the simulated RGB-D
-#    by itself; no camera environment variables.
+# The dashboard. Finds the planar camera, the D435 and the simulated RGB-D by
+# itself; no camera environment variables.
 ./run_wisepack_dashboard.sh
 
-# 2. Physical D435 + the real Cylinder5, from a RECORDED REAL D435 capture.
-#    Recorded physical sensor data — NOT simulation, and reproducible without
-#    the hardware or the lighting of that day.
-./scripts/physical_c5_dashboard.sh --dataset cylinder5-20260810-133408
-
-# 3. Simulated RGB-D perception through to planning, with quantitative error.
+# Simulated RGB-D perception through to planning, with quantitative error.
 ./scripts/stage_e.sh --reuse
 ```
 
-Then open <http://127.0.0.1:8080>.
+Then open <http://127.0.0.1:8080>. **Both physical camera paths run from the
+dashboard itself** — no shell command between them:
 
-To acquire from the camera on the desk instead of replaying, drop the
-`--dataset`: `./scripts/physical_c5_dashboard.sh`.
+| Object source | Perception method | Action |
+|---|---|---|
+| Physical camera | Planar RGB — Faster R-CNN | *Detect & plan* → a fresh A4Tech detection |
+| Physical camera | RGB-D 6-DoF — FoundationPose | pick the CAD model and the ROI, then *Acquire & estimate* → a **new** D435 capture, segmentation and 6-DoF pose |
+
+Switching the method selector configures the next run and acquires nothing;
+only the button acquires.
+
+<details>
+<summary>Reproducing the physical result from the command line</summary>
+
+The same pipeline, as a CLI — useful for diagnostics and for reproducing the
+demonstration without the hardware:
+
+```bash
+# A RECORDED REAL D435 capture. Real sensor data, NOT simulation.
+./scripts/physical_c5_dashboard.sh --dataset cylinder5-20260810-133408
+
+# The camera on the desk instead
+./scripts/physical_c5.sh --model cylinder5 --roi 255,70,445,719
+./scripts/physical_c5.sh --models          # the eligible CAD models
+```
+
+`scripts/physical_c5.py` and the dashboard endpoint call the same
+`perception/physical_pipeline.py`, so both produce a pose the same way.
+
+</details>
 
 **When perception is unreliable, WISEPACK refuses.** If the segmentation
 validity checks fail, no pose is estimated and no mask is fabricated to get past

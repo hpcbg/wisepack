@@ -43,6 +43,18 @@ def _function(source: str, header: str) -> str:
     return header + (rest if end == -1 else rest[:end])
 
 
+def _code_only(source: str) -> str:
+    """Python with docstrings and comments removed.
+
+    These modules EXPLAIN what they must not do, and have to NAME those things
+    to explain them — `physical_c5.sh`, "simulated", "planar" all appear in
+    prose saying they are not used. A check that cannot tell the explanation
+    from the behaviour would forbid writing the reason down.
+    """
+    source = re.sub(r'"""(?:.|\n)*?"""', "", source)
+    return "\n".join(line.split("#")[0] for line in source.splitlines())
+
+
 def _physical_render() -> str:
     """The panel's own render function, comments stripped.
 
@@ -111,10 +123,11 @@ def test_live_and_replayed_are_different_claims():
     """Both are real D435 data. A recorded capture is not evidence that the
     camera worked just now, and a replay labelled live would claim a sensor the
     machine may not even have attached."""
-    driver = _read(DRIVER)
-    assert '"run_mode": "live" if live else "replay"' in driver
-    assert "LIVE PHYSICAL D435" in driver
-    assert "RECORDED PHYSICAL D435 DATA" in driver
+    # IN THE PIPELINE, which is where the stages now live.
+    pipeline = _read(os.path.join(REPO, "perception", "physical_pipeline.py"))
+    assert '"run_mode": "live" if live else "replay"' in pipeline
+    assert "LIVE PHYSICAL D435" in pipeline
+    assert "RECORDED PHYSICAL D435 DATA" in pipeline
     # THE PANEL SAYS HOW IT WAS ACQUIRED, IN THE PAST TENSE, and separately
     # from whether it is the current run. The badge once carried "LIVE PHYSICAL
     # D435" — true of the acquisition, and read as "now" by anyone looking at
@@ -311,3 +324,170 @@ def test_the_physical_refresh_does_not_shadow_the_planar_one():
     html = _read(INDEX)
     assert html.count("async function refreshPhysical(") == 1
     assert html.count("async function refreshPhysicalD435(") == 1
+
+
+# --------------------------------------------------------------------------- #
+# Evaluator-facing presentation
+# --------------------------------------------------------------------------- #
+
+
+def test_the_device_serial_is_not_shown_on_the_normal_dashboard():
+    """It identifies one specific unit and answers a question nobody asks of a
+    demonstration. Firmware, USB version and the stream profile carry what an
+    evaluator needs — that this is a real D4xx running a real profile."""
+    render = _physical_render()
+    assert "serial_number" not in render
+    # STILL AVAILABLE where an audit would look: the API and the artefact.
+    app = _read(APP)
+    assert '"serial_number"' in app
+
+
+def test_recorded_evidence_is_not_styled_as_a_failure():
+    """Valid data from an earlier acquisition is not an error. An evaluator who
+    learns to read red as "ignore this" will ignore a real failure later."""
+    html = _read(INDEX)
+    status = html[html.index('<div id="phys-status"'):
+                  html.index('<div id="phys-provenance"')]
+    assert 'class="percep-info"' in status
+    assert "percep-error" not in status
+    # AND THE NEUTRAL STYLE IS STILL A FULL-WIDTH BORDERED BLOCK, so the wording
+    # keeps its prominence rather than fading into the notes around it.
+    assert ".percep-info{" in html
+    css = html[html.index(".percep-info{"):html.index(".conn::before")]
+    assert "border" in css and "padding" in css
+
+
+def test_the_timeline_says_whose_events_it_holds():
+    """The physical panel sits directly above the timeline, and two blocks in a
+    column read as one story. The camera-frame pose drove no planning, no
+    approval and no execution — and cannot, with no work-area extrinsic."""
+    html = _read(INDEX)
+    assert 'id="log-scope"' in html
+    render = _physical_render()
+    assert "CURRENT WORKFLOW" in render
+    assert "recorded physical D435 evidence" in render
+    assert "drove no planning" in render
+
+
+def test_the_timeline_note_appears_only_with_recorded_evidence():
+    """The ordinary dashboard is unchanged when no physical artefact exists, and
+    the note never outlives the panel it refers to."""
+    html = _read(INDEX)
+    scope = html[html.index('<div id="log-scope"'):html.index('id="log-filters"')]
+    assert 'style="display:none' in scope, "it must start hidden"
+    render = _physical_render()
+    assert "doc.available && !doc.is_current_run" in render
+    # Cleared on the path where the artefact has gone away.
+    early = render[:render.index("PHYS_LAST = doc")]
+    assert "log-scope" in early
+
+
+# --------------------------------------------------------------------------- #
+# Acquiring a NEW physical result from the dashboard
+# --------------------------------------------------------------------------- #
+
+
+PIPELINE = os.path.join(REPO, "perception", "physical_pipeline.py")
+
+
+def test_there_is_one_implementation_of_the_physical_pipeline():
+    """Two copies of "capture, segment, refuse, estimate" would agree only until
+    somebody edited one, and a pose seen in the browser must be produced by
+    exactly the code the CLI runs."""
+    app = _read(APP)
+    driver = _read(DRIVER)
+    assert os.path.isfile(PIPELINE)
+    assert "from physical_pipeline import" in app
+    assert "from physical_pipeline import" in driver
+    # The CLI keeps only what a terminal needs; the stages live in the module.
+    for stage in ("def capture(", "def segment(", "def estimate("):
+        assert stage not in driver, f"the CLI re-implements {stage}"
+
+
+def test_the_dashboard_does_not_shell_out_to_the_cli():
+    """The Python pipeline is importable, so spawning a shell script would add a
+    second failure mode and lose the structured refusal."""
+    app = _read(APP)
+    body = _code_only(_function(app, "def api_perception_physical_acquire"))
+    for forbidden in ("subprocess", "physical_c5.sh", "os.system"):
+        assert forbidden not in body, f"the endpoint uses {forbidden}"
+
+
+def test_acquisition_requires_an_explicit_model():
+    """FoundationPose estimates the pose OF A KNOWN SHAPE. Which part is on the
+    table is stated by the operator — never inferred from the image, the ROI or
+    a measured component size."""
+    app = _read(APP)
+    body = _function(app, "def api_perception_physical_acquire")
+    assert "`model_id` is required" in body
+    assert "never inferred" in body
+    # And no model is hard-coded into the generic endpoint.
+    assert "cylinder5" not in body
+
+
+def test_the_model_list_comes_from_the_registry():
+    app = _read(APP)
+    assert "def api_perception_physical_models" in app
+    pipeline = _read(PIPELINE)
+    body = pipeline[pipeline.index("def eligible_models"):
+                    pipeline.index("def run(")]
+    assert "load_object_registry" in body
+    assert 'supports("foundationpose_rgbd")' in body
+    assert "mesh_exists" in body
+
+
+def test_a_refusal_names_its_stage_and_substitutes_nothing():
+    """"The camera is not there", "the mask is unusable" and "the estimator
+    failed" send an operator to three different places."""
+    pipeline = _read(PIPELINE)
+    assert "class PhysicalAcquisitionError" in pipeline
+    for stage in ('"camera"', '"segmentation"', '"estimation"', '"model"'):
+        assert stage in pipeline
+    # THE REFUSAL IS RETURNED, not swallowed, and no previous pose is used.
+    app = _read(APP)
+    body = _code_only(_function(app, "def api_perception_physical_acquire"))
+    assert '"ok": False' in body
+    for forbidden in ("_physical_c5_document", "simulated", "planar"):
+        assert forbidden not in body, f"the failure path reaches for {forbidden}"
+
+
+def test_no_mask_is_fabricated_when_segmentation_refuses():
+    pipeline = _read(PIPELINE)
+    body = pipeline[pipeline.index("def run("):]
+    assert 'if not segmentation.get("mask_valid")' in body
+    # The raise happens BEFORE any estimate call.
+    assert body.index("mask_valid") < body.index("estimate(dataset")
+
+
+def test_the_dropdown_does_not_acquire():
+    """A selector configures the NEXT run. An operator who switched a dropdown
+    and got a camera capture would have had no chance to check the model or the
+    ROI first."""
+    html = _read(INDEX)
+    assert "async function acquirePhysical" in html
+    assert '$("#c-phys-acquire").onclick = acquirePhysical' in html
+    render = _physical_render()
+    # The panel's poll shows the controls; it never presses the button.
+    assert "acquirePhysical()" not in render
+
+
+def test_a_fresh_acquisition_may_be_called_current_but_still_not_the_run():
+    """Two different "current"s. A pose acquired seconds ago is legitimately the
+    current PHYSICAL result; it still drove no planning and no approval."""
+    app = _read(APP)
+    assert "is_current_physical" in app
+    assert "CURRENT PHYSICAL D435 RESULT" in app
+    assert "is NOT part of the" in app
+    render = _physical_render()
+    assert "doc.is_current_physical" in render
+    # THE TIMELINE NOTICE SURVIVES for either kind of physical result.
+    assert "CURRENT WORKFLOW" in render
+    assert "doc.available && !doc.is_current_run" in render
+
+
+def test_a_new_acquisition_never_enables_planning():
+    app = _read(APP)
+    assert '"planning_available": False' in app
+    body = _code_only(_function(app, "def api_perception_physical_acquire"))
+    for forbidden in ("optimiz", "approve", "execute", "workarea_transform"):
+        assert forbidden not in body, f"acquisition touches {forbidden}"
