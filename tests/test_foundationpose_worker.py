@@ -546,14 +546,24 @@ def _registry():
         return {o["model_id"]: o for o in yaml.safe_load(handle)["objects"]}
 
 
-def test_every_straight_pipe_section_declares_its_axial_symmetry():
-    """Rotation about a cylinder's own axis is not observable. Any entry that
-    forgot to say so would let WISEPACK publish a fabricated angle."""
+def test_every_pipe_section_declares_a_geometric_symmetry_and_a_task_equivalence():
+    """Two DIFFERENT questions, both answered per part.
+
+    GEOMETRIC is what the CAD is: Cylinder1-3 have square ends and are axially
+    symmetric; Cylinder4 and Cylinder5 have intentional saddle-cut ends, so
+    their spin is geometrically observable and they are `discrete` instead.
+
+    TASK is what picking needs: position and the tube-axis LINE, for all five.
+    Neither may overwrite the other."""
     registry = _registry()
-    for model_id in ("cylinder1", "cylinder2", "cylinder3", "cylinder4"):
-        symmetry = registry[model_id]["symmetry"]
-        assert symmetry["type"] == "axial", model_id
-        assert symmetry["axis"] in ("x", "y", "z"), model_id
+    axial = ("cylinder1", "cylinder2", "cylinder3")
+    saddled = ("cylinder4", "cylinder5")
+    for model_id in axial:
+        assert registry[model_id]["symmetry"]["type"] == "axial", model_id
+    for model_id in saddled:
+        assert registry[model_id]["symmetry"]["type"] == "discrete", model_id
+    for model_id in axial + saddled:
+        assert registry[model_id]["task_pose_equivalence"] == "axis_line", model_id
 
 
 def test_the_bent_pipe_records_its_measured_two_fold_ambiguity():

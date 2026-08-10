@@ -1031,10 +1031,20 @@ def test_scene_objects_expose_pose_and_geometry_without_detector_json():
     first = objects[0]
     assert first["object_id"] == "physical-cylinder-001"
     assert first["frame_id"] == "wisepack_workarea"
-    assert first["pose"] == {"x_mm": 82.4, "y_mm": 46.1, "z_mm": 0.0,
-                             "yaw_deg": -31.0}
-    assert first["geometry"] == {"shape": "cylinder", "diameter_mm": 70,
-                                 "length_mm": 250, "source": "configured_proxy"}
+    # THE VALUES ARE PINNED; the dict is not frozen. Keys were added when
+    # model-based observations arrived — `reference_point`, and a bore — and a
+    # planar detection must keep reporting exactly the same NUMBERS, which is
+    # what this checks. An exact-dict assertion would have failed on a purely
+    # additive change while proving nothing about the values.
+    for key, value in {"x_mm": 82.4, "y_mm": 46.1, "z_mm": 0.0,
+                       "yaw_deg": -31.0}.items():
+        assert first["pose"][key] == value, key
+    # A planar detection reports the object itself, so its pose IS the body.
+    assert first["pose"]["reference_point"] == "object_body"
+    for key, value in {"shape": "cylinder", "diameter_mm": 70,
+                       "length_mm": 250,
+                       "source": "configured_proxy"}.items():
+        assert first["geometry"][key] == value, key
     # It is a plain JSON document — no detector-specific key survives into it.
     assert "bottles" not in json.dumps(objects)
 

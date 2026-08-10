@@ -2893,13 +2893,18 @@ required inputs with no default: guessing either is a factor-of-1000 error that
 produces a confident, completely wrong pose.
 
 **Symmetry is measured, not assumed.** `scripts/measure_mesh_symmetry.py` rotates
-each mesh onto itself and reports the residual. The pipe sections come out
-axially symmetric — their spin about their own axis is *unobservable* and is
-never reported as a measured angle — and the bent section `Cylinder5`, which
-looks fully constrained, turns out to have a **two-fold (180°) symmetry about z**:
-it is a symmetric hairpin, so swapping its two legs is unobservable. Its pose is
-determined up to that flip and no further. See
-`perception/foundationpose/REFERENCE_ASSETS.md`.
+each mesh onto itself — about the mesh's own principal axis, not just the
+coordinate axes — and reports the residual against the sampling-noise floor.
+
+All five parts are **straight round tubes** matching the engineering table
+(`references/Cylinders.png`). For Cylinder1–4 both the spin about the tube axis
+*and* the A1/A2 end swap are unobservable, so the meaningful quantity is the
+**axis line**, never an oriented vector. Cylinder5's 10.5 mm saddle-cut ends make
+its spin observable, leaving only the end swap ambiguous. Neither arbitrary spin
+nor an end swap is ever counted as pose error. See
+`perception/foundationpose/REFERENCE_ASSETS.md` — including the correction of an
+earlier, wrong "bent hairpin" conclusion that came from testing coordinate axes
+only.
 
 **Coordinate frame honesty, and two separate validities.** FoundationPose
 reports in the camera optical frame, and WISEPACK keeps it there. A successful

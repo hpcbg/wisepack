@@ -50,7 +50,8 @@ import time
 from typing import Any, Dict, List, Optional, Tuple
 
 from capability import (Capabilities, CHECKPOINT_FILE, DATASETS_DIR,
-                        REFINER_DIR, SCORER_DIR, WEIGHTS_DIR)
+                        ISAAC_DATASETS_DIR, REFINER_DIR, SCORER_DIR,
+                        WEIGHTS_DIR, dataset_roots)
 
 #: The frame every pose from this worker is expressed in. Named explicitly and
 #: never silently renamed: a model-based estimator reports relative to the
@@ -105,6 +106,40 @@ def discover_datasets(root: str) -> List["ReferenceDataset"]:
             subdirs[:] = [d for d in subdirs
                           if d not in ("rgb", "depth", "masks", "mesh")]
     return found
+
+
+def resolve_any_dataset_file(name: str) -> str:
+    """Same as `resolve_any_dataset` but for a FILE — a mesh, typically."""
+    for root in dataset_roots():
+        try:
+            resolved = resolve_dataset(name, root)
+        except DatasetError:
+            continue
+        if os.path.isfile(resolved):
+            return resolved
+    raise DatasetError(f"no file {name!r} under "
+                       + " or ".join(dataset_roots() or ["(none)"]))
+
+
+def resolve_any_dataset(name: str) -> str:
+    """Resolve a dataset name against EVERY root, in order.
+
+    Two roots exist because a generated reference case cannot be mounted inside
+    the read-only reference tree. A name is still unambiguous: the roots hold
+    different material, and the first match wins.
+    """
+    problems = []
+    for root in dataset_roots():
+        try:
+            resolved = resolve_dataset(name, root)
+        except DatasetError as exc:
+            problems.append(str(exc))
+            continue
+        if os.path.isdir(resolved):
+            return resolved
+    raise DatasetError(
+        f"no dataset {name!r} under " + " or ".join(dataset_roots() or ["(none)"])
+        + ("; " + "; ".join(problems) if problems else ""))
 
 
 def resolve_dataset(name: str, root: str = DATASETS_DIR) -> str:
@@ -434,7 +469,9 @@ def create_app(capabilities: Optional[Capabilities] = None):
         beside the repository; duplicating 183 MB to satisfy a directory
         convention would be waste and a second copy to drift.
         """
-        found = discover_datasets(DATASETS_DIR)
+        found = []
+        for root in dataset_roots():
+            found.extend(discover_datasets(root))
         recognised = {d.name.split(os.sep)[0] for d in found}
         # WHAT WAS SEARCHED AND NOT MATCHED, so nothing disappears quietly. A
         # recursive search that reports only its hits looks identical to a
@@ -445,6 +482,7 @@ def create_app(capabilities: Optional[Capabilities] = None):
             if os.path.isdir(os.path.join(DATASETS_DIR, e))
             and e not in recognised)
         return {"root": DATASETS_DIR,
+                "roots": dataset_roots(),
                 "search_depth": DATASET_SEARCH_DEPTH,
                 "datasets": [d.describe() for d in found],
                 "not_a_foundationpose_dataset": unrecognised}
@@ -533,7 +571,7 @@ def create_app(capabilities: Optional[Capabilities] = None):
             raise HTTPException(400, "a `dataset` is required")
 
         try:
-            root = resolve_dataset(dataset_name)
+            root = resolve_any_dataset(dataset_name)
             dataset = ReferenceDataset(root, base=DATASETS_DIR)
             index = int(request.get("frame", 0))
             # NO DEFAULT, DELIBERATELY. A uint16 image in millimetres and a
@@ -603,7 +641,7 @@ def create_app(capabilities: Optional[Capabilities] = None):
             # live inside the frames it is registered against — WISEPACK's own
             # CAD models sit in a separate directory of the same reference tree,
             # and resolving against the dataset could not name them at all.
-            mesh_path = resolve_dataset(mesh_path)
+            mesh_path = resolve_any_dataset_file(mesh_path)
             scale = float(request.get("mesh_scale_to_metres", 1.0))
             iterations = int(request.get("refine_iterations", 5))
         except (DatasetError, ValueError) as exc:

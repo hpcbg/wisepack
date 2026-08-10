@@ -60,7 +60,8 @@ from enum import Enum
 from typing import Any, Dict, List, Optional, Sequence
 
 from .domain import (
-    Axis, DomainError, GeometryType, PhysicalObservation, WasteItem,
+    GEOMETRY_SOURCE_CAD_MESH,
+    Axis, DomainError, GeometryType, PhysicalObservation, Vec3, WasteItem,
 )
 
 # --------------------------------------------------------------------------- #
@@ -720,24 +721,61 @@ class ObservationBatch:
         density = 7850.0
         items: List[WasteItem] = []
         for index, obs in enumerate(self.observations, start=1):
-            # Stamp the CONFIGURED geometry onto the observation too, so an
-            # observation that travels alone (to the Isaac synchronizer, say)
-            # still carries everything needed to instantiate the object.
-            obs.diameter_mm = geometry.diameter_mm
-            obs.length_mm = geometry.length_mm
-            obs.geometry_source = "configured_proxy"
+            # A MODEL-BASED OBSERVATION ALREADY KNOWS ITS OBJECT, and knows it
+            # better than the configured proxy does: it was matched against a
+            # named CAD model whose nominal dimensions came from the engineering
+            # table. Overwriting those with the proxy's would replace a real
+            # part with an anonymous cylinder — and would then plan the wrong
+            # geometry into a container.
+            cad_backed = bool(obs.object_model_id)
+            if cad_backed:
+                diameter = obs.diameter_mm or geometry.diameter_mm
+                length = obs.length_mm or geometry.length_mm
+                inner = obs.inner_diameter_mm if hasattr(
+                    obs, "inner_diameter_mm") else geometry.inner_diameter_mm
+            else:
+                # Stamp the CONFIGURED geometry onto the observation too, so an
+                # observation that travels alone (to the Isaac synchronizer,
+                # say) still carries everything needed to instantiate the
+                # object.
+                obs.diameter_mm = geometry.diameter_mm
+                obs.length_mm = geometry.length_mm
+                obs.geometry_source = "configured_proxy"
+                diameter, length = geometry.diameter_mm, geometry.length_mm
+                inner = geometry.inner_diameter_mm
+
+            # THE PHYSICAL CENTRE, NOT THE MODEL ORIGIN.
+            #
+            # `obs.position` is the integer projection of x_mm/y_mm/z_mm, which
+            # for a model-based observation locates the CAD MODEL FRAME. For a
+            # part drawn obliquely that origin lies OUTSIDE the body —
+            # Cylinder5's by 141 mm — so planning or grasping from it would
+            # target empty space. `object_center` is the body, and for a planar
+            # observation (no model centre declared) it IS the reported
+            # position, so this path is unchanged for the working detector.
+            centre = obs.object_center
+            source_position = Vec3(int(round(centre[0])), int(round(centre[1])),
+                                   int(round(centre[2])))
+
             item = WasteItem(
                 item_id=f"{id_prefix}-{index:03d}",
-                length_mm=geometry.length_mm,
-                outer_diameter_mm=geometry.diameter_mm,
+                length_mm=length,
+                outer_diameter_mm=diameter,
                 geometry_type=GeometryType.TUBE,
-                inner_diameter_mm=geometry.inner_diameter_mm,
+                inner_diameter_mm=inner,
                 material=geometry.material,
                 segregation_group=geometry.segregation_group,
-                source_position=obs.position,
+                source_position=source_position,
                 permitted_axes=tuple(Axis(a) for a in permitted_axes),
                 observation=obs,
             )
+            if cad_backed:
+                # CAD IDENTITY SURVIVES INTO PLANNING. The item is not collapsed
+                # into an anonymous generated cylinder: the twin, the audit
+                # trail and any later grasp generation can all still name the
+                # part they are handling.
+                item.geometry_source = GEOMETRY_SOURCE_CAD_MESH
+                item.model_id = obs.object_model_id
             item.weight_kg = round(item.material_volume_mm3 * 1e-9 * density, 3)
             items.append(item)
         return items
@@ -756,22 +794,38 @@ class ObservationBatch:
         as `scene_objects`, so the contract is exercised and visible today and
         the synchronizer that arrives later has something already proven to read.
         """
-        return [
-            {
+        objects = []
+        for obs in self.observations:
+            # THE PHYSICAL BODY, not the model frame. A scene synchronizer or a
+            # twin renderer placing the CAD ORIGIN would draw Cylinder5 141 mm
+            # from where it is, in empty space. For a planar observation the two
+            # coincide, so this is unchanged for the working detector.
+            centre = obs.object_center
+            axis = obs.tube_axis
+            objects.append({
                 "object_id": obs.observation_id,
                 "object_type": obs.object_type,
                 "frame_id": obs.frame_id,
-                "pose": {"x_mm": round(obs.x_mm, 3), "y_mm": round(obs.y_mm, 3),
-                         "z_mm": round(obs.z_mm, 3),
-                         "yaw_deg": round(obs.yaw_deg, 3)},
+                "pose": {"x_mm": round(centre[0], 3),
+                         "y_mm": round(centre[1], 3),
+                         "z_mm": round(centre[2], 3),
+                         "yaw_deg": round(obs.yaw_deg, 3),
+                         "reference_point": "object_body"},
+                # The long axis, when the method measured one. A LINE: for a
+                # straight tube either direction describes the same object.
+                "tube_axis_line": ([round(v, 6) for v in axis] if axis else None),
                 "geometry": {"shape": "cylinder",
                              "diameter_mm": obs.diameter_mm,
                              "length_mm": obs.length_mm,
+                             "inner_diameter_mm": obs.inner_diameter_mm,
                              "source": obs.geometry_source},
+                # CAD IDENTITY, so the twin can name the part rather than
+                # drawing an anonymous cylinder.
+                "model_id": obs.object_model_id,
+                "perception_method": obs.perception_method,
                 "source": obs.source,
-            }
-            for obs in self.observations
-        ]
+            })
+        return objects
 
 
 # --------------------------------------------------------------------------- #

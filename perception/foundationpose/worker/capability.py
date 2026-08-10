@@ -39,6 +39,17 @@ from typing import Any, Dict, List, Optional, Tuple
 #: Where the read-only mounts land inside the container.
 WEIGHTS_DIR = os.environ.get("WISEPACK_FP_WEIGHTS_DIR", "/weights")
 DATASETS_DIR = os.environ.get("WISEPACK_FP_DATASETS_DIR", "/datasets")
+#: A SECOND dataset root, for generated reference cases. Separate because it
+#: cannot be nested inside the read-only reference mount — Docker cannot create
+#: a mountpoint inside a read-only mount — and because generated cases and
+#: third-party reference material have different lifetimes anyway.
+ISAAC_DATASETS_DIR = os.environ.get("WISEPACK_FP_ISAAC_DATASETS_DIR",
+                                    "/isaac-reference")
+
+
+def dataset_roots():
+    """Every root a dataset may live under, in search order."""
+    return [d for d in (DATASETS_DIR, ISAAC_DATASETS_DIR) if os.path.isdir(d)]
 
 #: The two checkpoint directories FoundationPose requires, exactly as upstream
 #: names them. Hard-coded because they are upstream's identifiers, not a
@@ -330,4 +341,5 @@ class Capabilities:
 
 
 __all__ = ["Capabilities", "Probe", "WEIGHTS_DIR", "DATASETS_DIR",
+           "ISAAC_DATASETS_DIR", "dataset_roots",
            "REFINER_DIR", "SCORER_DIR", "CHECKPOINT_FILE"]

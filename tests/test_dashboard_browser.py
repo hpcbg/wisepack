@@ -105,7 +105,12 @@ class DashboardServer:
         # about "no camera is available" passed or failed depending on whether
         # someone had a service up. Pointed at a port nothing listens on, the
         # answer is deterministic.
+        # AND NO SIMULATED CAMERA EITHER, unless a test asks for one. The
+        # simulated RGB-D backend is available whenever a previous acquisition
+        # left an artefact on the machine, so without this the "no camera"
+        # tests passed or failed on unrelated state.
         env = dict(os.environ, WISEPACK_STEP_PERIOD_S="0.35",
+                   WISEPACK_DISABLE_SIMULATED_RGBD="1",
                    WISEPACK_PERCEPTION_SERVICE_URL=(
                        perception_url or f"http://127.0.0.1:{_free_port()}"))
         env.pop("WISEPACK_PERCEPTION_SOURCE", None)
@@ -758,7 +763,11 @@ def camera_dashboard():
     """
     service = StubPerceptionService()
     port = _free_port()
+    # THIS FIXTURE IS ABOUT THE PLANAR CAMERA. The simulated RGB-D backend is
+    # available whenever an earlier acquisition left an artefact on the machine,
+    # and letting that leak in makes the test depend on unrelated state.
     env = dict(os.environ, WISEPACK_STEP_PERIOD_S="0.35",
+               WISEPACK_DISABLE_SIMULATED_RGBD="1",
                WISEPACK_PERCEPTION_SERVICE_URL=service.url)
     env.pop("WISEPACK_PERCEPTION_SOURCE", None)
     proc = subprocess.Popen(
@@ -1037,9 +1046,12 @@ def test_the_foundationpose_block_reports_every_prerequisite_separately(page, si
     if not block.is_visible():
         pytest.skip("this build does not offer the FoundationPose method")
     status = page.inner_text("#fp-status")
+    # The frame SOURCE and the physical device are now separate lines, because
+    # a simulated acquisition needs no D435 and conflating them made a working
+    # run report itself blocked on hardware it never used.
     for label in ("Worker:", "GPU:", "FoundationPose runtime:",
-                  "Scorer weights:", "Refiner weights:", "RGB-D camera:",
-                  "Live inference:"):
+                  "Scorer weights:", "Refiner weights:", "Frames from:",
+                  "Physical D435:", "Inference:"):
         assert label in status, f"the FoundationPose status omits {label!r}"
 
 
@@ -1053,11 +1065,11 @@ def test_a_ready_runtime_without_a_camera_says_exactly_that(page, sim_server):
         pytest.skip("this build does not offer the FoundationPose method")
     status = page.inner_text("#fp-status")
     badge = page.inner_text("#fp-badge")
-    if "RGB-D camera: unavailable" in status:
-        assert "Live inference: unavailable" in status, (
-            "a missing depth camera must make live inference unavailable")
+    if "Frames from: RealSense D435 — unavailable" in status:
+        assert "Inference: unavailable" in status, (
+            "no frames must mean inference is unavailable")
         assert "INFERENCE READY" not in badge, (
-            "the badge claims inference is ready with no RGB-D camera")
+            "the badge claims inference is ready with no frame source")
 
 
 def test_the_offline_regression_control_is_labelled_as_offline(page, sim_server):
@@ -1079,3 +1091,60 @@ def test_the_dashboard_renders_with_the_method_selector_present(page, sim_server
     page.goto(sim_server.url, wait_until="networkidle")
     page.wait_for_timeout(3000)
     assert_no_refresh_failure(page, "perception method selector")
+
+
+# --------------------------------------------------------------------------- #
+# Pressing Approve must not start a machine
+# --------------------------------------------------------------------------- #
+
+
+def test_pressing_approve_authorises_without_crossing_the_execution_boundary(
+        page, sim_server):
+    """THE BUTTON, PRESSED FOR REAL.
+
+    Approval records a decision about one plan of one batch revision. It must
+    not invoke an execution adapter, solve IK, command an arm or a gripper, or
+    dispatch an execution request — an operator authorising a plan is not
+    starting a machine.
+
+    The evidence is the audit trail: a commanded physical pick emits
+    `isaac_pick_commanded`, and no such event may appear.
+    """
+    import json
+    import urllib.request
+
+    page.goto(sim_server.url, wait_until="networkidle")
+    page.wait_for_timeout(1500)
+    reset_run(page)
+    page.wait_for_timeout(2000)
+
+    def state():
+        with urllib.request.urlopen(f"{sim_server.url}/api/state", timeout=10) as r:
+            return json.load(r)
+
+    def events():
+        with urllib.request.urlopen(
+                f"{sim_server.url}/api/events?limit=200", timeout=10) as r:
+            return [e.get("action", "") for e in (json.load(r).get("events") or [])]
+
+    before = state()
+    revision = ((before.get("perception") or {}).get("scenario_revision")
+                or before.get("scenario_revision"))
+
+    approve = page.query_selector("#c-approve")
+    if approve is None or not approve.is_visible():
+        pytest.skip("the run is not at the approval gate")
+    approve.click()
+    page.wait_for_timeout(2500)
+
+    # NOTHING WAS COMMANDED. This is the assertion that matters: the physical
+    # execution path announces itself in the audit trail, and it is silent.
+    for action in events():
+        assert "isaac_pick_commanded" not in action, action
+        assert "gripper" not in action.lower(), action
+        assert "ik_" not in action.lower(), action
+    # The decision itself was recorded.
+    assert any("approve" in a for a in events()), "the approval was not recorded"
+    assert revision is None or revision == (
+        (state().get("perception") or {}).get("scenario_revision") or revision), \
+        "approving must not change the batch revision it approved"

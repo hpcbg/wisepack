@@ -113,6 +113,7 @@ class FakeClient:
 
 
 def _registry(tmp_path, symmetry=None, model_id="part", **over):
+    """`over` may set any ObjectModel field, including model_center_mm."""
     mesh = tmp_path / "part.obj"
     mesh.write_text("o part\n")
     fields = dict(model_id=model_id, object_type="pipe_section",
@@ -1120,3 +1121,257 @@ def test_the_diagnostic_names_docker_passthrough_when_only_the_host_sees_it():
                   encoding="utf-8").read()
     assert "DOCKER USB PASSTHROUGH problem" in script
     assert "not a perception one" in script
+
+
+# --------------------------------------------------------------------------- #
+# Canonicalisation must not move the body (§ Stage C diagnosis)
+# --------------------------------------------------------------------------- #
+
+
+def test_canonicalising_a_symmetric_pose_does_not_move_the_object(tmp_path):
+    """A symmetry rotation turns about the object's OWN axis, which passes
+    through its centre — not through the model origin.
+
+    Replacing the orientation while keeping the position rotates the body about
+    the wrong point. For a part drawn obliquely that is a large physical
+    displacement: Cylinder5's origin is 98.8 mm off its axis, so a 180 degree
+    canonicalisation moved it ~198 mm and turned a 4 mm camera-frame error into
+    a 284 mm workarea error.
+    """
+    import math
+    from wisepack_core.pose import Orientation, Symmetry, SymmetryType
+    provider = _provider(
+        tmp_path,
+        symmetry=Symmetry(type=SymmetryType.DISCRETE, axis="z", fold=2),
+        model_center_mm=(-130.0, -54.44, 0.0))
+    model = provider.registry.models["part"]
+
+    # A pose whose canonicalisation genuinely differs (a >180 deg spin).
+    raw = Orientation.from_yaw_deg(200.0)
+    validated, _ = validate_response(
+        {"frame_id": CAMERA_FRAME, "position_mm": [79.0, -117.0, 783.0],
+         "orientation": raw.to_dict()})
+    observation = provider.observation_from(
+        validated, model=model, acquisition=ACQUISITION_REFERENCE,
+        observation_id="o")
+    assert observation.orientation_raw is not None, "expected canonicalisation"
+
+    centre = list(model.model_center_mm)
+    before = [a + b for a, b in zip(raw.rotate(centre), [79.0, -117.0, 783.0])]
+    after = [a + b for a, b in zip(observation.orientation.rotate(centre),
+                                   [observation.x_mm, observation.y_mm,
+                                    observation.z_mm])]
+    moved = math.sqrt(sum((a - b) ** 2 for a, b in zip(after, before)))
+    assert moved < 1e-6, f"canonicalisation moved the body by {moved:.3f} mm"
+
+
+def test_a_model_without_a_measured_centre_is_left_alone(tmp_path):
+    """No centre, no correction — and no guess. Applying one about the origin
+    would be exactly the error this fix removes."""
+    from wisepack_core.pose import Orientation, Symmetry, SymmetryType
+    provider = _provider(
+        tmp_path, symmetry=Symmetry(type=SymmetryType.DISCRETE, axis="z", fold=2))
+    model = provider.registry.models["part"]
+    assert not model.model_center_mm
+    validated, _ = validate_response(
+        {"frame_id": CAMERA_FRAME, "position_mm": [1.0, 2.0, 3.0],
+         "orientation": Orientation.from_yaw_deg(200.0).to_dict()})
+    observation = provider.observation_from(
+        validated, model=model, acquisition=ACQUISITION_REFERENCE,
+        observation_id="o")
+    assert (observation.x_mm, observation.y_mm, observation.z_mm) == (1.0, 2.0, 3.0)
+
+
+def test_every_cylinder_declares_a_measured_model_centre():
+    """All five are drawn with the body away from the origin, so all five need
+    it — this is not a Cylinder5 special case."""
+    import yaml
+    with open(os.path.join(REPO, "config", "perception_objects.yaml"),
+              encoding="utf-8") as handle:
+        entries = {e["model_id"]: e for e in yaml.safe_load(handle)["objects"]}
+    for model_id in ("cylinder1", "cylinder2", "cylinder3", "cylinder4",
+                     "cylinder5"):
+        centre = entries[model_id].get("model_center_mm")
+        assert centre and len(centre) == 3, model_id
+
+
+# --------------------------------------------------------------------------- #
+# Task-level geometry: the grasp centre, not the CAD origin
+# --------------------------------------------------------------------------- #
+
+
+def test_a_cad_origin_outside_the_body_still_gives_the_right_grasp_centre(tmp_path):
+    """THE DEFECT THIS PREVENTS, stated concretely.
+
+    Cylinder5's CAD origin sits 141 mm outside its body, in empty space. A grasp
+    planner that consumed `pose.x_mm/y_mm/z_mm` would send the gripper 141 mm
+    away from the tube and close on nothing. `object_center` is the physical
+    body centre, and it is what a pick targets.
+    """
+    import math
+    from wisepack_core.pose import Orientation
+    centre = (-130.0, -54.44, 0.0)          # measured, well outside the tube
+    provider = _provider(tmp_path, model_center_mm=centre,
+                         task_axis_vector=(0.9284, -0.3716, 0.0))
+    model = provider.registry.models["part"]
+
+    # A known orientation, so the expected centre can be computed by hand.
+    orientation = Orientation.from_yaw_deg(90.0)
+    validated, _ = validate_response(
+        {"frame_id": CAMERA_FRAME, "position_mm": [100.0, 200.0, 900.0],
+         "orientation": orientation.to_dict()})
+    observation = provider.observation_from(
+        validated, model=model, acquisition=ACQUISITION_REFERENCE,
+        observation_id="o")
+
+    # A 90 deg yaw takes (x, y, z) -> (-y, x, z), so the centre offset
+    # (-130, -54.44, 0) becomes (54.44, -130, 0).
+    expected = (100.0 + 54.44, 200.0 - 130.0, 900.0)
+    for got, want in zip(observation.object_center, expected):
+        assert got == pytest.approx(want, abs=1e-6)
+
+    # And it is genuinely a DIFFERENT point from the reported pose.
+    separation = math.sqrt(sum(
+        (a - b) ** 2 for a, b in zip(observation.object_center,
+                                     (observation.x_mm, observation.y_mm,
+                                      observation.z_mm))))
+    assert separation == pytest.approx(140.94, abs=0.01)
+
+
+def test_the_two_points_are_named_and_never_both_called_position(tmp_path):
+    """§: a field called simply "position" must not mean both."""
+    provider = _provider(tmp_path, model_center_mm=(-130.0, -54.44, 0.0),
+                         task_axis_vector=(0.9284, -0.3716, 0.0))
+    batch = provider.acquire_reference(dataset="ds", model_id="part",
+                                       depth_scale_mm=1.0)
+    document = batch.observations[0].to_dict()
+    assert document["pose"]["reference_point"] == "model_frame_origin"
+    assert "object_center_mm" in document["task"]
+    assert document["task"]["object_center_mm"] != [
+        document["pose"]["x_mm"], document["pose"]["y_mm"],
+        document["pose"]["z_mm"]]
+
+
+def test_a_planar_observation_reports_the_body_as_its_own_position():
+    """The planar detector already reports the object itself, so its position
+    IS the body — and the derived centre must not move it."""
+    observation = PhysicalObservation(observation_id="o", x_mm=10.0, y_mm=20.0,
+                                      yaw_deg=15.0)
+    assert observation.object_center == (10.0, 20.0, 0.0)
+    assert observation.tube_axis is None
+    assert observation.to_dict()["pose"]["reference_point"] == "object_body"
+
+
+def test_the_task_geometry_carries_what_a_pick_needs(tmp_path):
+    provider = _provider(tmp_path, model_center_mm=(-130.0, -54.44, 0.0),
+                         task_axis_vector=(0.9284, -0.3716, 0.0))
+    batch = provider.acquire_reference(dataset="ds", model_id="part",
+                                       depth_scale_mm=1.0)
+    task = batch.observations[0].task_geometry()
+    assert task["object_center_mm"] and task["tube_axis_line"]
+    assert task["diameter_mm"] == 25 and task["length_mm"] == 315
+    # A LINE, not a direction: no consumer may read the sign as meaningful.
+    assert task["tube_axis_is_a_line_not_a_direction"] is True
+    # Unit to the precision it is PUBLISHED at: the payload rounds to 6 dp for
+    # readability, which is ~6e-5 degrees of direction error and irrelevant to a
+    # grasp. Demanding 1e-9 would only be demanding that the rounding go away.
+    assert abs(sum(v * v for v in task["tube_axis_line"]) - 1.0) < 1e-5
+
+
+def test_the_task_geometry_survives_serialisation(tmp_path):
+    provider = _provider(tmp_path, model_center_mm=(-130.0, -54.44, 0.0),
+                         task_axis_vector=(0.9284, -0.3716, 0.0))
+    batch = provider.acquire_reference(dataset="ds", model_id="part",
+                                       depth_scale_mm=1.0)
+    restored = ObservationBatch.from_dict(
+        json.loads(json.dumps(batch.to_dict())))
+    before, after = batch.observations[0], restored.observations[0]
+    for got, want in zip(after.object_center, before.object_center):
+        assert got == pytest.approx(want, abs=1e-6)
+
+
+# --------------------------------------------------------------------------- #
+# Stage D: planning must consume the physical centre, not the CAD origin
+# --------------------------------------------------------------------------- #
+
+
+def _cad_observation(centre=(-130.0, -54.44, 0.0)):
+    from wisepack_core.pose import Orientation, Symmetry, SymmetryType
+    return PhysicalObservation(
+        observation_id="o1", x_mm=383.63, y_mm=-240.84, z_mm=-45.12,
+        object_type="pipe_section", source=PerceptionSource.CAMERA.value,
+        frame_id="wisepack_workarea",
+        orientation=Orientation.identity(),
+        symmetry=Symmetry(type=SymmetryType.DISCRETE, axis="z", fold=2),
+        perception_method=METHOD, object_model_id="cylinder5",
+        diameter_mm=25, length_mm=342, inner_diameter_mm=19,
+        model_center_mm=centre, task_axis_vector=(0.9284, -0.3716, 0.0),
+        pose_valid=True, workarea_transform_valid=True)
+
+
+def test_planning_uses_the_object_centre_and_not_the_cad_origin():
+    """THE STAGE C REGRESSION, guarded.
+
+    Cylinder5's CAD origin is 141 mm outside its body. A planner fed that
+    origin would place the item — and later send a gripper — into empty space.
+    """
+    batch = ObservationBatch(
+        batch_id="b", source=PerceptionSource.CAMERA.value,
+        observations=[_cad_observation()], frame_id="wisepack_workarea")
+    item = batch.to_waste_items()[0]
+    observation = batch.observations[0]
+
+    expected = [int(round(v)) for v in observation.object_center]
+    origin = [int(round(v)) for v in (observation.x_mm, observation.y_mm,
+                                      observation.z_mm)]
+    used = [item.source_position.x, item.source_position.y,
+            item.source_position.z]
+    assert used == expected, f"planner used {used}, expected the centre {expected}"
+    assert used != origin, "the planner used the CAD model origin"
+
+
+def test_a_cad_item_keeps_its_identity_and_nominal_geometry():
+    """§3: it must not collapse into an anonymous generated cylinder. The
+    registry's nominal dimensions come from the engineering table; the
+    configured proxy's do not describe this part at all."""
+    from wisepack_core.perception import ProxyGeometry
+    batch = ObservationBatch(
+        batch_id="b", source=PerceptionSource.CAMERA.value,
+        observations=[_cad_observation()], frame_id="wisepack_workarea")
+    # A proxy geometry that is nothing like a Cylinder5, to prove it is ignored.
+    item = batch.to_waste_items(
+        geometry=ProxyGeometry(diameter_mm=65, length_mm=215))[0]
+    assert item.model_id == "cylinder5"
+    assert item.geometry_source == "cad_mesh"
+    assert (item.outer_diameter_mm, item.length_mm) == (25, 342)
+    assert item.inner_diameter_mm == 19
+
+
+def test_a_planar_observation_still_uses_the_configured_proxy_geometry():
+    """The working detector is untouched: it has no CAD model, so the proxy
+    geometry is exactly what it should get."""
+    from wisepack_core.perception import ProxyGeometry
+    planar = PhysicalObservation(observation_id="o", x_mm=10.0, y_mm=20.0,
+                                 yaw_deg=15.0, confidence=0.9)
+    batch = ObservationBatch(
+        batch_id="b", source=PerceptionSource.CAMERA.value,
+        observations=[planar], frame_id="wisepack_workarea")
+    item = batch.to_waste_items(
+        geometry=ProxyGeometry(diameter_mm=65, length_mm=215))[0]
+    assert item.model_id == ""
+    assert item.geometry_source == "generated"
+    assert (item.outer_diameter_mm, item.length_mm) == (65, 215)
+    # And its position is unchanged — for a planar detection the reported
+    # position IS the body.
+    assert (item.source_position.x, item.source_position.y) == (10, 20)
+
+
+def test_the_optimizer_handles_a_single_perceived_item():
+    """A one-object scenario is exactly what a single perceived tube produces,
+    and the perturbation step indexed past the end of a one-element list."""
+    from wisepack_core.generator import build_scenario
+    from wisepack_core.packing import OptimizerConfig, pack_optimized
+    scenario = build_scenario("cad_cylinder5_single")
+    plan = pack_optimized(scenario, config=OptimizerConfig(restarts=12, seed=7))
+    assert len(plan.placements) == 1
+    assert plan.placements[0].item_id == scenario.items[0].item_id

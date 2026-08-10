@@ -86,9 +86,28 @@ objects:
     mesh_units: mm
     scale: 1.0
     extents_mm: [20.0, 20.0, 40.0]      # measured from the mesh
+    # NOMINAL, from the engineering table — not derived from the mesh.
+    # The planner's arithmetic is integer millimetres and must not move
+    # when somebody re-exports a part.
+    diameter_mm: 20
+    length_mm: 40
+    wall_mm: 2
+    inner_diameter_mm: 16
+    # MEASURED AABB centre, in this model's own coordinates. The point a
+    # symmetry rotation turns about — NOT the model origin, which for
+    # these obliquely drawn parts sits well outside the geometry.
+    model_center_mm: [0.0, 0.0, 20.0]
     symmetry:
       type: axial
       axis: z
+    # TASK-LEVEL EQUIVALENCE, separate from the geometric symmetry
+    # above. Picking this tube needs its centre and the LINE of its
+    # axis; it does not need circumferential spin, saddle orientation
+    # or which end is A1. Declared even where spin is geometrically
+    # observable, because observability and task relevance are
+    # different questions.
+    task_pose_equivalence: axis_line
+    task_axis: z
     methods:
       - foundationpose_rgbd
     description: >-
@@ -102,9 +121,28 @@ objects:
     mesh_units: mm
     scale: 1.0
     extents_mm: [35.0, 70.0, 35.0]
+    # NOMINAL, from the engineering table — not derived from the mesh.
+    # The planner's arithmetic is integer millimetres and must not move
+    # when somebody re-exports a part.
+    diameter_mm: 35
+    length_mm: 70
+    wall_mm: 3
+    inner_diameter_mm: 29
+    # MEASURED AABB centre, in this model's own coordinates. The point a
+    # symmetry rotation turns about — NOT the model origin, which for
+    # these obliquely drawn parts sits well outside the geometry.
+    model_center_mm: [-300.0, 25.0, 0.0]
     symmetry:
       type: axial
       axis: y
+    # TASK-LEVEL EQUIVALENCE, separate from the geometric symmetry
+    # above. Picking this tube needs its centre and the LINE of its
+    # axis; it does not need circumferential spin, saddle orientation
+    # or which end is A1. Declared even where spin is geometrically
+    # observable, because observability and task relevance are
+    # different questions.
+    task_pose_equivalence: axis_line
+    task_axis: y
     methods:
       - foundationpose_rgbd
     description: Straight pipe section, axis along the mesh y axis.
@@ -116,14 +154,34 @@ objects:
     mesh_units: mm
     scale: 1.0
     extents_mm: [34.98, 190.0, 35.0]
+    # NOMINAL, from the engineering table — not derived from the mesh.
+    # The planner's arithmetic is integer millimetres and must not move
+    # when somebody re-exports a part.
+    diameter_mm: 35
+    length_mm: 190
+    wall_mm: 3
+    inner_diameter_mm: 29
+    # MEASURED AABB centre, in this model's own coordinates. The point a
+    # symmetry rotation turns about — NOT the model origin, which for
+    # these obliquely drawn parts sits well outside the geometry.
+    model_center_mm: [40.0, -35.0, 0.0]
     symmetry:
       type: axial
       axis: y
+    # TASK-LEVEL EQUIVALENCE, separate from the geometric symmetry
+    # above. Picking this tube needs its centre and the LINE of its
+    # axis; it does not need circumferential spin, saddle orientation
+    # or which end is A1. Declared even where spin is geometrically
+    # observable, because observability and task relevance are
+    # different questions.
+    task_pose_equivalence: axis_line
+    task_axis: y
     methods:
       - foundationpose_rgbd
     description: >-
-      Long straight pipe section. Good position and axis-direction test; axial
-      spin is unobservable.
+      Long straight pipe section with square ends. Position and axis DIRECTION
+      are the meaningful quantities; both axial spin and the A1/A2 end swap are
+      unobservable, so the axis is a LINE and not an oriented vector.
 
   # OD 25, length 315.5, axis along x.
   - model_id: cylinder4
@@ -132,42 +190,99 @@ objects:
     mesh_units: mm
     scale: 1.0
     extents_mm: [315.51, 25.0, 25.0]
-    symmetry:
-      type: axial
-      axis: x
-    methods:
-      - foundationpose_rgbd
-    description: >-
-      Longest straight pipe section, axis along the mesh x axis.
-
-  # THE BENT ONE — and the measurement that matters most here.
-  #
-  # It is not axially symmetric: rotating it about any axis by an arbitrary
-  # angle moves the surface by >100 mm, so its orientation IS genuinely
-  # constrained in a way a straight tube's never is. That makes it the right
-  # early 6-DoF test.
-  #
-  # BUT IT IS NOT UNIQUELY CONSTRAINED, which eyeballing it would not reveal:
-  # a 180 deg rotation about z maps it onto itself to within 0.75 mm, i.e. to
-  # sampling noise. It is a symmetric hairpin, so swapping its two legs is
-  # unobservable. Its pose is determined up to that flip and no further, and
-  # WISEPACK must report it that way.
-  - model_id: cylinder5
-    object_type: pipe_section_bent
-    mesh_path: CAD-Models/STL-Files/Cylinder5.stl
-    mesh_units: mm
-    scale: 1.0
-    extents_mm: [315.5, 148.02, 25.0]
+    # GEOMETRIC: its 5.1 mm saddle-cut ends are intentional geometry (the
+    # tangential joints in the engineering reference), so spin about the tube
+    # axis is not a true symmetry. The measured residual is weak — 1.43 mm
+    # against a 0.64 mm noise floor, against Cylinder5's 3.66 mm — but the
+    # feature is real and is not smoothed away here. What IS unobservable is
+    # the A1/A2 end swap (0.96 mm, at the noise floor).
+    # NOMINAL, from the engineering table — not derived from the mesh.
+    # The planner's arithmetic is integer millimetres and must not move
+    # when somebody re-exports a part.
+    diameter_mm: 25
+    length_mm: 316
+    wall_mm: 3
+    inner_diameter_mm: 19
+    # MEASURED AABB centre, in this model's own coordinates. The point a
+    # symmetry rotation turns about — NOT the model origin, which for
+    # these obliquely drawn parts sits well outside the geometry.
+    model_center_mm: [-130.0, 40.0, 0.0]
     symmetry:
       type: discrete
       axis: z
       fold: 2
+    # TASK-LEVEL EQUIVALENCE, separate from the geometric symmetry
+    # above. Picking this tube needs its centre and the LINE of its
+    # axis; it does not need circumferential spin, saddle orientation
+    # or which end is A1. Declared even where spin is geometrically
+    # observable, because observability and task relevance are
+    # different questions.
+    task_pose_equivalence: axis_line
+    task_axis: x
     methods:
       - foundationpose_rgbd
     description: >-
-      Bent (hairpin) pipe section. Orientation is well constrained — unlike the
-      straight sections — but only up to a measured 180 deg flip about z, which
-      exchanges its two legs. Do not report that flip as resolved.
+      Long straight pipe section with saddle-cut ends, axis along the mesh x
+      axis. Spin is geometrically observable via those cuts, though weakly; the
+      A1/A2 end swap is not. For PICKING none of that matters — see
+      task_pose_equivalence.
+
+  # THE ONE WHOSE SPIN IS OBSERVABLE — and the measurement that matters most.
+  #
+  # STRAIGHT, like every part here: D25 x L342 x T3 per the engineering table,
+  # measured at 341.3 mm long and 25.9 mm across. An earlier revision called it
+  # a "bent hairpin"; that was wrong, and it came from testing only the
+  # COORDINATE axes on a mesh that is modelled obliquely.
+  #
+  # What makes it different from Cylinder1-4 is its ENDS: both are saddle
+  # (fishmouth) cuts, 10.5 mm deep, for the tangential joints the engineering
+  # table describes. That feature makes rotation about the tube's own axis
+  # OBSERVABLE (3.66 mm residual against a 0.67 mm noise floor), which no other
+  # part here offers.
+  #
+  # What remains unobservable is the A1/A2 END SWAP: a 180 deg rotation about z
+  # maps it onto itself to within 0.77 mm, i.e. sampling noise. Its pose is
+  # determined up to that swap and no further.
+  - model_id: cylinder5
+    object_type: pipe_section
+    mesh_path: CAD-Models/STL-Files/Cylinder5.stl
+    mesh_units: mm
+    scale: 1.0
+    extents_mm: [315.5, 148.02, 25.0]
+    # NOMINAL, from the engineering table — not derived from the mesh.
+    # The planner's arithmetic is integer millimetres and must not move
+    # when somebody re-exports a part.
+    diameter_mm: 25
+    length_mm: 342
+    wall_mm: 3
+    inner_diameter_mm: 19
+    # MEASURED AABB centre, in this model's own coordinates. The point a
+    # symmetry rotation turns about — NOT the model origin, which for
+    # these obliquely drawn parts sits well outside the geometry.
+    model_center_mm: [-130.0, -54.44, 0.0]
+    symmetry:
+      type: discrete
+      axis: z
+      fold: 2
+    # TASK-LEVEL EQUIVALENCE, separate from the geometric symmetry
+    # above. Picking this tube needs its centre and the LINE of its
+    # axis; it does not need circumferential spin, saddle orientation
+    # or which end is A1. Declared even where spin is geometrically
+    # observable, because observability and task relevance are
+    # different questions.
+    task_pose_equivalence: axis_line
+    # MEASURED, AND OBLIQUE. This part is modelled at an angle in its own file,
+    # so its tube axis is not a coordinate axis and naming one would compare
+    # the wrong direction entirely.
+    task_axis_vector: [0.9284, -0.3716, 0.0]
+    task_axis: x
+    methods:
+      - foundationpose_rgbd
+    description: >-
+      Straight pipe section with saddle-cut ends. Its spin about the tube axis
+      IS observable — unlike Cylinder1-4 — but its two ends are
+      interchangeable: a measured 180 deg rotation about z maps it onto itself.
+      Do not report that end swap as resolved.
 
   # --- the WISEPACK proxy, once a mesh exists for it ---------------------- #
   #

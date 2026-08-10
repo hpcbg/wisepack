@@ -55,6 +55,12 @@ SCHEMA_VERSION = "wisepack/1"
 # --------------------------------------------------------------------------- #
 
 
+#: How an item's shape is obtained. See `WasteItem.geometry_source`.
+GEOMETRY_SOURCE_GENERATED = "generated"
+GEOMETRY_SOURCE_CAD_MESH = "cad_mesh"
+GEOMETRY_SOURCES = (GEOMETRY_SOURCE_GENERATED, GEOMETRY_SOURCE_CAD_MESH)
+
+
 class GeometryType(str, Enum):
     """The six EDF/CEA waste geometry classes named in the WISEPACK proposal.
 
@@ -344,6 +350,9 @@ class PhysicalObservation:
     #: -- known proxy geometry (configured, never inferred from the detector) --
     diameter_mm: Optional[int] = None
     length_mm: Optional[int] = None
+    #: The bore, for a hollow part. Carried so the planner weighs a tube rather
+    #: than the solid rod that bounds it.
+    inner_diameter_mm: Optional[int] = None
     geometry_source: str = "configured_proxy"
     # -- FULL 3-D ORIENTATION ------------------------------------------------ #
     #
@@ -398,6 +407,26 @@ class PhysicalObservation:
     #: measures three of six; saying so stops a consumer reading an assumed zero
     #: as a measured height.
     measured_dof: Tuple[str, ...] = ()
+    # -- TASK-LEVEL GEOMETRY ------------------------------------------------ #
+    #
+    # WHAT `x_mm`/`y_mm`/`z_mm` ACTUALLY LOCATE, and why that is not one answer.
+    #
+    # A model-based estimator reports the pose of the CAD MODEL FRAME, and for a
+    # part drawn obliquely that frame's origin can sit far outside the body —
+    # Cylinder5's is 141 mm away, in empty space. A planar detector reports the
+    # object itself. Both are correct; they are different points.
+    #
+    # So the model frame stays in `x_mm`/`y_mm`/`z_mm` (unchanged, and correct
+    # for FoundationPose), and the PHYSICAL point a gripper must go to is
+    # derived and named separately. A grasp planner that consumed the model
+    # origin would send the arm 141 mm into thin air.
+    #
+    # Carried ON the observation rather than looked up, so a consumer receiving
+    # it over DDS or FIWARE can grasp without the object registry.
+    model_center_mm: Tuple[float, ...] = ()
+    #: The object's long axis in MODEL coordinates. Measured, and a vector
+    #: because these parts are drawn obliquely.
+    task_axis_vector: Tuple[float, ...] = ()
 
     def __post_init__(self) -> None:
         _require_id("observation_id", self.observation_id)
@@ -453,6 +482,53 @@ class PhysicalObservation:
         self.measured_dof = tuple(str(d) for d in (self.measured_dof or ()))
 
     @property
+    def object_center(self) -> Tuple[float, float, float]:
+        """The PHYSICAL centre of the object, in `frame_id`. Millimetres.
+
+        THIS is what a grasp targets. When a model centre is declared it is
+        transformed by the estimated orientation and added to the model-frame
+        position; when none is declared — the planar case, where the detector
+        already reports the object itself — the reported position IS the body
+        and is returned unchanged.
+        """
+        if not self.model_center_mm or self.orientation is None:
+            return (self.x_mm, self.y_mm, self.z_mm)
+        rotated = self.orientation.rotate(list(self.model_center_mm))
+        return (self.x_mm + rotated[0], self.y_mm + rotated[1],
+                self.z_mm + rotated[2])
+
+    @property
+    def tube_axis(self) -> Optional[Tuple[float, float, float]]:
+        """The object's long axis as a unit vector in `frame_id`, or None.
+
+        A LINE, not an arrow: for a straight tube either direction describes the
+        same object, and no consumer may read the sign as meaningful.
+        """
+        if not self.task_axis_vector or self.orientation is None:
+            return None
+        rotated = self.orientation.rotate(list(self.task_axis_vector))
+        length = math.sqrt(sum(v * v for v in rotated))
+        if length < 1e-12:
+            return None
+        return tuple(v / length for v in rotated)
+
+    def task_geometry(self) -> Dict[str, Any]:
+        """Everything a pick needs, and nothing that would mislead it."""
+        axis = self.tube_axis
+        return {
+            "object_center_mm": [round(v, 3) for v in self.object_center],
+            "tube_axis_line": ([round(v, 6) for v in axis] if axis else None),
+            "tube_axis_is_a_line_not_a_direction": True,
+            "diameter_mm": self.diameter_mm,
+            "length_mm": self.length_mm,
+            "frame_id": self.frame_id,
+            "note": ("object_center_mm is the physical body centre and is what "
+                     "a grasp targets. It is NOT pose.model_frame_origin_mm, "
+                     "which is where the CAD model's own origin lands and can "
+                     "be outside the object."),
+        }
+
+    @property
     def workarea_pose_available(self) -> bool:
         """Can this observation be placed in the work area?
 
@@ -485,9 +561,14 @@ class PhysicalObservation:
             # consumer — the dashboard, the twin validator, the FIWARE bridge —
             # reads exactly what it read before; the 3-D content is additive.
             "pose": {
+                # UNCHANGED KEYS, so every existing consumer keeps working —
+                # but NAMED below, because for a model-based method these
+                # locate the CAD model frame and not the object.
                 "x_mm": round(self.x_mm, 3),
                 "y_mm": round(self.y_mm, 3),
                 "z_mm": round(self.z_mm, 3),
+                "reference_point": ("model_frame_origin" if self.model_center_mm
+                                    else "object_body"),
                 "yaw_deg": round(self.yaw_deg, 3),
                 # The authoritative orientation. `yaw_deg` above is its planar
                 # projection, kept for the consumers that only need a plane.
@@ -503,6 +584,11 @@ class PhysicalObservation:
                 "workarea_pose_available": self.workarea_pose_available,
                 "measured_dof": list(self.measured_dof),
             },
+            # THE TASK-LEVEL VIEW, derived and named. A planner reads this and
+            # never has to know which reference point `pose` used.
+            "task": self.task_geometry(),
+            "model_center_mm": list(self.model_center_mm),
+            "task_axis_vector": list(self.task_axis_vector),
             "confidence": (round(self.confidence, 4)
                            if self.confidence is not None else None),
             "perception_method": self.perception_method,
@@ -523,6 +609,7 @@ class PhysicalObservation:
             "geometry": {
                 "diameter_mm": self.diameter_mm,
                 "length_mm": self.length_mm,
+                "inner_diameter_mm": self.inner_diameter_mm,
                 "source": self.geometry_source,
             },
         }
@@ -550,6 +637,7 @@ class PhysicalObservation:
             calibration_status=d.get("calibration_status", "unknown"),
             calibration_revision=d.get("calibration_revision", ""),
             diameter_mm=geometry.get("diameter_mm"),
+            inner_diameter_mm=geometry.get("inner_diameter_mm"),
             length_mm=geometry.get("length_mm"),
             geometry_source=geometry.get("source", "configured_proxy"),
             # ABSENT MEANS PLANAR, not malformed: a document written before
@@ -564,6 +652,8 @@ class PhysicalObservation:
             perception_method=d.get("perception_method", ""),
             object_model_id=d.get("object_model_id", ""),
             pose_valid=bool(pose.get("valid", True)),
+            model_center_mm=tuple(d.get("model_center_mm") or ()),
+            task_axis_vector=tuple(d.get("task_axis_vector") or ()),
             # ABSENT MEANS "not stated", and for a document written before this
             # field existed the honest reading is that nothing claimed a
             # transform. A planar observation is unaffected: it is already in
@@ -619,6 +709,27 @@ class WasteItem:
     # (the derived segments) via cutting.py; this item then leaves the packable
     # set. All default to "no cutting", so every pre-existing scenario JSON keeps
     # its exact behaviour (backward compatible — see from_dict).
+    # -- geometry provenance ------------------------------------------------ #
+    #
+    # WHERE THIS ITEM'S SHAPE COMES FROM. Two paths coexist and neither replaces
+    # the other:
+    #
+    #   GENERATED  a parametric tube described by the fields above. The existing
+    #              preset scenarios, the optimizer regressions and every test
+    #              that needs no CAD use this, and it stays the DEFAULT so those
+    #              are byte-for-byte unaffected.
+    #   CAD_MESH   a real reference part, identified by `model_id` and resolved
+    #              through the object-model registry. Used by the perception,
+    #              FoundationPose and sim-to-real scenarios, where the exact
+    #              geometry — hollow bore, saddle ends — is the whole point.
+    #
+    # THE PATH IS DECLARED, NEVER INFERRED, and this layer never resolves it: a
+    # mesh path is looked up by whoever needs the geometry (the Isaac adapter,
+    # the perception provider), so planning code neither imports a simulator nor
+    # parses an STL.
+    geometry_source: str = GEOMETRY_SOURCE_GENERATED
+    #: The object-model registry key, for a CAD-backed item. Empty otherwise.
+    model_id: str = ""
     cut_allowed: bool = False
     minimum_segment_length_mm: Optional[int] = None   # None == no explicit floor
     maximum_number_of_cuts: int = 0                   # 0 == uncut only
@@ -779,6 +890,11 @@ class WasteItem:
             "occupied_volume_mm3": self.occupied_volume_mm3,
             "is_approximated": self.is_approximated,
             "profile_fill_ratio": self.profile_fill_ratio,
+            # ADDITIVE. A document written before CAD-backed items existed has
+            # neither key, and `from_dict` defaults to `generated` — so an old
+            # scenario keeps its exact behaviour.
+            "geometry_source": self.geometry_source,
+            "model_id": self.model_id,
             "cut_allowed": self.cut_allowed,
             "minimum_segment_length_mm": self.minimum_segment_length_mm,
             "maximum_number_of_cuts": self.maximum_number_of_cuts,
@@ -813,6 +929,9 @@ class WasteItem:
             permitted_axes=tuple(Axis(a) for a in d.get("permitted_axes", ["x", "y", "z"])),
             injected=bool(d.get("injected", False)),
             profile_fill_ratio=float(d.get("profile_fill_ratio", 1.0)),
+            geometry_source=str(d.get("geometry_source",
+                                      GEOMETRY_SOURCE_GENERATED)),
+            model_id=str(d.get("model_id", "")),
             cut_allowed=bool(d.get("cut_allowed", False)),
             minimum_segment_length_mm=d.get("minimum_segment_length_mm"),
             maximum_number_of_cuts=int(d.get("maximum_number_of_cuts", 0)),

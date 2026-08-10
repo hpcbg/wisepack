@@ -28,7 +28,9 @@ import os
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
 
-from .pose import Orientation, PoseError, RigidTransform, Symmetry, SymmetryType
+from .pose import (TASK_EQUIVALENCE_AXIS_LINE, TASK_EQUIVALENCE_EXACT,
+                   Orientation, PoseError, RigidTransform, Symmetry,
+                   SymmetryType)
 
 # --------------------------------------------------------------------------- #
 # Intrinsics
@@ -320,17 +322,41 @@ class ObjectModel:
     #: Extra scale beyond the unit conversion. 1.0 normally; anything else needs
     #: a reason, because it is indistinguishable from a units mistake.
     scale: float = 1.0
+    #: WHAT THE CAD ACTUALLY IS. Never relaxed to suit a task.
     symmetry: Symmetry = field(default_factory=Symmetry)
+    #: WHAT THIS TASK NEEDS. `axis_line` means position and the tube-axis line
+    #: are the meaningful quantities and circumferential spin and end identity
+    #: are not — true for every WISEPACK pipe section, including the two whose
+    #: saddle ends make spin geometrically observable. Kept SEPARATE from
+    #: `symmetry` so neither can quietly overwrite the other.
+    task_pose_equivalence: str = TASK_EQUIVALENCE_EXACT
+    #: The tube axis in the mesh frame, for the task-level comparison.
+    task_axis: str = "z"
+    #: The tube axis as a VECTOR in the mesh frame, when it is not a coordinate
+    #: axis. Measured, not assumed — see scripts/measure_mesh_symmetry.py.
+    task_axis_vector: Tuple[float, ...] = ()
     #: The packing dimensions, in millimetres. DECLARED here rather than derived
     #: from the mesh: the planner's arithmetic is integer millimetres and must
     #: not move when someone re-exports a mesh.
     diameter_mm: Optional[int] = None
     length_mm: Optional[int] = None
+    #: Wall thickness and bore, for a hollow part. The packing layer uses them
+    #: to compute material volume (and therefore mass) rather than treating a
+    #: tube as a solid rod, which would be several times too heavy.
+    wall_mm: Optional[int] = None
+    inner_diameter_mm: Optional[int] = None
     #: The mesh's own bounding-box extents in millimetres, MEASURED from the
     #: mesh (see scripts/measure_mesh_symmetry.py) and recorded so a mesh that
     #: is silently replaced by a differently-scaled export is detectable. Not
     #: used for planning — `diameter_mm`/`length_mm` are, and they are declared.
     extents_mm: Tuple[float, ...] = ()
+    #: The mesh's AABB centre in ORIGINAL model coordinates, millimetres.
+    #: MEASURED. It is the point a symmetry rotation turns about, and for a part
+    #: drawn obliquely it is nowhere near the model origin — Cylinder5's is
+    #: 141 mm away. Without it, canonicalising an orientation silently moves the
+    #: object, because the rotation happens about the origin instead of about
+    #: the object's own axis.
+    model_center_mm: Tuple[float, ...] = ()
     #: Which perception methods can use this model. FoundationPose needs a mesh;
     #: the planar detector needs none, so a model may legitimately list one.
     methods: Tuple[str, ...] = ()
@@ -354,6 +380,10 @@ class ObjectModel:
             raise RGBDError(f"{self.model_id}: scale must be positive")
         self.methods = tuple(str(m) for m in (self.methods or ()))
         self.extents_mm = tuple(float(e) for e in (self.extents_mm or ()))
+        self.model_center_mm = tuple(float(v)
+                                     for v in (self.model_center_mm or ()))
+        self.task_axis_vector = tuple(float(v)
+                                      for v in (self.task_axis_vector or ()))
 
     @property
     def mesh_scale_to_mm(self) -> float:
@@ -393,9 +423,15 @@ class ObjectModel:
             "scale": self.scale,
             "mesh_scale_to_mm": self.mesh_scale_to_mm,
             "symmetry": self.symmetry.to_dict(),
+            "task_pose_equivalence": self.task_pose_equivalence,
+            "task_axis": self.task_axis,
+            "task_axis_vector": list(self.task_axis_vector),
             "diameter_mm": self.diameter_mm,
             "length_mm": self.length_mm,
+            "wall_mm": self.wall_mm,
+            "inner_diameter_mm": self.inner_diameter_mm,
             "extents_mm": list(self.extents_mm),
+            "model_center_mm": list(self.model_center_mm),
             "methods": list(self.methods),
             "description": self.description,
             "provenance": self.provenance,
@@ -410,9 +446,16 @@ class ObjectModel:
             mesh_units=str(d.get("mesh_units", "mm")),
             scale=float(d.get("scale", 1.0)),
             symmetry=Symmetry.from_dict(d.get("symmetry")),
+            task_pose_equivalence=str(d.get("task_pose_equivalence",
+                                            TASK_EQUIVALENCE_EXACT)),
+            task_axis=str(d.get("task_axis", "z")),
+            task_axis_vector=tuple(d.get("task_axis_vector") or ()),
             diameter_mm=d.get("diameter_mm"),
             length_mm=d.get("length_mm"),
+            wall_mm=d.get("wall_mm"),
+            inner_diameter_mm=d.get("inner_diameter_mm"),
             extents_mm=tuple(d.get("extents_mm") or ()),
+            model_center_mm=tuple(d.get("model_center_mm") or ()),
             methods=tuple(d.get("methods") or ()),
             description=str(d.get("description", "")),
             provenance=str(d.get("provenance", "")))

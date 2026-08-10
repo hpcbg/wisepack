@@ -157,49 +157,68 @@ plausibility only; neither can measure absolute pose accuracy.**
 
 ## Measured symmetry of the CAD models
 
-The target domain is these pipe sections, not the bolt. Their symmetry decides
-which rotational degrees of freedom WISEPACK is entitled to report as measured,
-so it was **measured rather than declared by eye**:
+**Corrected.** An earlier revision of this file called Cylinder5 a "bent
+hairpin" with a two-fold symmetry. That was wrong, and the error is instructive:
+the measurement tool tested only the three COORDINATE axes, and Cylinder5 is
+modelled obliquely, so its own axis was never tried. A conclusion was then drawn
+that the tool's stated limitation had already invalidated.
 
-    python3 scripts/measure_mesh_symmetry.py references/CAD-Models/STL-Files/Cylinder*.stl
+The engineering table (`references/Cylinders.png`) is the nominal authority, and
+the STL measurements now agree with it:
 
-Each mesh is sampled densely, rotated about its bounding-box centre, and the
-residual distance back to its own surface is reported. A residual at the
-sampling-noise floor means that rotation is **unobservable**.
+| Part | Nominal | Measured length / OD | Ends |
+|---|---|---|---|
+| Cylinder1 | D20 × L40 × T2 | 40.2 / 20.3 mm | square (0.1 mm variation) |
+| Cylinder2 | D35 × L70 × T3 | 70.2 / 35.4 mm | square (0.2 mm) |
+| Cylinder3 | D35 × L190 × T3 | 190.0 / 35.3 mm | square (0.0 mm) |
+| Cylinder4 | D25 × L316 × T3 | 315.3 / 25.1 mm | **saddle, 5.1 mm** |
+| Cylinder5 | D25 × L342 × T3 | 341.3 / 25.9 mm | **saddle, 10.5 mm** |
 
-| Mesh | Extents (mm) | Continuous | 180° | Declared symmetry |
-|---|---|---|---|---|
-| `Cylinder1.stl` | 20 × 20 × 40 | **z: 0.24** (noise 0.24) | x,y,z: 0.24 | `axial`, axis **z** |
-| `Cylinder2.stl` | 35 × 70 × 35 | **y: 0.43** (noise 0.42) | x,y,z: 0.43 | `axial`, axis **y** |
-| `Cylinder3.stl` | 35 × 190 × 35 | **y: 0.69** (noise 0.69) | x,y,z: 0.69 | `axial`, axis **y** |
-| `Cylinder4.stl` | 315.5 × 25 × 25 | **x: 1.20** (noise 0.72) | x,y,z: 0.72 | `axial`, axis **x** |
-| `Cylinder5.stl` | 315.5 × 148 × 25 | none (104–156 mm) | **z: 0.75** (noise 0.75) | `discrete`, fold **2**, axis **z** |
+**All five are straight round tubes.** None is bent. The saddle (fishmouth) cuts
+on C4 and C5 are the tangential joints the table's notes describe.
 
-### The Cylinder5 result is the one worth reading twice
+### What is observable, measured from the geometry
 
-Cylinder5 is the bent section, and it is the right early 6-DoF test for exactly
-the reason expected: rotating it by an arbitrary angle about any axis moves its
-surface by more than 100 mm, so its orientation is genuinely constrained in a
-way no straight tube's ever is.
+Rotations are tested about the mesh's OWN principal axis and about a transverse
+axis, at the centroid, against the surface-sampling noise floor:
 
-**But it is not uniquely constrained.** A 180° rotation about z maps it onto
-itself to within 0.75 mm — the sampling noise floor. It is a symmetric hairpin,
-so exchanging its two legs is unobservable. Its pose is determined *up to that
-flip and no further*. Declaring it `type: none` would have been the obvious
-choice from looking at it, and would have caused WISEPACK to report a leg-swap
-as a resolved measurement.
+| Part | spin about its axis | A1/A2 end swap | Declared |
+|---|---|---|---|
+| Cylinder1 | 0.22 (noise 0.21) — **unobservable** | 0.22 — **unobservable** | `axial`, z |
+| Cylinder2 | 0.69 (noise 0.38) — **unobservable** | 0.53 — **unobservable** | `axial`, y |
+| Cylinder3 | 0.64 (noise 0.62) — **unobservable** | 0.70 — **unobservable** | `axial`, y |
+| Cylinder4 | 1.43 (noise 0.64) — **unobservable** | 0.96 — **unobservable** | `axial`, x |
+| Cylinder5 | 3.66 (noise 0.67) — **observable** | 0.77 about z — **unobservable** | `discrete`, fold 2, z |
 
-This is recorded as `type: discrete, fold: 2, axis: z` in
-`config/perception_objects.yaml`.
+### The axis is a LINE, not an arrow
+
+For a straight tube with identical ends, a 180° rotation about a transverse axis
+through the centre exchanges the two ends and leaves the geometry unchanged. So
+the physically meaningful quantity is the **axis line**, and a tube pointing +z
+is the same tube as one pointing −z.
+
+`symmetry_aware_angle_deg` implements exactly that: for an `axial` symmetry it
+compares axis directions with `abs(dot)`, so neither arbitrary spin nor an end
+swap is ever counted as pose error.
+
+A caution for anyone extending this: the transverse directions of a round tube
+are **degenerate**. PCA returns an arbitrary pair spanning the perpendicular
+plane, so "the second principal axis" is not a meaningful end-swap axis — for
+Cylinder5 it reads 3.41 mm while the true swap axis (z) reads 0.77 mm.
+
+### Cylinder5 is still the better first 6-DoF test — for the right reason
+
+Not because it is bent; it is not. Because its 10.5 mm saddle cuts are the only
+feature among these parts large enough to make spin about the tube axis
+observable. For Cylinder1–4, position and axis DIRECTION are the only meaningful
+quantities, and spin must be reported as symmetry-equivalent.
 
 ### Limitation of the measurement
 
-Only the three coordinate axes are tested. A mesh whose symmetry axis is not
-aligned with x, y or z is reported as having no symmetry even when it has one —
-which is why `SquareTube1.stl` (a square section modelled at 45°) shows nothing.
-The tool never claims a mesh is asymmetric, only that the rotations it tried are
-not symmetries of it. The five cylinders are all coordinate-aligned, so their
-results stand.
+Only the coordinate axes, the mesh's principal axis and one transverse axis are
+tried. A symmetry about some other axis can still be missed. The tool never
+claims a mesh is asymmetric — only that the rotations it tried are not
+symmetries of it.
 
 ## Validation order
 
@@ -223,3 +242,66 @@ new controlled capture in which `model_id` is known *at capture time* — along
 with recorded intrinsics, aligned RGB/depth, masks, timestamps and extrinsic
 calibration. That controlled set, once it exists, becomes the authoritative pipe
 regression set and supersedes `Tubes-Capture` for this purpose.
+
+---
+
+## Cylinder5 repeatability — measured, and what may be asserted
+
+An earlier pair of runs reported 114.4° and 6.33° geometric orientation error
+from what looked like identical inputs. The cause is now established, and it is
+not estimator stochasticity.
+
+### FoundationPose is deterministic
+
+`estimater.py:163` calls `set_seed(0)` inside `register()`, which seeds
+`numpy.random`, Python `random` and torch (`Utils.py:224-228`).
+
+* **10 consecutive runs in one worker process: 1 distinct pose**, bit-exact.
+* A **fresh container** reproduces it to `5.8e-4` in the matrix elements —
+  **0.023 mm** at the reference point, **0.042°** in rotation. That residue is
+  cross-process CUDA kernel selection, not sampling.
+
+### The Isaac RGB render is NOT byte-deterministic
+
+Regenerating the same scene changed the RGB image: **35,568 pixels differ, max
+delta 16** (path-traced sampling noise). Depth and the instance mask were
+**byte-identical**.
+
+So the two runs were not given identical inputs, and the difference is entirely
+attributable to RGB shading noise.
+
+### What that noise moves, and what it does not
+
+| render | position mm | along | transverse | axis-line ° | full rotation ° |
+|---|---|---|---|---|---|
+| A | 2.24 | 1.52 | 1.64 | 0.718 | 114.437 |
+| B | 1.94 | 0.54 | 1.86 | 0.717 | 6.333 |
+
+Between A and B the **full rotation differs by 108.14°** while the **tube axis
+differs by 0.006°**. The variation is *purely circumferential spin*.
+
+That is a real and expected property of this part, not a defect. Cylinder5's
+saddle ends are the only cue constraining spin; from this viewpoint they are
+weak enough that RGB shading noise alone flips the estimate between
+near-equally-scored hypotheses roughly 108° apart.
+
+### Regression policy
+
+**Assertable — stable across every source of variation measured:**
+
+* position error at the reference point (2.24 / 1.94 mm)
+* tube-axis-line error (0.718° / 0.717°, agreeing to 0.006°)
+
+**NOT assertable:**
+
+* full geometric 6-DoF orientation, and specifically circumferential spin
+
+This is exactly the geometric-versus-task split already in the registry.
+Cylinder5's saddle geometry is real and is not erased; it is simply not
+constrained well enough *from this view* to regress against. Nothing here is
+averaged, and no seed is forced: forcing determinism would hide the fact that
+the spin is genuinely under-determined.
+
+A second viewpoint that shows the saddle ends more directly would likely
+constrain spin better. That is worth testing before spin is ever asserted, and
+the dataset must not be re-rendered merely to improve the number.

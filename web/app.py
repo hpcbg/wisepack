@@ -60,8 +60,11 @@ from wisepack_core.artifacts import (                              # noqa: E402
 )
 from wisepack_core.domain import Strategy                          # noqa: E402
 from wisepack_core.execution import physical_presets              # noqa: E402
+from wisepack_core.acquisition import (                            # noqa: E402
+    ACQUISITION_ISAAC, ACQUISITION_PLANAR, ACQUISITION_REALSENSE,
+    AcquisitionState)
 from wisepack_core.perception import (                             # noqa: E402
-    ObjectSourceState, PerceptionMethod, PerceptionMethodState,
+    ObservationBatch, ObjectSourceState, PerceptionMethod, PerceptionMethodState,
     PerceptionSource, ProxyGeometry, WorkAreaFrame,
     DEFAULT_PERCEPTION_METHOD, resolve_object_source,
     resolve_perception_method, resolve_perception_method_selection,
@@ -143,6 +146,9 @@ class DemoState:
         #: the selected source is: the camera is a capability, and the dashboard
         #: asks about it while running preset scenarios.
         self.perception_client = None
+        #: Metadata about the simulated-RGB-D acquisition currently on screen,
+        #: or None. Set only by `acquire_simulated_rgbd`.
+        self.simulated_rgbd: Optional[Dict[str, Any]] = None
         #: (usable, reason) and when it was asked. See `camera_capability`.
         self.camera_capability = (False, "")
         self.camera_capability_at = None
@@ -249,14 +255,20 @@ def _generator_overrides(settings: Dict[str, Any]) -> Dict[str, Any]:
     return overrides
 
 
-def build_engine(settings: Dict[str, Any]) -> WorkflowEngine:
+def build_engine(settings: Dict[str, Any],
+                 allow_sources: Optional[List[str]] = None) -> WorkflowEngine:
     preset = settings.get("preset", "mixed_pipes_dense")
     seed = int(settings.get("seed", 42))
     # WHERE THIS RUN'S OBJECTS COME FROM. Validated against what is actually
     # available, so asking for a camera that is not there fails here with the
     # reason rather than quietly producing a generated scenario.
+    # `allow_sources` lets a caller that KNOWS its backend say so — the
+    # simulated RGB-D acquisition does not use the planar service and must not
+    # be vetoed by its absence. Everything else keeps the live availability
+    # check, so a source is never offered on the strength of a stale artefact.
     object_source = resolve_object_source(
-        settings.get("object_source"), available_object_sources(),
+        settings.get("object_source"),
+        allow_sources or available_object_sources(),
         fallback=PERCEPTION_SOURCE.value)
     # The in-process demo engine is the LOGICAL backend and has no robot. The
     # draft robot is carried on the settings for the live modes, where the
@@ -337,10 +349,83 @@ def camera_capability(health: Optional[Dict[str, Any]] = None):
     return answer
 
 
+def simulated_frames_available() -> bool:
+    """Can the simulated RGB-D backend acquire right now?
+
+    A LIVE CHECK, not the mere existence of a file: the FoundationPose worker
+    must be usable AND a simulated frame must be present. A leftover artefact
+    with no worker is not an acquisition capability.
+    """
+    # AN EXPLICIT OFF SWITCH, for tests that need a deployment with NO camera
+    # of any kind. Without it, "is a camera available" depended on whether a
+    # previous acquisition had left a file on the machine — which made the
+    # absent-camera test pass or fail on unrelated state.
+    if os.environ.get("WISEPACK_DISABLE_SIMULATED_RGBD", "").strip():
+        return False
+    if _simulated_rgbd_observation() is None:
+        return False
+    provider = foundationpose_provider()
+    if provider is None:
+        return False
+    return bool(provider.client.capability()[0])
+
+
+def acquisition_state() -> "AcquisitionState":
+    """Which cameras can acquire, which one produced the batch on screen.
+
+    EACH SOURCE ANSWERS FOR ITSELF. A missing webcam must not veto a simulated
+    run, and a missing RealSense must not veto either of the others — which is
+    exactly what a single "camera available" flag did.
+    """
+    available: List[str] = []
+    reasons: Dict[str, str] = {}
+
+    planar_ok, planar_reason = camera_capability()
+    if planar_ok:
+        available.append(ACQUISITION_PLANAR)
+    else:
+        reasons[ACQUISITION_PLANAR] = planar_reason or "no perception service"
+
+    fp = foundationpose_capability()
+    if fp.get("rgbd_camera_available"):
+        available.append(ACQUISITION_REALSENSE)
+    else:
+        reasons[ACQUISITION_REALSENSE] = "; ".join(
+            str(b) for b in (fp.get("blocked_by") or [])) or "no D435 attached"
+
+    if simulated_frames_available():
+        available.append(ACQUISITION_ISAAC)
+    else:
+        reasons[ACQUISITION_ISAAC] = (
+            "no simulated RGB-D frame is available; produce one with "
+            "./scripts/stage_c.sh")
+
+    with STATE.lock:
+        engine = STATE.engine
+    current = ""
+    batch = getattr(engine, "observation_batch", None) if engine else None
+    if batch is not None and getattr(batch, "acquisition", ""):
+        current = (ACQUISITION_ISAAC
+                   if batch.acquisition == "simulated_rgbd"
+                   else ACQUISITION_PLANAR)
+    return AcquisitionState(current=current, selected=current or "",
+                            available=available, unavailable_reasons=reasons)
+
+
 def available_object_sources(health: Optional[Dict[str, Any]] = None):
-    """Which object sources this deployment can use right now."""
+    """Which object sources this deployment can use right now.
+
+    AVAILABILITY MEANS A SERVICE ANSWERED JUST NOW. A simulated RGB-D
+    observation is a FILE, and a file left over from last week is no evidence
+    that a camera is usable — so it does not make `camera` available here. The
+    simulated acquisition instead names its own source when it runs, which is an
+    explicit act rather than an inference from a stale artefact.
+    """
     sources = [PerceptionSource.SIM.value]
-    if camera_capability(health)[0]:
+    # ANY camera backend makes the CAMERA source usable. Keying this on the
+    # planar service alone refused a simulated run because an unrelated webcam
+    # was unplugged, and left `current: camera` sitting outside `available`.
+    if camera_capability(health)[0] or simulated_frames_available():
         sources.append(PerceptionSource.CAMERA.value)
     return sources
 
@@ -415,7 +500,18 @@ def foundationpose_capability(force: bool = False) -> Dict[str, Any]:
         # container, so the camera's presence is the worker's observation, not
         # a constant here — and a camera plugged in while WISEPACK runs is
         # noticed without a restart, which a hard-coded False could never do.
-        answer = provider.capability()
+        # ASKED ABOUT THE ACQUISITION IN USE. The same worker gives different
+        # answers for a physical D435 and a simulated camera, and a capability
+        # with no stated source cannot be read correctly by either.
+        with STATE.lock:
+            engine = STATE.engine
+        batch = getattr(engine, "observation_batch", None) if engine else None
+        acquisition = (ACQUISITION_ISAAC
+                       if getattr(batch, "acquisition", "") == "simulated_rgbd"
+                       else ACQUISITION_REALSENSE)
+        answer = provider.capability(
+            acquisition=acquisition,
+            simulated_frames_available=_simulated_rgbd_observation() is not None)
     # WHO HOLDS THE CAMERA. Carried with the capability so the panel can say
     # what a method switch would require, rather than discovering it when two
     # providers both open one device.
@@ -493,9 +589,16 @@ def object_source_state(health: Optional[Dict[str, Any]] = None
                         ) -> ObjectSourceState:
     """Capability + draft + what the RUNNING run actually used."""
     usable, reason = camera_capability(health)
+    simulated = simulated_frames_available()
     available = [PerceptionSource.SIM.value]
-    if usable:
+    if usable or simulated:
         available.append(PerceptionSource.CAMERA.value)
+    if simulated and not usable:
+        # The camera source IS usable — through the simulated backend. The
+        # planar service's absence is context, not a blocker, and saying
+        # otherwise beside a working run describes the wrong device.
+        reason = ("the planar webcam service is not answering; the simulated "
+                  "RGB-D backend is available")
     with STATE.lock:
         selected = str(STATE.settings.get("object_source")
                        or PERCEPTION_SOURCE.value)
@@ -523,7 +626,8 @@ def object_source_state(health: Optional[Dict[str, Any]] = None
 
 
 def start_run(settings: Dict[str, Any],
-              acquire: bool = True) -> WorkflowEngine:
+              acquire: bool = True,
+              allow_sources: Optional[List[str]] = None) -> WorkflowEngine:
     """Plan a fresh run and stop at the approval gate. Never auto-executes.
 
     TWO SOURCES, TWO WAYS TO ACQUIRE A BATCH. A preset run has its objects the
@@ -539,7 +643,7 @@ def start_run(settings: Dict[str, Any],
     failed-perception state — the run exists, the Physical Perception panel
     shows why it has no objects, and the operator retries after fixing the cause.
     """
-    engine = build_engine(settings)
+    engine = build_engine(settings, allow_sources=allow_sources)
     engine.generate_or_load_scenario()
     if not acquire:
         return engine
@@ -1165,6 +1269,38 @@ def api_execution():
 # --------------------------------------------------------------------------- #
 
 
+#: Where the Isaac -> FoundationPose -> workarea chain leaves its artifacts.
+SIMULATED_RGBD_DIR = os.path.join(REPO, ".cache-perception")
+SIMULATED_RGBD_RESULT = os.path.join(SIMULATED_RGBD_DIR, "stage-c", "stage_c.json")
+
+
+def _simulated_rgbd_observation():
+    """The most recent simulated-RGB-D observation, or None.
+
+    READ, NEVER RECOMPUTED. The estimate was produced by the real FoundationPose
+    worker against a real Isaac frame; re-running it here under different inputs
+    would put a different number on screen from the one the workflow used.
+    """
+    if not os.path.isfile(SIMULATED_RGBD_RESULT):
+        return None
+    try:
+        with open(SIMULATED_RGBD_RESULT, encoding="utf-8") as handle:
+            document = json.load(handle)
+        from wisepack_core.domain import PhysicalObservation     # noqa: PLC0415
+        observation = PhysicalObservation.from_dict(document["observation"])
+    except Exception:                                            # noqa: BLE001
+        return None
+    return observation, {
+        "acquisition": document.get("acquisition", {}),
+        "camera_to_workarea": document.get("camera_to_workarea_transform", {}),
+        "model_frame_pose": document.get("model_frame_pose", {}),
+        "task_reference_point": document.get("task_reference_point", {}),
+        "evaluation": document.get("evaluation", {}),
+        "preset": "cad_cylinder5_single",
+        "batch_id": "simulated-rgbd-1",
+    }
+
+
 def _perception_payload() -> Dict[str, Any]:
     """Everything the Physical Perception panel renders, in every mode.
 
@@ -1191,6 +1327,16 @@ def _perception_payload() -> Dict[str, Any]:
         # camera needs to see which methods that camera could be read with.
         "perception_method": method_state.to_dict(),
         "foundationpose": fp_capability,
+        # THE SIMULATED RGB-D RUN, when one is on screen. Everything here comes
+        # from the SAME artifact the workflow consumed, so the images, the
+        # estimate and the plan cannot disagree.
+        "simulated_rgbd": _simulated_rgbd_panel(),
+        # THE FOURTH AXIS, exposed so the panel can name the device that
+        # actually produced the batch rather than describing a webcam.
+        "acquisition": acquisition_state().to_dict(),
+        # WHICH CAD MODEL THIS SCENARIO IS ABOUT, resolved from the scenario's
+        # own items rather than guessed from its name.
+        "object_model": _scenario_object_model(),
         # THE PROXY DISCLOSURE (§9). Unobtrusive, but always present in the
         # payload so the panel cannot render real detections without it.
         "proxy_note": (
@@ -1260,6 +1406,88 @@ def _perception_payload() -> Dict[str, Any]:
         payload["scene_objects"] = (batch.scene_objects()
                                     if batch and batch.ok else [])
     return payload
+
+
+def _scenario_object_model() -> Dict[str, Any]:
+    """The CAD model the current scenario is about, from its ITEMS.
+
+    Resolved from the scenario rather than parsed out of a preset name: the
+    items already declare `model_id`, and a name is not a specification.
+    """
+    with STATE.lock:
+        engine = STATE.engine
+    scenario = getattr(engine, "scenario", None) if engine else None
+    items = list(getattr(scenario, "items", []) or [])
+    models = sorted({getattr(i, "model_id", "") for i in items
+                     if getattr(i, "model_id", "")})
+    return {
+        "model_ids": models,
+        "model_id": models[0] if len(models) == 1 else "",
+        "geometry_sources": sorted({getattr(i, "geometry_source", "")
+                                    for i in items}),
+        "preset": getattr(scenario, "preset", "") if scenario else "",
+    }
+
+
+def _simulated_rgbd_panel() -> Optional[Dict[str, Any]]:
+    """What the dashboard shows about a simulated-RGB-D run, or None.
+
+    STALE ARTEFACTS ARE LABELLED, NOT SHOWN AS CURRENT (§6). The panel reports
+    the revision the observation was applied at; if the engine has moved on, the
+    images belong to an earlier batch and the panel says so rather than
+    presenting them beside a newer plan.
+    """
+    with STATE.lock:
+        meta = getattr(STATE, "simulated_rgbd", None)
+        engine = STATE.engine
+    if not meta:
+        return None
+    document = dict(meta)
+    document["available"] = True
+    document["images"] = {
+        "rgb": "/api/perception/simulated/image/rgb",
+        "depth": "/api/perception/simulated/image/depth",
+        "mask": "/api/perception/simulated/image/mask",
+        "overlay": "/api/perception/simulated/image/overlay",
+    }
+    batch = engine.observation_batch if engine else None
+    document["batch_acquisition"] = getattr(batch, "acquisition", "")
+    document["applied_at_revision"] = document.get("applied_at_revision")
+    if engine is not None:
+        document["run_id"] = engine.run_id
+        document["scenario_revision"] = engine.scenario_revision
+        document["stale"] = bool(
+            batch is None or getattr(batch, "acquisition", "") != "simulated_rgbd")
+        if document["stale"]:
+            document["stale_reason"] = (
+                "the run on screen was not built from this simulated RGB-D "
+                "acquisition; the images below belong to an earlier batch")
+    return document
+
+
+#: The Stage A/B artefacts, by name. Served rather than regenerated: they are
+#: the frames the estimate was actually computed from.
+_SIMULATED_IMAGES = {
+    "rgb": ("stage-a", "d435_rgb.png"),
+    "depth": ("stage-a", "d435_depth.png"),
+    "mask": ("stage-a", "cylinder5_mask.png"),
+    "overlay": ("stage-b", "overlay_estimate.png"),
+}
+
+
+@app.get("/api/perception/simulated/image/{kind}")
+def api_simulated_image(kind: str):
+    """Serve one acquisition image. A PROXY OF THE ARTEFACT, not a redraw."""
+    from fastapi.responses import FileResponse                    # noqa: PLC0415
+    entry = _SIMULATED_IMAGES.get(kind)
+    if entry is None:
+        raise HTTPException(status_code=404, detail=f"unknown image {kind!r}")
+    path = os.path.join(SIMULATED_RGBD_DIR, entry[0], entry[1])
+    if not os.path.isfile(path):
+        raise HTTPException(
+            status_code=404,
+            detail=f"{kind} image not available; run ./scripts/stage_c.sh")
+    return FileResponse(path, media_type="image/png")
 
 
 @app.get("/api/perception")
@@ -1764,6 +1992,68 @@ def _apply_command_locked(engine: WorkflowEngine, command: str,
                 "label": PerceptionMethod(method).selector_label,
                 "current": state.current,
                 "changes_next_run": bool(state.current) and method != state.current}
+
+    if command == "acquire_simulated_rgbd":
+        # THE SAME PATH AS `detect_physical_objects`, with a different
+        # ACQUISITION BACKEND. Not a second perception pipeline: the batch goes
+        # through `apply_observation_batch`, `generate_plans`,
+        # `digital_twin_validate` and `request_approval` exactly as a planar
+        # camera batch does, so run id, revision, plan, twin and approval are
+        # the live engine's and cannot drift from one another.
+        #
+        # The observation itself was produced offline by the Isaac -> FoundationPose
+        # -> workarea chain (Stages A-C) and is read from its artifact. What the
+        # dashboard must never do is RE-ESTIMATE it here under different inputs.
+        document = _simulated_rgbd_observation()
+        if document is None:
+            raise ValueError(
+                "no simulated RGB-D observation is available. Produce one "
+                "first:  ./scripts/stage_c.sh")
+        observation, meta = document
+        STATE.settings.update({k: v for k, v in args.items()
+                               if k in STATE.settings})
+        STATE.settings["object_source"] = PerceptionSource.CAMERA.value
+        STATE.settings["preset"] = meta.get("preset", "cad_cylinder5_single")
+        STATE.settings_touched = True
+        # A NEW RUN, for the same reason the camera path starts one: the objects
+        # come from somewhere else entirely than the scenario on screen.
+        # THE SOURCE IS NAMED, NOT INFERRED. `start_run` clamps the requested
+        # source to what is available, and the planar service being absent must
+        # not veto an acquisition that does not use it. This call states which
+        # backend it is, which is the explicit act that a leftover artefact on
+        # disk is not.
+        STATE.engine = engine = start_run(
+            STATE.settings, acquire=False,
+            allow_sources=[PerceptionSource.SIM.value,
+                           PerceptionSource.CAMERA.value])
+        STATE.events.clear()
+        for event in engine.log.events():
+            STATE.events.append(event.to_dict())
+        STATE.auto_step = False
+
+        from wisepack_core.perception import BatchStatus              # noqa: PLC0415
+        batch = ObservationBatch(
+            batch_id=meta.get("batch_id", "simulated-rgbd-1"),
+            source=PerceptionSource.CAMERA.value, status=BatchStatus.OK,
+            observations=[observation], frame_id=observation.frame_id,
+            captured_at=observation.captured_at,
+            detector=observation.detector,
+            perception_method=observation.perception_method,
+            acquisition="simulated_rgbd",
+            model_id=observation.object_model_id,
+            calibration_status="not_applicable")
+        engine.apply_observation_batch(batch)
+        engine.generate_plans()
+        engine.digital_twin_validate()
+        engine.request_approval()
+        with STATE.lock:
+            STATE.simulated_rgbd = meta
+        return {"ok": True, "batch_id": batch.batch_id,
+                "model_id": observation.object_model_id,
+                "scenario_revision": engine.scenario_revision,
+                "run_id": engine.run_id,
+                "containers": (engine.selected.containers_required
+                               if engine.selected else None)}
 
     if command == "detect_physical_objects":
         # REFUSED, NOT SILENTLY SIMULATED. A control labelled "detect" that

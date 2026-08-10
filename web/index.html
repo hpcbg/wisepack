@@ -455,6 +455,26 @@
            "FoundationPose runtime: READY, RGB-D camera: unavailable" is exactly
            the state an operator needs to see, and hiding it would make a ready
            runtime invisible. -->
+      <!-- SIMULATED RGB-D RUN. Shown only when the run on screen was acquired
+           that way. Everything in it comes from the artefacts the workflow
+           consumed, so the images, the estimate and the plan cannot disagree. -->
+      <div id="sim-block" style="display:none;margin-top:10px;border-top:1px solid var(--line);padding-top:8px">
+        <h4 style="margin:0 0 6px 0">Simulated RGB-D run
+          <span class="badge" id="sim-badge">SYNTHETIC</span></h4>
+        <div id="sim-stale" class="percep-error" style="display:none;margin-bottom:6px"></div>
+        <div id="sim-provenance" class="note" style="margin-bottom:6px"></div>
+        <div id="sim-object" class="note" style="margin-bottom:6px"></div>
+        <div id="sim-eval" class="note" style="margin-bottom:6px"></div>
+        <div class="btns" id="sim-views" style="margin-top:6px">
+          <button data-v="overlay" aria-pressed="true">pose overlay</button>
+          <button data-v="rgb">RGB</button>
+          <button data-v="depth">depth</button>
+          <button data-v="mask">mask</button>
+        </div>
+        <img id="sim-image" alt="simulated RGB-D acquisition"
+             style="max-width:100%;border-radius:6px;display:none;margin-top:6px"/>
+      </div>
+
       <div id="fp-block" style="display:none;margin-top:10px;border-top:1px solid var(--line);padding-top:8px">
         <h4 style="margin:0 0 6px 0">RGB-D 6-DoF — FoundationPose
           <span class="badge" id="fp-badge">RUNTIME</span></h4>
@@ -1860,6 +1880,9 @@ if ($("#c-fp-reference")) {
 for (const b of document.querySelectorAll("#fp-views button")) {
   b.onclick = () => showFoundationPoseImage(b.dataset.v);
 }
+for (const b of document.querySelectorAll("#sim-views button")) {
+  b.onclick = () => showSimulatedImage(b.dataset.v);
+}
 
 // cut-aware controls
 $("#c-compare-cut").onclick = () => command("compare_cut_aware");
@@ -1881,6 +1904,69 @@ for (const b of document.querySelectorAll("#log-filters button")) {
       x.setAttribute("aria-pressed", String(x === b));
     renderLog(LAST_EVENTS);
   };
+}
+
+// The simulated RGB-D run. Renders the SAME artefacts the workflow consumed —
+// never a redrawn or regenerated picture — so what is on screen is what the
+// estimate was computed from.
+let SIM_VIEW = "overlay";
+
+function renderSimulatedRGBD(doc) {
+  const block = $("#sim-block");
+  if (!block) return;
+  const sim = doc && doc.simulated_rgbd;
+  block.style.display = sim ? "" : "none";
+  if (!sim) return;
+
+  // A STALE ARTEFACT IS LABELLED, NOT SHOWN AS CURRENT. Pairing the newest
+  // image with an older plan is exactly the confusion to avoid.
+  const stale = $("#sim-stale");
+  if (stale) {
+    stale.style.display = sim.stale ? "" : "none";
+    stale.textContent = sim.stale ? (sim.stale_reason || "stale acquisition") : "";
+  }
+
+  const acq = sim.acquisition || {};
+  $("#sim-provenance").textContent = [
+    `Backend: ${acq.backend === "isaac_sim" ? "Isaac Sim" : (acq.backend || "?")}`,
+    "Camera: D435-compatible simulated RGB-D",
+    "Provenance: synthetic",
+    `Perception: FoundationPose RGB-D`,
+    `Mask: ${acq.mask_source || "?"} [${acq.mask_provenance || "?"}]`,
+    `Run: ${sim.run_id || "?"} rev ${sim.scenario_revision}`,
+  ].join(" · ");
+
+  const task = sim.task_reference_point || {};
+  const centre = (task.object_center_mm || []).map(v => Math.round(v * 100) / 100);
+  const axis = (task.tube_axis_line || []).map(v => Math.round(v * 1000) / 1000);
+  $("#sim-object").textContent = [
+    `Object: cylinder5 (cad_mesh)`,
+    `centre ${JSON.stringify(centre)} mm in wisepack_workarea`,
+    `tube axis ${JSON.stringify(axis)}`,
+    `D${task.diameter_mm} x L${task.length_mm} mm, bore ${task.inner_diameter_mm} mm`,
+  ].join(" · ");
+
+  // GROUND TRUTH IS EVALUATION ONLY, and says so where it is shown.
+  const ev = sim.evaluation || {};
+  const evalNode = $("#sim-eval");
+  if (evalNode) {
+    evalNode.textContent = (ev.position_error_mm === undefined) ? "" :
+      `Evaluation only (simulator ground truth, never used by the robot): `
+      + `position error ${Number(ev.position_error_mm).toFixed(2)} mm, `
+      + `tube-axis error ${Number(ev.tube_axis_line_error_deg).toFixed(3)}°`;
+  }
+  showSimulatedImage(SIM_VIEW);
+}
+
+function showSimulatedImage(kind) {
+  SIM_VIEW = kind;
+  const img = $("#sim-image");
+  if (!img) return;
+  img.src = `/api/perception/simulated/image/${kind}?t=${Date.now()}`;
+  img.style.display = "";
+  img.onerror = () => { img.style.display = "none"; };
+  for (const b of document.querySelectorAll("#sim-views button"))
+    b.setAttribute("aria-pressed", String(b.dataset.v === kind));
 }
 
 // The FoundationPose block. EVERY PREREQUISITE IS ITS OWN LINE, because each
@@ -1922,10 +2008,18 @@ function renderFoundationPose(doc) {
     + fpTri(cap.foundationpose_runtime_available, "loaded", "not loaded"));
   bits.push("Scorer weights: " + fpTri(cap.scorer_weights_available, "present", "missing"));
   bits.push("Refiner weights: " + fpTri(cap.refiner_weights_available, "present", "missing"));
-  bits.push("RGB-D camera: " + fpTri(cap.rgbd_camera_available, "available", "unavailable"));
+  // THE SOURCE OF FRAMES, which is what readiness actually depends on. The
+  // physical camera is still reported — an operator needs to know whether a
+  // D435 is attached — but it does not gate an acquisition that needs none.
+  const acqLabel = cap.acquisition === "isaac_simulated"
+    ? "Isaac Sim (simulated)" : "RealSense D435";
+  bits.push(`Frames from: ${acqLabel} — `
+            + fpTri(cap.rgbd_frames_available, "available", "unavailable"));
+  bits.push("Physical D435: "
+            + fpTri(cap.rgbd_camera_available, "attached", "not attached"));
   bits.push("Object model: "
     + ((cap.models || []).length ? `${cap.models.length} available` : "none"));
-  bits.push("Live inference: " + fpTri(Boolean(cap.inference_ready), "ready", "unavailable"));
+  bits.push("Inference: " + fpTri(Boolean(cap.inference_ready), "ready", "unavailable"));
   if (cap.foundationpose_revision) {
     bits.push("Revision: " + String(cap.foundationpose_revision).slice(0, 12)
       + (cap.revision_matches_pin ? " (matches pin)" : " (DOES NOT match pin)"));
@@ -2232,6 +2326,64 @@ async function refreshPerception() {
   badge.textContent = percepTri(reachable, "CAMERA", "DETECTOR OFFLINE", "DETECTOR UNKNOWN");
   badge.className = "badge" + (reachable === false ? " err" : " phys");
 
+  // WHEN THIS RUN CAME FROM THE SIMULATED RGB-D BACKEND, the planar service's
+  // health describes a device this run never used. Reporting "DETECTOR OFFLINE"
+  // and an unreachable-service error beside a working simulated acquisition
+  // describes the wrong camera — so the planar lines are replaced by the
+  // backend that actually produced the batch.
+  // WHICH CAMERA PRODUCED THIS BATCH, from the acquisition axis rather than
+  // inferred. A run acquired in simulation must not be described by the health
+  // of a webcam it never used.
+  const acqState = doc.acquisition || {};
+  const simRun = acqState.current === "isaac_simulated"
+                 && doc.simulated_rgbd && !doc.simulated_rgbd.stale;
+  if (simRun) {
+    const err = $("#percep-error");
+    if (err) err.style.display = "none";
+    badge.textContent = "SIMULATED RGB-D";
+    badge.className = "badge phys";
+    const acq = (doc.simulated_rgbd.acquisition || {});
+    const model = doc.object_model || {};
+    $("#percep-status").textContent = [
+      `Acquisition: ${acqState.current_label} [${acqState.current_provenance}]`,
+      `Mask: ${acq.mask_source || "?"} [${acq.mask_provenance || "?"}]`,
+      "Perception: FoundationPose RGB-D",
+      `Object model: ${model.model_id || "—"}`,
+      `Objects: ${b && b.status !== "error" ? b.count : "—"}`,
+      `Frame: ${(b && b.frame_id) || "?"}`,
+    ].join(" · ");
+    // THE PLANAR CONTROLS ARE HIDDEN, not merely unexplained. "Detect & plan"
+    // calls the planar service, which this run does not use and which is not
+    // answering — pressing it would produce an error about a device that was
+    // never part of the run. A control that cannot work is worse than no
+    // control.
+    for (const id of ["percep-views", "percep-image", "percep-noimage"]) {
+      const node = $("#" + id);
+      if (node) node.style.display = "none";
+    }
+    const detect = $("#c-detect-physical");
+    if (detect) detect.style.display = "none";
+    const note = $("#percep-action-note");
+    if (note) note.textContent =
+      "This run's objects came from the simulated RGB-D camera. The planar "
+      + "detector controls are hidden because that service is not part of "
+      + "this run. Re-acquire with ./scripts/stage_e.sh.";
+    renderSimulatedRGBD(doc);
+    renderFoundationPose(doc);
+    renderPerceptionObjects(doc, b);
+    return;
+  }
+
+  // A NON-SIMULATED RUN gets the planar controls back — the branch above hides
+  // them, and a dashboard that only ever hid things would break the camera path.
+  for (const id of ["percep-views", "percep-image", "percep-noimage"]) {
+    const node = $("#" + id);
+    if (node && node.style.display === "none" && id !== "percep-noimage")
+      node.style.display = "";
+  }
+  const detectBtnRestore = $("#c-detect-physical");
+  if (detectBtnRestore) detectBtnRestore.style.display = "";
+
   const bits = [];
   bits.push("Camera: " + percepTri(h.camera_available, "connected", "unavailable", "unknown"));
   if (h.provider) bits.push("Provider: " + h.provider);
@@ -2249,6 +2401,7 @@ async function refreshPerception() {
   if (b && b.frame_id) bits.push("Frame: " + b.frame_id);
   $("#percep-status").textContent = bits.join(" · ");
   renderFoundationPose(doc);
+  renderSimulatedRGBD(doc);
 
   // The acquisition control, named for what pressing it will actually do. When
   // a preset run is on screen it will also SWITCH the source, and saying so is
@@ -2307,19 +2460,34 @@ async function refreshPerception() {
     none.style.display = "";
   }
 
+  renderPerceptionObjects(doc, b);
+}
+
+function renderPerceptionObjects(doc, b) {
   // -- objects ------------------------------------------------------------ #
   const body = $("#percep-objects tbody");
   body.innerHTML = "";
   body.append(el("tr", {}, [
-    el("th", {}, "object"), el("th", {}, "x mm"), el("th", {}, "y mm"),
+    el("th", {}, "object"), el("th", {}, "centre x mm"),
+    el("th", {}, "centre y mm"),
     el("th", {}, "yaw °"), el("th", {}, "confidence"), el("th", {}, "geometry")]));
   for (const o of ((b && b.observations) || [])) {
     const p = o.pose || {}, g = o.geometry || {};
+    // THE PHYSICAL BODY, not the model frame. For a model-based observation
+    // `pose.x_mm/y_mm/z_mm` locate the CAD MODEL ORIGIN, which for an obliquely
+    // drawn part lies outside the object — Cylinder5's by 141 mm. Showing that
+    // in a column headed "x mm" beside a panel reporting the centre is exactly
+    // the ambiguity the task representation exists to remove.
+    const task = o.task || {};
+    const centre = task.object_center_mm || [p.x_mm, p.y_mm, p.z_mm];
     body.append(el("tr", {}, [
-      el("td", { title: `${o.detector || ""} · ${o.captured_at || ""}` },
+      el("td", { title: `${o.detector || ""} · ${o.captured_at || ""}`
+                        + (task.object_center_mm
+                           ? ` · centre shown; CAD model origin is `
+                             + `${p.x_mm}, ${p.y_mm}, ${p.z_mm} mm` : "") },
          o.observation_id),
-      el("td", {}, p.x_mm === undefined ? "—" : p.x_mm.toFixed(1)),
-      el("td", {}, p.y_mm === undefined ? "—" : p.y_mm.toFixed(1)),
+      el("td", {}, centre[0] === undefined ? "—" : Number(centre[0]).toFixed(1)),
+      el("td", {}, centre[1] === undefined ? "—" : Number(centre[1]).toFixed(1)),
       el("td", {}, p.yaw_deg === undefined ? "—" : p.yaw_deg.toFixed(1)),
       // The per-object confidence IS shown — §12 objects to calling it a
       // detection rate, not to displaying it.

@@ -524,9 +524,15 @@ def _orderings(scenario: Scenario, cfg: OptimizerConfig) -> Iterable[_Ordering]:
         shuffled = list(base)
         # Local perturbation: swap a few neighbouring pairs. A full shuffle
         # destroys the decreasing property that makes BFD work at all.
-        for _ in range(max(1, len(shuffled) // 6)):
-            i = rng.randrange(0, max(1, len(shuffled) - 1))
-            shuffled[i], shuffled[i + 1] = shuffled[i + 1], shuffled[i]
+        #
+        # A SINGLE ITEM HAS NO NEIGHBOURING PAIR. The earlier `max(1, len - 1)`
+        # guard stopped `randrange` seeing an empty range but then produced
+        # index 0 and read `shuffled[1]`, so a one-item scenario raised
+        # IndexError — which is exactly what a single perceived object is.
+        if len(shuffled) > 1:
+            for _ in range(max(1, len(shuffled) // 6)):
+                i = rng.randrange(0, len(shuffled) - 1)
+                shuffled[i], shuffled[i + 1] = shuffled[i + 1], shuffled[i]
         yield _Ordering(f"volume_desc_perturbed_{k}", shuffled)
 
 

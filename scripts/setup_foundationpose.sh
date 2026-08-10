@@ -49,6 +49,8 @@ DATASETS_DIR="${WISEPACK_FP_DATASETS_DIR:-$(cd "$REPO/.." 2>/dev/null && pwd)/re
 #: Where the worker writes controlled RGB-D captures. WISEPACK-owned and
 #: git-ignored: these are measurements, not source, and they are large.
 CAPTURES_DIR="${WISEPACK_FP_CAPTURES_DIR:-$REPO/.cache-perception/rgbd-captures}"
+#: Deterministic reference cases rendered in Isaac Sim, with ground-truth poses.
+ISAAC_REFERENCE_DIR="${WISEPACK_FP_ISAAC_DIR:-$REPO/.cache-perception/isaac-reference}"
 
 DO_BUILD=1
 DO_WEIGHTS=0
@@ -370,6 +372,13 @@ if [ "$DO_RUN" = "1" ]; then
     # must outlive the container.
     mkdir -p "$CAPTURES_DIR" 2>/dev/null || true
     [ -d "$CAPTURES_DIR" ] && MOUNTS+=(-v "$CAPTURES_DIR:/captures")
+    # The Isaac-generated reference cases, mounted INSIDE the dataset tree so a
+    # request names them exactly like any other dataset. Read-only: they are
+    # generated artefacts and the worker never writes to them.
+    # A SIBLING of /datasets, not a child: Docker cannot create a mountpoint
+    # inside a read-only mount, and the worker searches both roots.
+    [ -d "$ISAAC_REFERENCE_DIR" ] \
+        && MOUNTS+=(-v "$ISAAC_REFERENCE_DIR:/isaac-reference:ro")
 
     USB_ARGS=()
     if host_sees_realsense; then

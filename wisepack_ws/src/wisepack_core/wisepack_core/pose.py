@@ -250,6 +250,11 @@ class Orientation:
     def yaw_deg(self) -> float:
         return self.rpy_deg()[2]
 
+    def conjugate(self) -> "Orientation":
+        """The inverse rotation. For a UNIT quaternion these coincide, and the
+        constructor guarantees unit norm, so no division is needed."""
+        return Orientation(-self.x, -self.y, -self.z, self.w)
+
     def angle_to_deg(self, other: "Orientation") -> float:
         """Smallest rotation angle between two orientations, in degrees.
 
@@ -592,8 +597,111 @@ class RigidTransform:
             notes=str(d.get("notes", "")))
 
 
+#: Task-level pose equivalence. SEPARATE FROM GEOMETRIC SYMMETRY, and the two
+#: must not be collapsed into one another.
+#:
+#:   geometric_symmetry     what the CAD actually is. Cylinder4 and Cylinder5
+#:                          have saddle-cut ends, so their spin about the tube
+#:                          axis IS geometrically observable. That is real
+#:                          geometry and is never erased.
+#:   task_pose_equivalence  what THIS task needs. Picking a tube requires its
+#:                          centre and the LINE of its axis. It does not require
+#:                          circumferential spin, saddle orientation, or which
+#:                          end is A1.
+#:
+#: Reporting a large quaternion error because FoundationPose picked a different
+#: circumferential orientation would be reporting a difference with no
+#: consequence for the operation being performed.
+TASK_EQUIVALENCE_AXIS_LINE = "axis_line"
+TASK_EQUIVALENCE_EXACT = "exact"
+
+
+def axis_line_angle_deg(a: "Orientation", b: "Orientation",
+                        axis: Any = "z") -> float:
+    """Angle between two orientations' AXIS LINES, in degrees.
+
+        acos(|dot(axis_a, axis_b)|)
+
+    The absolute value is what makes it a line rather than an arrow: a tube
+    pointing one way is the same tube as one pointing the other, and an end swap
+    is not an error unless some later operation genuinely needs a named end.
+
+    This is the task-level orientation error for WISEPACK picking. It is
+    deliberately blind to spin about the axis, INCLUDING for parts whose spin is
+    geometrically observable.
+    """
+    # AN ARBITRARY VECTOR, not just a coordinate axis. Cylinder5's tube axis is
+    # (0.928, -0.372, 0) in its own mesh frame because the part is modelled
+    # obliquely; naming a coordinate axis would compare the wrong direction and
+    # report an error that is an artefact of how the CAD was drawn. This is the
+    # same trap that produced the earlier wrong symmetry conclusion.
+    if isinstance(axis, str):
+        vector = {"x": (1.0, 0.0, 0.0), "y": (0.0, 1.0, 0.0),
+                  "z": (0.0, 0.0, 1.0)}[axis]
+    else:
+        vector = tuple(float(v) for v in axis)
+    length = math.sqrt(sum(v * v for v in vector))
+    if length < 1e-12:
+        raise PoseError("the task axis is a zero vector")
+    vector = tuple(v / length for v in vector)
+
+    def rotated(orientation: "Orientation"):
+        matrix = orientation.to_matrix()
+        return [sum(matrix[r][c] * vector[c] for c in range(3)) for r in range(3)]
+
+    first = rotated(a)
+    second = rotated(b)
+    dot = float(sum(f * s for f, s in zip(first, second)))
+    return math.degrees(math.acos(max(-1.0, min(1.0, abs(dot)))))
+
+
+def symmetry_aware_angle_deg(a: "Orientation", b: "Orientation",
+                             symmetry: Optional["Symmetry"] = None) -> float:
+    """Angle between two orientations, MODULO the object's declared symmetry.
+
+    Comparing a straight pipe's estimated spin against a "true" spin measures
+    nothing: the rotation about its own axis was never observable, so any value
+    is equally correct and the difference is noise dressed as error. Reporting
+    that as an orientation error would make a perfect estimate look wrong.
+
+        none      the plain angle between the two rotations
+        axial     the angle between the two AXIS DIRECTIONS only; spin about
+                  the axis is discarded because it is not a measurement
+        discrete  the smallest angle over the fold's equivalent rotations
+        flip      as discrete with fold 2
+
+    An axial comparison is direction-insensitive: a tube pointing +z and one
+    pointing -z are the same tube.
+    """
+    if symmetry is None or symmetry.type is SymmetryType.NONE:
+        return a.angle_to_deg(b)
+
+    axis_index = {"x": 0, "y": 1, "z": 2}[symmetry.axis]
+    if symmetry.type is SymmetryType.AXIAL:
+        # `to_matrix()` returns plain nested lists — the core carries no numpy
+        # dependency — so the column is taken by hand.
+        first = [row[axis_index] for row in a.to_matrix()]
+        second = [row[axis_index] for row in b.to_matrix()]
+        dot = float(sum(f * s for f, s in zip(first, second)))
+        # ABS: the axis is a line, not an arrow. A tube reversed end for end is
+        # the same tube, and calling that a 180 deg error would be wrong.
+        dot = max(-1.0, min(1.0, abs(dot)))
+        return math.degrees(math.acos(dot))
+
+    fold = 2 if symmetry.type is SymmetryType.FLIP else int(symmetry.fold or 2)
+    step = 360.0 / fold
+    best = None
+    for k in range(fold):
+        equivalent = b.multiply(_orientation_about(symmetry.axis, step * k))
+        angle = a.angle_to_deg(equivalent)
+        best = angle if best is None else min(best, angle)
+    return float(best)
+
+
 __all__ = [
     "WORKAREA_FRAME", "CAMERA_OPTICAL_FRAME", "KNOWN_FRAMES", "PoseError",
     "Orientation", "SymmetryType", "Symmetry", "canonicalize", "RigidTransform",
+    "symmetry_aware_angle_deg", "axis_line_angle_deg",
+    "TASK_EQUIVALENCE_AXIS_LINE", "TASK_EQUIVALENCE_EXACT",
     "QUATERNION_NORM_TOLERANCE",
 ]

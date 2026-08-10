@@ -40,7 +40,8 @@ from isaacsim.core.experimental.objects import Cube, Cylinder, DomeLight, Ground
 from isaacsim.core.experimental.prims import GeomPrim, RigidPrim
 from pxr import Gf, UsdGeom, UsdLux
 
-from wisepack_core.domain import Scenario, Vec3, WasteItem
+from wisepack_core.domain import (GEOMETRY_SOURCE_CAD_MESH, Scenario, Vec3,
+                                  WasteItem)
 from wisepack_core.isaac_transform import (
     SceneLayout, mm_to_m, pose_to_world, table_pose_for_index,
 )
@@ -74,6 +75,35 @@ def container_path(container_id: str) -> str:
     return f"{CONTAINERS_ROOT}/{container_id.replace('-', '_')}"
 
 
+def _alignment_to_local_z(model: Any) -> Any:
+    """Rotation taking a model's own tube axis onto local +Z.
+
+    The registry declares that axis — measured, and a VECTOR for parts modelled
+    obliquely — so this reads a declaration rather than re-deriving geometry.
+    Returns identity when the axis is already +Z.
+    """
+    vector = tuple(getattr(model, "task_axis_vector", ()) or ())
+    if not vector:
+        vector = {"x": (1.0, 0.0, 0.0), "y": (0.0, 1.0, 0.0),
+                  "z": (0.0, 0.0, 1.0)}[getattr(model, "task_axis", "z")]
+    source = np.asarray(vector, dtype=np.float64)
+    source = source / np.linalg.norm(source)
+    target = np.array([0.0, 0.0, 1.0])
+
+    cross = np.cross(source, target)
+    dot = float(source @ target)
+    if np.linalg.norm(cross) < 1e-9:
+        # Parallel or antiparallel: identity, or a half turn about any
+        # perpendicular. For a tube either end is equivalent, so the choice of
+        # perpendicular does not matter.
+        return np.eye(3) if dot > 0 else np.diag([1.0, -1.0, -1.0])
+    skew = np.array([[0.0, -cross[2], cross[1]],
+                     [cross[2], 0.0, -cross[0]],
+                     [-cross[1], cross[0], 0.0]])
+    return (np.eye(3) + skew
+            + skew @ skew * (1.0 / (1.0 + dot)))
+
+
 class WisepackScene:
     """Builds and owns the procedural scene, and reads rigid-body state back."""
 
@@ -83,6 +113,12 @@ class WisepackScene:
         self.items: Dict[str, RigidPrim] = {}
         self.item_specs: Dict[str, WasteItem] = {}
         self.item_index: Dict[str, int] = {}
+        #: For CAD-backed items: the offset applied when the mesh was centred on
+        #: its own body, in metres. Kept so the EVALUATION path can express the
+        #: simulator's ground-truth pose in the ORIGINAL CAD frame — the frame
+        #: FoundationPose reports in — instead of the centred one. It is never
+        #: used by the runtime path, which learns object poses from perception.
+        self.cad_mesh_offsets: Dict[str, Any] = {}
         self.containers: Dict[str, Vec3] = {}
         self._item_material: Optional[RigidBodyMaterial] = None
         self._static_material: Optional[RigidBodyMaterial] = None
@@ -230,14 +266,25 @@ class WisepackScene:
             position, orientation = pose_to_world(pose, self.layout)
             path = item_path(item.item_id)
 
-            Cylinder(
-                paths=path,
-                radii=mm_to_m(item.outer_diameter_mm) / 2.0,
-                heights=mm_to_m(item.length_mm),
-                axes="Z",                       # matches quaternion_for_axis()
-                positions=np.array([position]),
-                orientations=np.array([orientation]),
-                colors="orange")
+            # TWO GEOMETRY PATHS, and the item says which. Neither replaces the
+            # other: a generated tube is a parametric cylinder and stays exactly
+            # what it always was, while a CAD-backed item is the REAL part —
+            # hollow bore, saddle ends and all — because for the perception and
+            # sim-to-real work the exact geometry is the entire point.
+            #
+            # The branch is here, in the simulator adapter, and nowhere else.
+            # Planning code never learns which path an item took.
+            if item.geometry_source == GEOMETRY_SOURCE_CAD_MESH:
+                self._build_cad_item(item, path, position, orientation)
+            else:
+                Cylinder(
+                    paths=path,
+                    radii=mm_to_m(item.outer_diameter_mm) / 2.0,
+                    heights=mm_to_m(item.length_mm),
+                    axes="Z",                   # matches quaternion_for_axis()
+                    positions=np.array([position]),
+                    orientations=np.array([orientation]),
+                    colors="orange")
             geom = GeomPrim(paths=path, apply_collision_apis=True)
             geom.apply_physics_materials(self._item_material)
 
@@ -266,6 +313,110 @@ class WisepackScene:
                   f"{item.length_mm}x{item.outer_diameter_mm} mm, "
                   f"{item.weight_kg} kg at "
                   f"{tuple(round(v, 3) for v in position)} m")
+
+    def _build_cad_item(self, item: WasteItem, path: str,
+                        position: Any, orientation: Any) -> None:
+        """Load the item's real CAD mesh into USD, at the given pose.
+
+        THE MESH IS RESOLVED THROUGH THE SHARED REGISTRY, not from a path
+        written here: `config/perception_objects.yaml` is the one place CAD
+        metadata lives, and it is the same lookup the FoundationPose provider
+        uses. Duplicating it in the Isaac adapter would create a second source
+        of truth that agrees only until one of them is edited — and the two
+        would then disagree about which geometry FoundationPose was matching.
+
+        THE STL IS PARSED HERE AND ONLY HERE. This file is already
+        Isaac-specific and already imports `pxr`; the domain layer neither
+        imports a simulator nor reads triangles.
+        """
+        import trimesh                                       # noqa: PLC0415
+        from wisepack_core.rgbd import load_object_registry   # noqa: PLC0415
+
+        registry = load_object_registry()
+        model = registry.models.get(item.model_id)
+        if model is None:
+            raise ValueError(
+                f"{item.item_id}: no object model {item.model_id!r} in the "
+                "registry; a CAD-backed item names a part, it does not define "
+                "one")
+        mesh_file = model.resolved_path(registry.root)
+        if not model.mesh_exists(registry.root):
+            raise ValueError(
+                f"{item.item_id}: mesh not found at {mesh_file or '(unset)'}")
+
+        mesh = trimesh.load(mesh_file)
+        # UNITS COME FROM THE REGISTRY'S DECLARATION, applied once. An STL
+        # records no unit, and a millimetre mesh consumed as metres would drop a
+        # 342 mm tube into the scene 342 metres long.
+        scale = model.mesh_scale_to_mm / 1000.0
+        vertices = np.asarray(mesh.vertices, dtype=np.float64) * scale
+        # CANONICALISED INTO THE LAYOUT'S CONVENTION, in two steps, and both
+        # are recorded so the evaluation path can undo them.
+        #
+        # 1. CENTRED ON ITS OWN BODY. The STL origin of an obliquely modelled
+        #    part can sit far outside the geometry — Cylinder5's is 141 mm away
+        #    — so placing the prim by that origin would put the tube somewhere
+        #    other than where the layout asked for.
+        centre = (vertices.min(axis=0) + vertices.max(axis=0)) / 2.0
+        vertices = vertices - centre
+
+        # 2. TUBE AXIS ROTATED ONTO LOCAL +Z. `quaternion_for_axis` lays a
+        #    Z-ALIGNED cylinder along a world axis — that is the convention the
+        #    generated path satisfies by construction, because `Cylinder(axes=
+        #    "Z")` builds one. A CAD part satisfies nothing by construction:
+        #    Cylinder5's tube axis is (0.928, -0.372, 0) in its own file, so
+        #    applying the layout's orientation left it lying at ~22 degrees to
+        #    the intended axis, and it rolled 130 mm before settling.
+        #
+        #    The axis comes from the registry, where it was MEASURED, rather
+        #    than being recomputed here from the triangles.
+        align = _alignment_to_local_z(model)
+        vertices = vertices @ align.T
+        faces = np.asarray(mesh.faces, dtype=np.int32)
+
+        usd_mesh = UsdGeom.Mesh.Define(stage_utils.get_current_stage(), path)
+        usd_mesh.CreatePointsAttr([Gf.Vec3f(*p) for p in vertices])
+        usd_mesh.CreateFaceVertexCountsAttr([3] * len(faces))
+        usd_mesh.CreateFaceVertexIndicesAttr(faces.flatten().tolist())
+        usd_mesh.CreateSubdivisionSchemeAttr().Set(UsdGeom.Tokens.none)
+        usd_mesh.CreateDisplayColorAttr([Gf.Vec3f(0.62, 0.64, 0.67)])
+
+        xform = UsdGeom.Xformable(usd_mesh)
+        xform.ClearXformOpOrder()
+        xform.AddTranslateOp().Set(Gf.Vec3d(*[float(v) for v in position]))
+        # `orientation` is (w, x, y, z), the convention pose_to_world produces.
+        xform.AddOrientOp().Set(Gf.Quatf(float(orientation[0]),
+                                         Gf.Vec3f(float(orientation[1]),
+                                                  float(orientation[2]),
+                                                  float(orientation[3]))))
+
+        # SEMANTICS, so Isaac can produce an exact instance mask for this part.
+        # Labelled with the model_id, so the mask and the CAD identity carry the
+        # same name — and so the evaluation path can never pair a mask with the
+        # wrong mesh.
+        try:
+            from isaacsim.core.utils.semantics import add_labels  # noqa: PLC0415
+            add_labels(usd_mesh.GetPrim(), labels=[item.model_id],
+                       instance_name="class")
+        except Exception as exc:                             # noqa: BLE001
+            print(f"{LOG_SCENE} WARNING: no semantics on {item.item_id} "
+                  f"({exc}); Isaac instance masks will not identify it")
+
+        # THE COLLISION SHAPE IS DECLARED, not left to a fallback. PhysX cannot
+        # use a raw triangle mesh for a DYNAMIC body and silently substitutes a
+        # convex hull with an error in the log — which for a tube fills the bore
+        # and rounds off the saddle notches. A convex DECOMPOSITION keeps the
+        # concave features that matter for resting and grasping.
+        from pxr import UsdPhysics                            # noqa: PLC0415
+        collision = UsdPhysics.MeshCollisionAPI.Apply(usd_mesh.GetPrim())
+        collision.CreateApproximationAttr().Set("convexDecomposition")
+
+        self.cad_mesh_offsets[item.item_id] = {
+            "centre_m": [float(v) for v in centre],
+            "align_to_local_z": [[float(v) for v in row] for row in align],
+        }
+        print(f"{LOG_SCENE} item {item.item_id}: CAD {item.model_id} "
+              f"({len(faces)} tris) from {mesh_file}")
 
     def _add_camera(self) -> None:
         """A viewpoint that frames the table, the pick row, the bin and the arm.

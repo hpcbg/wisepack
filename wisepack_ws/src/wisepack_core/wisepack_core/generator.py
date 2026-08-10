@@ -604,6 +604,11 @@ def build_scenario(preset: str, seed: int = 42,
             seed=seed, scenario_id=scenario_id or "curated_volume_reduction")
     if preset in _CUT_SCENARIOS:
         return build_cut_scenario(preset, seed=seed, scenario_id=scenario_id)
+    # CAD-BACKED SCENARIOS, selectable exactly like any other preset. The seed
+    # is accepted and ignored: nothing in them is random.
+    from .cad_scenarios import build_cad_scenario, is_cad_scenario  # noqa: PLC0415
+    if is_cad_scenario(preset):
+        return build_cad_scenario(preset, scenario_id=scenario_id)
     return generate_scenario(preset_config(preset, seed, **overrides), scenario_id)
 
 

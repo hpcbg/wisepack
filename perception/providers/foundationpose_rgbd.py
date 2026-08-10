@@ -63,6 +63,8 @@ if _CORE not in sys.path:                                    # pragma: no cover
 from wisepack_core.domain import PhysicalObservation           # noqa: E402
 from wisepack_core.foundationpose_client import (              # noqa: E402
     FoundationPoseClient)
+from wisepack_core.acquisition import (                        # noqa: E402
+    ACQUISITION_ISAAC, ACQUISITION_REALSENSE)
 from wisepack_core.perception import (                         # noqa: E402
     BatchStatus, ObservationBatch, PerceptionMethod, PerceptionSource)
 from wisepack_core.pose import (                               # noqa: E402
@@ -207,7 +209,9 @@ class FoundationPoseProvider:
         return listing
 
     def capability(self, health: Optional[Dict[str, Any]] = None,
-                   rgbd_camera_available: Optional[bool] = None
+                   rgbd_camera_available: Optional[bool] = None,
+                   acquisition: str = ACQUISITION_REALSENSE,
+                   simulated_frames_available: bool = False
                    ) -> Dict[str, Any]:
         """The WHOLE inference chain, one field per prerequisite.
 
@@ -221,11 +225,24 @@ class FoundationPoseProvider:
         worker_ok, worker_reason = self.client.capability(document)
 
         usable_models = [m for m in self.models() if m["usable"]]
-        # THE WORKER OWNS THE CAMERA, so its answer is the default. The
-        # parameter remains for tests and for a caller that genuinely knows
-        # better; it is not a place to guess from.
+        # THE PHYSICAL camera, as the worker sees it. Still reported, because an
+        # operator needs to know whether a D435 is attached — but it is NOT what
+        # decides readiness when the frames come from somewhere else.
         camera = (bool(rgbd_camera_available) if rgbd_camera_available is not None
                   else bool(document.get("rgbd_camera_available")))
+
+        # WHERE THE FRAMES ACTUALLY COME FROM. A simulated acquisition needs no
+        # RealSense: requiring one made a working Isaac run report itself
+        # blocked on hardware it never used.
+        if acquisition == ACQUISITION_ISAAC:
+            frames_available = bool(simulated_frames_available)
+            frames_reason = ("" if frames_available else
+                             "no simulated RGB-D frame is available; produce "
+                             "one with ./scripts/stage_c.sh")
+        else:
+            frames_available = camera
+            frames_reason = ("" if camera else
+                             "no RGB-D camera is available to the worker")
 
         capability: Dict[str, Any] = {
             "method": METHOD,
@@ -241,11 +258,17 @@ class FoundationPoseProvider:
                 bool(document.get("refiner_weights_available")),
             "object_model_available": bool(usable_models),
             "rgbd_camera_available": camera,
-            # RUNTIME READY vs LIVE INFERENCE READY. The distinction the
-            # dashboard needs: today the runtime IS ready and live inference is
-            # not, and reporting one number would hide which.
+            # THE ACQUISITION THIS ANSWER IS ABOUT. Two runs on one deployment
+            # can have different answers, and a capability with no stated source
+            # cannot be read correctly by either.
+            "acquisition": acquisition,
+            "rgbd_frames_available": frames_available,
+            # RUNTIME READY vs INFERENCE READY. The runtime can be ready while
+            # the chosen acquisition has nothing to give, and reporting one
+            # number would hide which.
             "runtime_ready": worker_ok,
-            "inference_ready": bool(worker_ok and camera and usable_models),
+            "inference_ready": bool(worker_ok and frames_available
+                                    and usable_models),
             "offline_regression_available": bool(worker_ok and usable_models),
             "models": usable_models,
             "blocked_by": [],
@@ -263,16 +286,16 @@ class FoundationPoseProvider:
                 "no object model with a mesh declares the foundationpose_rgbd "
                 "method; a model-based estimator needs the CAD geometry of the "
                 "object it is looking at")
-        if not camera:
-            # THE WORKER'S OWN REASON when it gave one: it knows whether the
-            # device is absent, unreadable or ambiguous, and this layer only
-            # knows the flag came back false.
-            reason = ((document.get("probes") or {}).get("rgbd_camera") or {}
-                      ).get("reason") or ""
-            blockers.append(reason or (
-                "no RGB-D camera is available to the FoundationPose worker, so "
-                "no live frame can be acquired. The runtime is unaffected and "
-                "the offline reference regression still runs."))
+        if not frames_available:
+            if acquisition == ACQUISITION_ISAAC:
+                blockers.append(frames_reason)
+            else:
+                # THE WORKER'S OWN REASON when it gave one: it knows whether the
+                # device is absent, unreadable or ambiguous, and this layer only
+                # knows the flag came back false.
+                reason = ((document.get("probes") or {}).get("rgbd_camera") or {}
+                          ).get("reason") or ""
+                blockers.append(reason or frames_reason)
         capability["blocked_by"] = blockers
         return capability
 
@@ -400,15 +423,43 @@ class FoundationPoseProvider:
         canonical = canonicalize(raw, model.symmetry)
         changed = not _same_rotation(raw, canonical)
 
+        # CANONICALISATION MUST NOT MOVE THE OBJECT.
+        #
+        # `canonicalize` returns an orientation differing from the estimate by a
+        # rotation that is a SYMMETRY OF THE SHAPE — but a symmetry about the
+        # object's own axis, which passes through its centre and not through the
+        # model origin. Replacing the orientation while keeping the position
+        # therefore rotates the body about the WRONG POINT, and for a part drawn
+        # obliquely that is a large physical displacement: Cylinder5's origin is
+        # 98.8 mm off its axis, so the 180 degree canonicalisation moved it
+        # ~198 mm. The pose and the orientation stopped describing the same
+        # placement, which surfaced as a 284 mm workarea error against a 4.68 mm
+        # camera-frame error.
+        #
+        # So the translation is corrected to keep the body fixed:
+        #
+        #     R' = R Rd            (Rd = the symmetry rotation, in model coords)
+        #     t' = t + R (c - Rd c)
+        #
+        # with `c` the model's measured centre. Exact, and derived — not a
+        # per-part offset.
+        position = [validated["x_mm"], validated["y_mm"], validated["z_mm"]]
+        if changed and model.model_center_mm:
+            centre = list(model.model_center_mm)
+            delta = raw.conjugate().multiply(canonical)
+            shifted = delta.rotate(centre)
+            correction = raw.rotate([c - s for c, s in zip(centre, shifted)])
+            position = [p + d for p, d in zip(position, correction)]
+
         return PhysicalObservation(
             observation_id=observation_id,
             # `x_mm`/`y_mm`/`yaw_deg` remain what every existing consumer
             # reads. They are the projection of the 6-DoF pose, not a second
             # independent measurement, and `measured_dof` says which of them
             # this method actually determined.
-            x_mm=validated["x_mm"],
-            y_mm=validated["y_mm"],
-            z_mm=validated["z_mm"],
+            x_mm=position[0],
+            y_mm=position[1],
+            z_mm=position[2],
             # NOT SET HERE. `PhysicalObservation` derives `yaw_deg` as the
             # planar projection of the authoritative quaternion, which is
             # exactly the reconciliation wanted — and computing an Euler angle
@@ -423,6 +474,7 @@ class FoundationPoseProvider:
             calibration_status="not_applicable",
             diameter_mm=model.diameter_mm,
             length_mm=model.length_mm,
+            inner_diameter_mm=model.inner_diameter_mm,
             geometry_source="cad_model",
             orientation=canonical,
             # KEPT ONLY WHEN IT DIFFERS. A raw copy identical to the canonical
@@ -449,6 +501,15 @@ class FoundationPoseProvider:
             # determined up to a 180 deg leg swap and no further — and calling
             # that "orientation" measured would be exactly the over-claim the
             # symmetry declaration exists to prevent.
+            # CARRIED ONTO THE OBSERVATION so a consumer can find the physical
+            # object without the registry. `x_mm/y_mm/z_mm` above locate the CAD
+            # MODEL FRAME, whose origin for these parts sits outside the body;
+            # these two are what turn that into a graspable centre and axis.
+            model_center_mm=tuple(model.model_center_mm or ()),
+            task_axis_vector=tuple(
+                model.task_axis_vector
+                or {"x": (1.0, 0.0, 0.0), "y": (0.0, 1.0, 0.0),
+                    "z": (0.0, 0.0, 1.0)}.get(model.task_axis, ())),
             measured_dof=("x", "y", "z") + (
                 ("orientation",) if not model.symmetry.ambiguous_dof
                 else ("orientation_partial",)),

@@ -1,0 +1,82 @@
+# WISEPACK RGB-D sensor profiles.
+#
+# ONE DESCRIPTION OF A SENSOR, USED BY TWO BACKENDS. The simulated camera is
+# configured from the same profile the physical device is checked against, so
+# "the simulated D435" and "the D435 on the bench" are the same declaration
+# rather than two independent guesses that drift apart.
+#
+#     simulated   simulators/isaac/rgbd_camera.py builds an Isaac camera whose
+#                 projection matches this geometry.
+#     physical    perception/foundationpose/worker/camera.py reads the ACTUAL
+#                 device and reports what it finds.
+#
+# PROVENANCE IS PART OF THE PROFILE, and it is the field that matters most here.
+# Every number below is `documented_nominal`: taken from Intel's published D435
+# specification, NOT measured from the device on this bench. Two sensors of the
+# same model differ — that is what per-device factory calibration is for — so
+# these are good enough to develop against and are NOT a calibration.
+#
+# WHEN THE PHYSICAL D435 ENUMERATES, read its real calibration with
+# `./scripts/realsense_diagnose.sh` and `GET /camera`, and record the measured
+# intrinsics, depth scale and depth-to-colour extrinsics as a SEPARATE profile
+# with `provenance: measured`. Do not overwrite these; the difference between
+# nominal and measured is itself informative.
+
+sensors:
+
+  # The sim-to-real target. NOTE: NVIDIA ships no D435 USD asset — the Isaac
+  # asset server carries D455, D457 and D555 only — so the simulated camera is
+  # built from these parameters with Isaac's camera APIs. A D455 renamed to
+  # "D435" would be a different sensor wearing the wrong label: the D455 has a
+  # ~95 deg depth FOV and a 95 mm baseline against the D435's ~87 deg and 50 mm.
+  - sensor_id: d435
+    vendor: Intel
+    model: RealSense D435
+    provenance: documented_nominal
+    provenance_note: >-
+      Intel published specification, not a measurement of any particular
+      device. Replace with a measured profile once the physical camera is read.
+
+    # The stream WISEPACK uses. Depth is aligned to colour, so the colour
+    # intrinsics are the ones every downstream consumer sees — which is why the
+    # simulated camera reproduces the COLOUR geometry.
+    colour:
+      width: 1280
+      height: 720
+      fps: 30
+      format: bgr8
+      # Intel's published colour field of view for the D435, degrees.
+      hfov_deg: 69.4
+      vfov_deg: 42.5
+
+    depth:
+      width: 1280
+      height: 720
+      fps: 30
+      format: z16
+      # The D435 depth module is WIDER than its colour camera; after alignment
+      # to colour the usable depth is cropped to the colour frustum. Recorded
+      # because it explains why aligned depth has invalid borders on real data
+      # and why the simulated camera — which has no such mismatch — will look
+      # cleaner than the physical one.
+      hfov_deg: 87.0
+      vfov_deg: 58.0
+      # Millimetres per raw depth unit. The published default; the device
+      # reports its own and that value wins when one is attached.
+      depth_scale_mm_per_unit: 1.0
+      # Stereo baseline, millimetres. Not used by the simulated camera (which
+      # has no stereo pair) but recorded so the sim-to-real difference is
+      # visible rather than forgotten.
+      baseline_mm: 50.0
+      min_range_m: 0.105
+      max_range_m: 10.0
+
+    # What the simulated camera CANNOT reproduce from these numbers, stated so
+    # nobody reads a clean synthetic depth image as evidence about the real one:
+    limitations:
+      - "no stereo matching, so no disparity noise, no holes on low-texture
+         surfaces and none of the depth edge bleeding a real D435 shows"
+      - "no IR projector pattern, which is what makes the real sensor work on
+         featureless metal"
+      - "no rolling shutter, no exposure or gain behaviour, no motion blur"
+      - "depth is exact within the rendered scene rather than range-limited"

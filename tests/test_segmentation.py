@@ -397,3 +397,90 @@ def test_the_documentation_records_what_labelled_data_actually_exists():
     assert "COCO" in document
     # And the CAD-driven alternative, rather than inventing labels.
     assert "Isaac Sim" in document
+
+
+# --------------------------------------------------------------------------- #
+# Symmetry semantics for straight tubes (measured, not assumed)
+# --------------------------------------------------------------------------- #
+
+
+def test_an_axial_tube_axis_is_a_line_not_an_arrow():
+    """For a straight tube with identical ends, a 180 deg rotation about a
+    transverse axis exchanges the two ends and changes nothing. So an end swap
+    must never be counted as pose error."""
+    sys.path.insert(0, os.path.join(REPO, "wisepack_ws", "src", "wisepack_core"))
+    from wisepack_core.pose import (Orientation, Symmetry, SymmetryType,
+                                    symmetry_aware_angle_deg)
+    axial = Symmetry(type=SymmetryType.AXIAL, axis="z")
+    upright = Orientation.identity()
+    # Flipped end for end: +z becomes -z.
+    flipped = Orientation.from_matrix([[1, 0, 0], [0, -1, 0], [0, 0, -1]])
+    assert symmetry_aware_angle_deg(upright, flipped, axial) == pytest.approx(0.0, abs=1e-9)
+
+
+def test_axial_spin_is_never_counted_as_pose_error():
+    sys.path.insert(0, os.path.join(REPO, "wisepack_ws", "src", "wisepack_core"))
+    from wisepack_core.pose import (Orientation, Symmetry, SymmetryType,
+                                    symmetry_aware_angle_deg)
+    axial = Symmetry(type=SymmetryType.AXIAL, axis="z")
+    for spin in (17.0, 90.0, 143.0, 359.0):
+        assert symmetry_aware_angle_deg(
+            Orientation.identity(), Orientation.from_yaw_deg(spin), axial
+        ) == pytest.approx(0.0, abs=1e-9)
+
+
+def test_a_real_axis_tilt_IS_counted_as_error():
+    """The metric must not discard everything — only the unobservable part."""
+    sys.path.insert(0, os.path.join(REPO, "wisepack_ws", "src", "wisepack_core"))
+    from wisepack_core.pose import (Orientation, Symmetry, SymmetryType,
+                                    symmetry_aware_angle_deg)
+    axial = Symmetry(type=SymmetryType.AXIAL, axis="z")
+    tilted = Orientation.from_matrix(
+        [[1, 0, 0], [0, 0.7071068, -0.7071068], [0, 0.7071068, 0.7071068]])
+    assert symmetry_aware_angle_deg(
+        Orientation.identity(), tilted, axial) == pytest.approx(45.0, abs=1e-3)
+
+
+def test_every_cylinder_is_declared_straight_and_none_is_bent():
+    """The engineering table gives D x L x T for five STRAIGHT round tubes. An
+    earlier revision declared Cylinder5 a bent hairpin on the strength of a
+    coordinate-axis-only symmetry test; that conclusion is gone."""
+    import yaml
+    with open(os.path.join(REPO, "config", "perception_objects.yaml"),
+              encoding="utf-8") as handle:
+        document = yaml.safe_load(handle)
+    entries = {e["model_id"]: e for e in document["objects"]}
+    for model_id in ("cylinder1", "cylinder2", "cylinder3", "cylinder4",
+                     "cylinder5"):
+        entry = entries[model_id]
+        assert entry["object_type"] == "pipe_section", model_id
+        assert "hairpin" not in str(entry).lower(), model_id
+        assert "bent" not in str(entry.get("description", "")).lower(), model_id
+
+
+def test_the_straight_square_ended_tubes_are_axial_and_cylinder5_is_not():
+    """Measured: C1-C4 spin unobservable; C5's saddle ends make spin
+    observable, leaving only the end swap ambiguous."""
+    import yaml
+    with open(os.path.join(REPO, "config", "perception_objects.yaml"),
+              encoding="utf-8") as handle:
+        entries = {e["model_id"]: e for e in yaml.safe_load(handle)["objects"]}
+    for model_id in ("cylinder1", "cylinder2", "cylinder3"):
+        assert entries[model_id]["symmetry"]["type"] == "axial", model_id
+    # C4 and C5 both carry intentional saddle-cut ends, so spin is
+    # geometrically observable and the end swap is what remains ambiguous.
+    for model_id in ("cylinder4", "cylinder5"):
+        assert entries[model_id]["symmetry"]["type"] == "discrete", model_id
+        assert entries[model_id]["symmetry"]["fold"] == 2, model_id
+    # ... and for PICKING, every one of them is an axis line.
+    for model_id in ("cylinder1", "cylinder2", "cylinder3", "cylinder4",
+                     "cylinder5"):
+        assert entries[model_id]["task_pose_equivalence"] == "axis_line"
+
+
+def test_the_symmetry_tool_tests_the_meshs_own_axis():
+    """The coordinate-axis-only test is what produced the wrong answer."""
+    source = open(os.path.join(REPO, "scripts", "measure_mesh_symmetry.py"),
+                  encoding="utf-8").read()
+    assert "principal" in source
+    assert "centroid" in source.lower()
