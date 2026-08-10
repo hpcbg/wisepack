@@ -60,6 +60,17 @@ for sysfs in /sys/bus/usb/devices/*/; do
     node="$(printf '/dev/bus/usb/%03d/%03d' "$bus" "$dev")"
     HOST_NODES="$HOST_NODES $node"
     pass "$product at $node (${speed:-?} Mbps)"
+    # THE V4L2 NODES OF THIS DEVICE ARE PART OF THE CHAIN. librealsense's Linux
+    # backend enumerates through /sys/class/video4linux and then opens
+    # /dev/videoN; without those nodes step 3 finds no device at all. They are
+    # discovered by walking down from THIS Intel device, never by index, so the
+    # planar webcam's own nodes are never among them.
+    for v4l in "${sysfs}"*/video4linux/video*; do
+        v4l_node="/dev/$(basename "$v4l")"
+        [ -e "$v4l_node" ] || continue
+        HOST_NODES="$HOST_NODES $v4l_node"
+        pass "$product also owns $v4l_node (librealsense V4L2 backend)"
+    done
     # A D4xx on USB 2 silently loses its higher resolutions and frame rates,
     # which reads as a broken camera rather than a cable in the wrong socket.
     case "$speed" in
@@ -97,7 +108,10 @@ done
 # --- 3-7. the SDK, inside the container --------------------------------------
 
 step "3-7. librealsense inside the container"
-docker exec "$CONTAINER" python3 - <<'PY'
+# `-i` IS LOAD-BEARING. Without it `docker exec` gives python3 no stdin, so
+# `python3 -` reads an empty program, prints nothing and exits 0 — five checks
+# silently skipped and reported as a pass.
+docker exec -i "$CONTAINER" python3 - <<'PY'
 import sys
 sys.path.insert(0, "/opt/wisepack-fp-worker")
 

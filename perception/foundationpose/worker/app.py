@@ -504,6 +504,73 @@ def create_app(capabilities: Optional[Capabilities] = None):
             "validation": VALIDATION,
         }
 
+    @app.post("/segment")
+    def segment_frame(request: Dict[str, Any]) -> Dict[str, Any]:
+        """One mask from one frame, with NO pose estimation.
+
+        WHY THIS IS SEPARATE FROM /estimate. A mask is an INPUT to a pose
+        measurement, and on a physical scene it is the input most likely to be
+        wrong: plane-based foreground selection assumes one object standing on
+        a dominant surface, and a cluttered table quietly yields a single
+        component containing several objects. Registering a CAD model against
+        that produces a confident pose on the wrong thing.
+        `/estimate` can segment for itself, but only AFTER it has committed to
+        inferring; this route lets an operator look at the mask first and
+        decide, which is exactly what the physical bring-up needs.
+        REQUIRES NO GPU AND NO WEIGHTS. Segmentation is geometry over the depth
+        image, so it answers on a machine where inference is unavailable —
+        useful, because "the mask is wrong" and "the estimator is missing" are
+        different problems and must not present as one.
+        """
+        dataset_name = str(request.get("dataset", "")).strip()
+        if not dataset_name:
+            raise HTTPException(400, "a `dataset` is required")
+        method = str(request.get("method", "depth_plane_foreground")).strip()
+        try:
+            from segmentation import SegmentationError, segment  # noqa: PLC0415
+            import numpy as np                                # noqa: PLC0415
+            root = resolve_any_dataset(dataset_name)
+            dataset = ReferenceDataset(root, base=DATASETS_DIR)
+            index = int(request.get("frame", 0))
+            if "depth_scale_mm" not in request:
+                raise DatasetError(
+                    "`depth_scale_mm` is required: how many millimetres one raw "
+                    "depth unit represents. It cannot be inferred from the "
+                    "image, and guessing it moves the fitted plane.")
+            depth_scale_mm = float(request["depth_scale_mm"])
+            if depth_scale_mm <= 0:
+                raise DatasetError("`depth_scale_mm` must be positive")
+            colour, depth, _mask = dataset.load(index,
+                                                depth_scale_mm=depth_scale_mm)
+            # `load()` returns METRES; segmentation works in millimetres. Zero
+            # stays zero — it means "no measurement", not "at the lens".
+            depth_mm = (depth * 1000.0).astype(np.uint16)
+            intrinsics = dataset.intrinsics()
+            try:
+                result = segment(method, depth_mm, intrinsics,
+                                 dict(request.get("segmentation") or {}))
+            except SegmentationError as exc:
+                raise DatasetError(str(exc)) from exc
+        except (DatasetError, ValueError) as exc:
+            raise HTTPException(400, str(exc)) from exc
+
+        # THE PICTURES, so the mask can be LOOKED AT. A mask judged only by its
+        # pixel count is a mask nobody has actually inspected.
+        _render_segmentation(estimator, colour, depth, result.mask)
+        document = result.to_dict()
+        document.update({
+            "dataset": dataset_name,
+            "frame_index": index,
+            "frame_file": dataset.rgb_files[index],
+            "depth_scale_mm": depth_scale_mm,
+            "intrinsics": [[float(v) for v in row] for row in intrinsics],
+            "images": sorted(estimator.last_images),
+            "note": ("A mask is not a pose. This route says which pixels would "
+                     "be handed to register(), and nothing about whether the "
+                     "object in them is the one you meant."),
+        })
+        return document
+
     @app.get("/camera")
     def camera_info(serial: str = ""):
         """The RGB-D device: model, serial, firmware, streams, depth scale.
@@ -701,6 +768,50 @@ def create_app(capabilities: Optional[Capabilities] = None):
         return Response(data, media_type="image/jpeg")
 
     return app
+
+
+def _render_segmentation(estimator: Estimator, colour, depth, mask) -> None:
+    """RGB, depth and the mask — plus the mask DRAWN ON the RGB.
+
+    THE OVERLAY IS THE ONE THAT MATTERS. A white blob on black tells an
+    operator its area; the same blob outlined on the photograph tells them
+    whether it is the object they meant, which is the only question this
+    milestone's segmentation step is asking.
+
+    FAILURE HERE MUST NOT FAIL A SEGMENTATION, for the same reason the pose
+    overlay must not fail an estimate.
+    """
+    try:
+        import cv2                                           # noqa: PLC0415
+        import numpy as np                                   # noqa: PLC0415
+
+        images: Dict[str, bytes] = {}
+        bgr = cv2.cvtColor(colour, cv2.COLOR_RGB2BGR)
+        images["rgb"] = cv2.imencode(".jpg", bgr)[1].tobytes()
+
+        finite = depth[depth > 0]
+        if finite.size:
+            lo, hi = float(np.percentile(finite, 1)), float(np.percentile(finite, 99))
+            scaled = np.clip((depth - lo) / max(hi - lo, 1e-6), 0, 1)
+            visual = cv2.applyColorMap((scaled * 255).astype(np.uint8),
+                                       cv2.COLORMAP_TURBO)
+            visual[depth <= 0] = 0
+            images["depth"] = cv2.imencode(".jpg", visual)[1].tobytes()
+
+        if mask is not None:
+            binary = mask.astype(np.uint8)
+            images["mask"] = cv2.imencode(".jpg", binary * 255)[1].tobytes()
+            tinted = bgr.copy()
+            tinted[binary > 0] = (0.45 * tinted[binary > 0]
+                                  + 0.55 * np.array([0, 255, 0])).astype(np.uint8)
+            contours, _ = cv2.findContours(binary, cv2.RETR_EXTERNAL,
+                                           cv2.CHAIN_APPROX_SIMPLE)
+            cv2.drawContours(tinted, contours, -1, (255, 255, 255), 2)
+            images["segmentation"] = cv2.imencode(".jpg", tinted)[1].tobytes()
+
+        estimator.last_images = images
+    except Exception:                                        # noqa: BLE001
+        pass
 
 
 def _render_overlay(estimator: Estimator, colour, depth, mask, pose, mesh,

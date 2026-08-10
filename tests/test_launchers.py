@@ -137,6 +137,68 @@ def test_set_u_comes_after_sourcing_the_ros_environment():
 
 
 # --------------------------------------------------------------------------- #
+# The CAD/reference tree the containerised dashboard has to see
+# --------------------------------------------------------------------------- #
+
+
+def _dashboard_text():
+    with open(DASHBOARD, encoding="utf-8") as handle:
+        return handle.read()
+
+
+def test_the_dashboard_container_mounts_the_reference_assets():
+    """A repo-only mount made every object model look mesh-less.
+
+    REPRODUCED: with the dashboard running inside the image (the host has no
+    fastapi, so `sim` borrows the container), only $REPO was mounted. The
+    meshes live in the SIBLING references/ tree that `mesh_path` entries are
+    relative to, so `mesh_exists()` was False for all six eligible models and
+    the FoundationPose provider reported "no object model with a mesh declares
+    the foundationpose_rgbd method" — which reads as an empty registry rather
+    than as a missing mount, and held `inference_ready` at False.
+    """
+    text = _dashboard_text()
+    assert "ASSETS_ROOT=" in text, "the reference tree must be resolved"
+    assert 'ASSETS_MOUNT=(-v "$ASSETS_ROOT:$ASSETS_ROOT:ro")' in text, (
+        "the reference tree must be mounted READ-ONLY: WISEPACK reads this "
+        "third-party material and never writes it")
+    # BOTH container invocations — sim borrows the image, live always uses it,
+    # and a mesh that resolves in one mode and not the other is worse than
+    # neither, because it looks like a registry problem.
+    assert text.count('"${ASSETS_MOUNT[@]}"') >= 2, (
+        "both the sim and live dashboard containers need the reference tree")
+
+
+def test_the_reference_tree_is_mounted_at_its_host_path():
+    """Same path inside and out, exactly as $REPO is.
+
+    A mesh path must resolve to the same string on the host, in the dashboard
+    container and in the FoundationPose worker. Remapping it to a container-only
+    prefix would need a translation table that only the code holding it agrees
+    with.
+    """
+    text = _dashboard_text()
+    assert '"$ASSETS_ROOT:$ASSETS_ROOT' in text
+
+
+def test_the_meshes_are_not_copied_into_the_repository():
+    """MOUNTED, NOT DUPLICATED. A second copy drifts from the first, and the
+    registry's own comment says the material is read in place."""
+    text = _dashboard_text()
+    for forbidden in ("cp -r", "rsync", "cp -a"):
+        assert forbidden not in text, f"the launcher copies assets with {forbidden}"
+
+
+def test_an_explicit_assets_root_still_wins():
+    """`WISEPACK_PERCEPTION_ASSETS_ROOT` is the documented override that
+    wisepack_core already honours; the launcher must not ignore it and mount a
+    different tree than the code will read."""
+    text = _dashboard_text()
+    assert 'ASSETS_ROOT="${WISEPACK_PERCEPTION_ASSETS_ROOT:-' in text
+    assert "-e WISEPACK_PERCEPTION_ASSETS_ROOT" in text
+
+
+# --------------------------------------------------------------------------- #
 # Always build current source
 # --------------------------------------------------------------------------- #
 

@@ -32,6 +32,7 @@ the wrong thing. Every threshold here is relative to the MEASURED plane.
 
 from __future__ import annotations
 
+import math
 import time
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -52,6 +53,23 @@ DEFAULTS: Dict[str, Any] = {
     #: Optional lateral bound around the plane centroid, in millimetres. None
     #: means "the whole plane".
     "roi_radius_mm": None,
+    #: OPTIONAL OPERATOR ROI, in COLOUR-IMAGE PIXELS: [x0, y0, x1, y1], or None
+    #: for the whole frame.
+    #:
+    #: WHAT IT IS: a statement of WHERE TO LOOK, given by whoever set the scene
+    #: up. On a bench that holds one intended object and a dozen unrelated ones,
+    #: the single-object rules below are the right rules — they were simply
+    #: being applied to the whole room instead of to the part of it the operator
+    #: meant.
+    #:
+    #: WHAT IT IS NOT, and this is the line that matters: it does NOT identify
+    #: the object. Which CAD part is in the window is `model_id`, stated by the
+    #: operator, exactly as it is without an ROI. A window says "the thing I
+    #: mean is in here"; it cannot say what that thing is, and nothing here
+    #: derives one from the other. In particular no ROI is ever computed from a
+    #: CAD model's dimensions — that would be identifying the object by its
+    #: shape and then measuring its pose with the same shape.
+    "roi_px": None,
     #: RANSAC effort. Fixed iterations and a fixed seed, so the same frame gives
     #: the same plane every time — a segmentation that wanders between runs
     #: would make pose repeatability meaningless.
@@ -198,6 +216,49 @@ def fit_plane(points: Any, tolerance_mm: float, iterations: int,
 METHOD_DEPTH_PLANE = "depth_plane_foreground"
 
 
+def _extent_mm(mask: Any, depth_mm: Any, intrinsics: Any) -> Dict[str, Any]:
+    """How big the selected region actually is, in millimetres.
+
+    MEASURED FROM THE DEPTH, NEVER FROM A CAD MODEL. It exists so an operator
+    can see that the region they are about to hand to a pose estimator is the
+    size of the thing they meant — a 200 mm blob where a 342 mm tube was
+    expected is the cheapest possible warning that the wrong object was
+    selected.
+
+    NOTHING CONSUMES THIS. It is a diagnostic printed for a human; using it to
+    pick a component would be identifying an object by its dimensions, which is
+    exactly what the registry forbids and what `model_id` exists to state.
+
+    The extents are the principal axes of the masked pixels scaled to the
+    region's median range — an approximation good enough to tell 200 mm from
+    340 mm, and not a measurement of the object.
+    """
+    import numpy as np                                        # noqa: PLC0415
+
+    rows, columns = np.nonzero(mask)
+    if rows.size < 50:
+        return {}
+    ranges = depth_mm[rows, columns].astype(np.float64)
+    ranges = ranges[ranges > 0]
+    if ranges.size < 50:
+        return {}
+    median = float(np.median(ranges))
+    pixels = np.stack([columns, rows], axis=1).astype(np.float64)
+    pixels -= pixels.mean(axis=0)
+    singular = np.linalg.svd(pixels, compute_uv=False)
+    # 2*sqrt(3)*sigma is the full width of a uniform bar of that spread.
+    spread = 2.0 * math.sqrt(3.0) * singular / math.sqrt(pixels.shape[0])
+    fx = float(intrinsics[0][0])
+    fy = float(intrinsics[1][1])
+    return {
+        "mask_median_range_mm": round(median, 1),
+        "mask_extent_long_mm": round(float(spread[0]) * median / fx, 1),
+        "mask_extent_across_mm": round(float(spread[1]) * median / fy, 1),
+        "extent_note": ("measured from depth, NOT from any CAD model, and not "
+                        "used to select anything — a diagnostic for a human"),
+    }
+
+
 def depth_plane_foreground(depth_mm: Any, intrinsics: Any,
                            options: Optional[Dict[str, Any]] = None,
                            colour_shape: Optional[Tuple[int, int]] = None
@@ -207,12 +268,18 @@ def depth_plane_foreground(depth_mm: Any, intrinsics: Any,
     The stages, in order, each of which can fail with its own reason:
 
         deproject valid depth with the real intrinsics
-        fit the dominant plane robustly
+        fit the dominant plane robustly, on the WHOLE frame
         drop plane points
-        keep foreground ABOVE the plane, inside the work volume and ROI
+        keep foreground ABOVE the plane and inside the work volume
+        restrict to the operator's ROI, if one was given
         project back into the aligned colour image
         select one connected component
         close small holes only
+
+    THE ROI DOES NOT IDENTIFY THE OBJECT. It restricts WHERE this method looks,
+    so the single-object rules apply to the region an operator pointed at rather
+    than to every unrelated thing on the bench. Which part is in that region is
+    `model_id`, and it is stated, never inferred — see `roi_px` in DEFAULTS.
     """
     import cv2                                               # noqa: PLC0415
     import numpy as np                                       # noqa: PLC0415
@@ -226,7 +293,7 @@ def depth_plane_foreground(depth_mm: Any, intrinsics: Any,
         "image_size": [int(width), int(height)],
         "settings": {k: settings[k] for k in
                      ("plane_tolerance_mm", "min_height_mm", "max_height_mm",
-                      "roi_radius_mm", "component")},
+                      "roi_radius_mm", "roi_px", "component")},
         "plane_detected": False,
         "plane_residual_mm": None,
         "plane_inlier_fraction": None,
@@ -301,14 +368,57 @@ def depth_plane_foreground(depth_mm: Any, intrinsics: Any,
         above &= np.linalg.norm(lateral, axis=1) <= float(radius)
         diagnostics["roi_radius_mm"] = float(radius)
 
+    # THE OPERATOR'S WINDOW, applied AFTER the plane fit and BEFORE anything is
+    # counted. Two consequences, both deliberate:
+    #
+    #   the plane stays a FULL-FRAME measurement. Fitting it inside a narrow
+    #   window would estimate the work surface from a sliver of tabletop, and a
+    #   worse plane moves every height threshold that follows.
+    #
+    #   the single-object rules then apply INSIDE the window. The component
+    #   count, the selection and every validity limit see only what the operator
+    #   pointed at, which is what makes "one object on a surface" a true
+    #   statement about a bench that also holds a dozen other things.
+    box = settings.get("roi_px")
+    if box:
+        try:
+            x0, y0, x1, y1 = (int(round(float(v))) for v in box)
+        except (TypeError, ValueError) as exc:
+            raise SegmentationError(
+                f"roi_px must be [x0, y0, x1, y1] in colour-image pixels, got "
+                f"{box!r} ({exc})") from exc
+        x0, x1 = sorted((x0, x1))
+        y0, y1 = sorted((y0, y1))
+        x0, y0 = max(0, x0), max(0, y0)
+        x1, y1 = min(width, x1), min(height, y1)
+        if x1 - x0 < 2 or y1 - y0 < 2:
+            raise SegmentationError(
+                f"roi_px [{x0}, {y0}, {x1}, {y1}] is empty after clamping to "
+                f"the {width}x{height} image; nothing could be segmented in it")
+        rows, columns = np.divmod(flat_index, width)
+        inside = (columns >= x0) & (columns < x1) & (rows >= y0) & (rows < y1)
+        above &= inside
+        diagnostics["roi_px"] = [x0, y0, x1, y1]
+        diagnostics["roi_area_px"] = int((x1 - x0) * (y1 - y0))
+        # WHAT WAS EXCLUDED, stated as a number. An ROI that quietly discarded
+        # most of the object would otherwise look like a clean segmentation.
+        diagnostics["foreground_points_full_frame"] = int(
+            ((signed >= float(settings["min_height_mm"]))
+             & (signed <= float(settings["max_height_mm"]))).sum())
+
     diagnostics["foreground_points"] = int(above.sum())
     if not above.any():
+        where = (f" inside the ROI {diagnostics['roi_px']}" if box else "")
+        elsewhere = (
+            f" {diagnostics['foreground_points_full_frame']} such points exist "
+            "in the FULL frame, so the ROI is pointing somewhere else."
+            if box and diagnostics.get("foreground_points_full_frame") else "")
         return SegmentationResult(
             empty, METHOD_DEPTH_PLANE, diagnostics, False,
-            f"no points stand between {settings['min_height_mm']} mm and "
+            f"no points{where} stand between {settings['min_height_mm']} mm and "
             f"{settings['max_height_mm']} mm above the fitted surface. Either "
             "no object is present, or it is lying flatter than the minimum "
-            "height.")
+            f"height.{elsewhere}")
 
     # Project the surviving points back into the ALIGNED colour image. This is
     # a scatter, not a reprojection: depth is already aligned to colour, so a
@@ -351,6 +461,7 @@ def depth_plane_foreground(depth_mm: Any, intrinsics: Any,
         "mask_centroid_px": [round(float(v), 2) for v in centroids[chosen]],
         "duration_ms": round((time.monotonic() - started) * 1000.0, 2),
     })
+    diagnostics.update(_extent_mm(mask, depth_mm, intrinsics))
 
     valid, reason = validate_mask(mask, depth_mm, points, flat_index, above,
                                   signed, diagnostics, settings)

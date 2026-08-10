@@ -45,11 +45,25 @@ DATASETS_DIR = os.environ.get("WISEPACK_FP_DATASETS_DIR", "/datasets")
 #: third-party reference material have different lifetimes anyway.
 ISAAC_DATASETS_DIR = os.environ.get("WISEPACK_FP_ISAAC_DATASETS_DIR",
                                     "/isaac-reference")
+#: A THIRD dataset root: what this worker CAPTURED from the physical camera.
+#: `capture_dataset()` writes the demo layout here — `cam_K.txt` from the
+#: device's own intrinsics, `rgb/`, `depth/` — so a physical capture is already
+#: a dataset in every respect except that nothing could name it: the two roots
+#: above hold third-party reference material and generated Isaac cases, and a
+#: capture is neither. Without this root the worker could acquire a frame from
+#: the D435 and then be unable to estimate against it, which is the one
+#: combination that makes the camera useless.
+#:
+#: THE ONLY WRITABLE ROOT, and deliberately so: the worker is the author of
+#: everything under it. `resolve_dataset()` still confines a caller-supplied
+#: name to the root, so being writable does not widen what a request can name.
+CAPTURES_DIR = os.environ.get("WISEPACK_FP_CAPTURES_DIR", "/captures")
 
 
 def dataset_roots():
     """Every root a dataset may live under, in search order."""
-    return [d for d in (DATASETS_DIR, ISAAC_DATASETS_DIR) if os.path.isdir(d)]
+    return [d for d in (DATASETS_DIR, ISAAC_DATASETS_DIR, CAPTURES_DIR)
+            if os.path.isdir(d)]
 
 #: The two checkpoint directories FoundationPose requires, exactly as upstream
 #: names them. Hard-coded because they are upstream's identifiers, not a

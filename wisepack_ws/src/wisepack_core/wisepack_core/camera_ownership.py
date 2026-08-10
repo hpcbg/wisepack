@@ -20,16 +20,22 @@ WHAT IT DELIBERATELY IS NOT
   guessing that a handover finished; they fail silently on a busy machine and
   they can stop something this project does not own. A handover is performed by
   the owner RELEASING and the acquirer OPENING, each reporting success.
-* NOT a claim that any handover has been tested. NO RGB-D CAMERA IS ATTACHED to
-  this host. Every state below is reachable and asserted in tests, and the
-  physical transfer between a planar colour capture and an RGB-D acquisition has
-  never been performed. `handover_tested` is False and says so.
+* NOT a claim that any handover has been tested. Every state below is reachable
+  and asserted in tests, and the physical transfer between a planar colour
+  capture and an RGB-D acquisition has never been performed on any deployment.
+  `handover_tested` is False and says so — and it stays False now that a D435 is
+  attached, because attaching a camera is not performing a handover.
 
-HONEST STATES BEAT A HOPEFUL API. Until the hardware exists, the useful thing
-this can do is say precisely what is and is not known — which is why
-`SHARED_DEVICE_UNKNOWN` is a state rather than an assumption in either
-direction: whether the depth camera's colour stream can also feed the planar
-detector is a property of a device nobody has plugged in.
+HONEST STATES BEAT A HOPEFUL API. The useful thing this can do is say precisely
+what is and is not known — which is why `SHARED_DEVICE_UNKNOWN` is a state
+rather than an assumption in either direction: whether the depth camera's colour
+stream can also feed the planar detector has not been established on the one
+deployment that now has both, and either answer would be a guess.
+
+NOTHING HERE OPENS A DEVICE. Availability is reported BY ITS OWNER — the planar
+provider for colour, the FoundationPose worker for RGB-D — and passed in. A
+probe of its own here would be a second opener of the very device this module
+exists to keep single-owned.
 """
 
 from __future__ import annotations
@@ -144,11 +150,34 @@ class CameraOwnership:
             "shared_device": self.shared_device,
             "reasons": dict(self.reasons),
             "handover_tested": self.handover_tested,
-            "note": (
-                "Camera ownership is modelled so two providers cannot both open "
-                "one device. No RGB-D camera is attached to this deployment, so "
-                "no handover has been performed and none is claimed."),
+            "note": self.note,
         }
+
+    @property
+    def note(self) -> str:
+        """What this deployment can and cannot claim about ownership.
+
+        THE ABSENCE OF A CAMERA AND THE ABSENCE OF A TESTED HANDOVER ARE TWO
+        DIFFERENT FACTS. This note once asserted both at once — it said "no
+        RGB-D camera is attached to this deployment" unconditionally — so a
+        deployment with a D435 on the bus reported that no RGB-D camera existed
+        directly beneath a capability saying one did. Whichever an operator
+        believed, the panel was wrong. The device claim now follows
+        `depth_state`; the handover claim does not, because no transfer has been
+        performed whether or not hardware is present.
+        """
+        modelled = ("Camera ownership is modelled so two providers cannot both "
+                    "open one device.")
+        if self.depth_state == ABSENT:
+            return (f"{modelled} No RGB-D camera is attached to this "
+                    "deployment, so no handover has been performed and none is "
+                    "claimed.")
+        held = (f" It is held by {self.depth_holder}." if self.depth_holder
+                else " Nothing is holding it.")
+        return (f"{modelled} An RGB-D camera is attached.{held} Nothing has "
+                "been transferred between the planar and RGB-D methods on this "
+                "deployment, so no handover has been performed and none is "
+                "claimed.")
 
 
 def current_ownership(colour_available: bool = False,

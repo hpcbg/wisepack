@@ -85,6 +85,26 @@ wisepack_load_local_env "$REPO"
 # shellcheck source=scripts/lib_perception_service.sh
 . "$REPO/scripts/lib_perception_service.sh"
 
+# --- the CAD/reference tree, mounted at the SAME PATH it has on the host ------
+#
+# THE MESHES ARE NOT IN THE REPOSITORY, deliberately: they are third-party
+# reference material that already lives BESIDE it, and `mesh_path` entries in
+# config/perception_objects.yaml are relative to that sibling tree. The
+# containerised dashboard mounted the repo and nothing else, so every
+# `mesh_exists()` was False inside it and the FoundationPose provider correctly
+# reported that no object model had a mesh — which reads as an empty registry
+# rather than as a missing mount. Six models were eligible the whole time.
+#
+# MOUNTED AT THE IDENTICAL PATH, exactly as `$REPO` is, so a mesh path resolves
+# to the same string on the host, in this container and in the FoundationPose
+# worker (which mounts the same tree at /datasets). No translation table, and
+# nothing is copied into the repository.
+#
+# READ-ONLY. WISEPACK reads this material and never writes it.
+ASSETS_ROOT="${WISEPACK_PERCEPTION_ASSETS_ROOT:-$(dirname "$REPO")/references}"
+ASSETS_MOUNT=()
+[ -d "$ASSETS_ROOT" ] && ASSETS_MOUNT=(-v "$ASSETS_ROOT:$ASSETS_ROOT:ro")
+
 IMAGE="${WISEPACK_IMAGE:-wisepack:jazzy}"
 ROS_DOMAIN_ID="${ROS_DOMAIN_ID:-0}"
 PORT="${PORT:-8080}"
@@ -322,7 +342,8 @@ if [ "$MODE" = "sim" ]; then
         -e WISEPACK_PHYSICAL_PROXY_WALL_MM -e WISEPACK_PHYSICAL_PROXY_MATERIAL
         -e WISEPACK_PHYSICAL_PROXY_GROUP -e WISEPACK_PHYSICAL_FRAME_ID
         -e WISEPACK_PHYSICAL_WORKAREA_WIDTH_MM -e WISEPACK_PHYSICAL_WORKAREA_DEPTH_MM
-        -v "$REPO:$REPO" -w "$REPO"
+        -e WISEPACK_PERCEPTION_ASSETS_ROOT
+        -v "$REPO:$REPO" "${ASSETS_MOUNT[@]}" -w "$REPO"
         "$IMAGE"
         bash -lc 'exec python3 web/app.py --source sim --port "${WISEPACK_DASH_PORT}" \
                     --preset "${WISEPACK_PRESET}" --seed "${WISEPACK_SEED}"')
@@ -692,7 +713,9 @@ DOCKER_RUN=(docker run --rm -i $([ -t 1 ] && echo -t) \
     -e WISEPACK_PHYSICAL_PROXY_WALL_MM -e WISEPACK_PHYSICAL_PROXY_MATERIAL \
     -e WISEPACK_PHYSICAL_PROXY_GROUP -e WISEPACK_PHYSICAL_FRAME_ID \
     -e WISEPACK_PHYSICAL_WORKAREA_WIDTH_MM -e WISEPACK_PHYSICAL_WORKAREA_DEPTH_MM \
+    -e WISEPACK_PERCEPTION_ASSETS_ROOT \
     -v "$REPO:$REPO" \
+    "${ASSETS_MOUNT[@]}" \
     "${HOST_STATUS_MOUNT[@]}" \
     "${CONTROL_MOUNT[@]}" \
     -w "$REPO" \

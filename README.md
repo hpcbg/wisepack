@@ -18,6 +18,154 @@ trail.
 
 ---
 
+## Physical RGB-D 6-DoF perception — Intel RealSense D435
+
+**WISEPACK now locates a real workpiece with a real depth camera.** A physical
+Intel RealSense D435 on the bench, one physical Cylinder5 tube, and the same
+FoundationPose path the simulated runs use:
+
+    physical D435 -> measured RGB-D acquisition -> depth aligned to colour
+      -> depth-plane foreground segmentation inside an operator ROI
+      -> exact Cylinder5 CAD -> FoundationPose 6-DoF -> generic PhysicalObservation
+
+This is a **real physical-object run, not simulation**. The images below are the
+actual frames the estimate was computed from.
+
+| | |
+|---|---|
+| ![Real colour frame from the physical Intel RealSense D435 at 1280x720](images/generated/physical-c5-rgb.jpg) | ![Depth from the physical D435, aligned to the colour frame by librealsense and verified against the colour intrinsics](images/generated/physical-c5-depth-aligned.jpg) |
+| ***REAL** RGB, physical D435 at 1280×720@30. Intrinsics read from the device, not assumed.* | ***REAL** depth from the same physical D435 and the same instant, aligned to colour. Alignment is verified against the colour intrinsics, never assumed.* |
+| ![The generated segmentation mask outlined on the real photograph, covering the physical Cylinder5 tube and nothing else](images/generated/physical-c5-mask-overlay.jpg) | ![The Cylinder5 CAD model reprojected onto the real photograph at the pose FoundationPose estimated](images/generated/physical-c5-pose-overlay.jpg) |
+| ***REAL** scene. Mask measured from the physical depth by `depth_plane_foreground` inside an operator-selected ROI — no learned detector, no synthetic ground truth.* | *FoundationPose result on the **real, physical** Cylinder5. The projected CAD model is derived from the **estimated pose**; **no simulator ground-truth pose is used** — none exists for a physical object.* |
+
+### The measured result
+
+| | |
+|---|---|
+| `model_id` | `cylinder5` — nominal geometry **D25 × L342 mm** |
+| acquisition | **Intel RealSense D435**, provenance **measured** |
+| camera-frame model origin | **[−197.2, 111.9, 440.3] mm** |
+| physical object centre | **[−157.5, 11.3, 530.7] mm** |
+| tube axis | **[0.079, 0.996, −0.037]** |
+| `pose_valid` | **true** |
+| frame | `camera_color_optical_frame` |
+| `workarea_pose_available` | **false** |
+
+`workarea_pose_available: false` is **intentional and correct**. The physical
+camera has not been calibrated to the work area, so no validated camera→work-area
+transform exists. The missing extrinsic is represented as missing rather than as
+an identity transform, so the pose cannot be silently placed in a frame nobody
+measured. That calibration is the next step.
+
+### Validation, honestly — there is no physical ground truth
+
+Nothing knows where the tube truly is, so **no accuracy number is published**.
+What is available are independent plausibility checks, each of which can refute a
+pose and none of which can confirm one:
+
+| Check | Measured | Reference |
+|---|---:|---:|
+| Segmented region extent (from depth) | **339.8 × 26.4 mm** | CAD nominal **342 × 25 mm** |
+| Projected CAD centroid vs mask centroid | **2.7 px** (≈1.5 mm image-plane equivalent) | — |
+| Silhouette area ratio | **1.053** | 1.0 |
+| Body-centre depth, from the registered CAD | **530.7 mm** | depth-image surface + radius ≈ **529.5 mm** |
+| Tube-axis direction | visually consistent with the real tube | — |
+
+The depth comparison is **two independent estimates agreeing**, not a measurement
+of error against a known truth: the depth image sees the tube's near surface, the
+registered CAD places its centre, and a tube of this diameter puts those about
+12.5 mm apart. Agreement is evidence the pose sits on this object. It is not
+accuracy.
+
+### Stationary repeatability
+
+Five frames of the same stationary physical scene, estimated independently:
+
+| | |
+|---|---:|
+| object-centre SD, x | **0.079 mm** |
+| object-centre SD, y | **0.236 mm** |
+| object-centre SD, z | **0.149 mm** |
+| maximum radial centre spread | **0.432 mm** |
+| tube-axis-line maximum spread | **0.223°** |
+
+**Repeatability is not accuracy.** It measures how reproducible the estimator's
+answer is on one unchanging scene; an estimator can be precisely wrong.
+
+The raw orientation spread over the same five frames is 10.2°, and that figure is
+not an error: Cylinder5 has a **declared 2-fold end equivalence** (measured, not
+assumed) and its CAD origin lies about **141 mm outside the physical body**, so
+two equivalent representations of the same pose can move the model origin
+substantially while leaving the physical object centre and the tube-axis line
+where they are — which is exactly what the 0.43 mm and 0.22° figures show.
+
+### The simulated run remains the quantitative benchmark
+
+The physical test proves transfer; it cannot measure error. The simulated
+Cylinder5 run does, because Isaac knows where it put the object — same CAD, same
+FoundationPose worker and provider, an exact synthetic instance mask, and
+simulated D435-compatible RGB-D:
+
+| | |
+|---|---:|
+| position error | **≈4.0 mm** |
+| tube-axis-line error | **≈0.83°** |
+
+**Simulator ground truth is used only for evaluation.** It is never supplied to
+FoundationPose and never reaches the WISEPACK planner — it is read after the
+estimate exists, to score it.
+
+### Sim-to-real, at a glance
+
+| Capability | Isaac Sim | Physical D435 |
+|---|---:|---:|
+| RGB-D acquisition | ✅ | ✅ |
+| Depth aligned to colour | ✅ | ✅ |
+| Device/camera intrinsics | synthetic/nominal | ✅ measured |
+| C5 segmentation | synthetic instance GT | ✅ depth-plane + operator ROI |
+| FoundationPose C5 pose | ✅ | ✅ |
+| CAD pose overlay | ✅ | ✅ |
+| Quantitative pose GT | ✅ | — |
+| Work-area transform | ✅ | next calibration |
+| Robot execution | later stage | later stage |
+
+The physical camera is **not** calibrated to the robot or the work area.
+
+### The operator ROI
+
+The physical bench held a dozen unrelated objects, so the run uses an
+**operator-selected region of interest** — a rectangle in image pixels. It says
+**where to look**, never **what is there**: object identity remains explicitly
+selected as `model_id = cylinder5`, exactly as it is without an ROI. It is not
+detection and not classification, and no ROI is ever derived from a CAD model's
+dimensions. Choosing the region and naming the part are both operator decisions,
+which is the Human-in-the-Loop architecture applied to perception.
+
+### Try the demonstrations
+
+```bash
+# Simulated end-to-end perception and planning
+./scripts/stage_e.sh
+
+# Physical D435 + the real Cylinder5 — live camera acquisition
+./scripts/physical_c5.sh --model cylinder5 --frames 5 --roi 255,70,445,719
+
+# The same demonstration, reproducibly, from a previously captured REAL D435
+# frame. This is recorded physical sensor data, NOT simulation.
+./scripts/physical_c5.sh --dataset cylinder5-20260810-133408 \
+    --model cylinder5 --frames 5 --roi 255,70,445,719
+```
+
+The live command acquires from the camera on the desk. `--dataset` replays a real
+capture already on disk, so the demonstration reproduces without the hardware and
+without the lighting conditions of the day.
+
+**When perception is unreliable, WISEPACK refuses.** If the segmentation validity
+checks fail, no pose is estimated and no mask is fabricated to get past the step
+— see [RGB-D 6-DoF perception](#rgb-d-6-dof-perception-foundationpose_rgbd).
+
+---
+
 ## Full WISEPACK demonstration video
 
 > **Video coming soon.** This walkthrough will demonstrate all four execution and
@@ -241,7 +389,7 @@ Three things this result is *not* saying:
 
 - **Perception and physical robot execution remain simulated.** There is no
   camera and no robot here; only the packing is real. See
-  [what is simulated](#3-what-is-simulated--read-this-before-quoting-any-number).
+  [what is simulated](#3-what-is-simulated---read-this-before-quoting-any-number).
 - **33.3% is not the proposal's >50% KPI4 target.** It is measured against a
   *competent* baseline, and the shortfall is analysed rather than tuned away.
 - **It is still operationally meaningful.** One fewer certified container for
@@ -2883,9 +3031,10 @@ opts you into that licence. See [NOTICE](NOTICE).
 **Capability is the whole chain, never "Docker exists".** Each prerequisite is
 reported separately because each fails on its own and each has a different fix:
 worker reachable, GPU available, FoundationPose runtime loaded, scorer weights,
-refiner weights, object model, RGB-D camera, live inference. Today this host
-reports **runtime READY, RGB-D camera unavailable, live inference unavailable** —
-which is a state the dashboard shows rather than collapsing into "unavailable".
+refiner weights, object model, RGB-D camera, live inference. With the D435
+attached this host reports every one of them **available** and
+`live_inference_available: true`; with the camera unplugged it reports exactly
+which link is missing rather than collapsing the chain into "unavailable".
 
 **Units are declared, never detected.** Neither STL nor OBJ records a unit, and a
 depth image in millimetres is indistinguishable from one in metres. Both are
@@ -2955,9 +3104,39 @@ Because "pyrealsense2 imports" is not "the camera works", that script reports
 which of seven layers failed: host USB, container visibility, SDK enumeration,
 model/serial, stream start, verified alignment, intrinsics and depth scale.
 
-> **Not validated on live hardware.** No RGB-D camera is attached to this
-> deployment — no Intel device is on the USB bus at all — so nothing here has
-> been checked against a live depth sensor.
+**Validated on live hardware.** All seven checks pass against a physical Intel
+RealSense D435 (serial `317222072788`, firmware 5.17.0.10, USB 3.2), and the
+whole path has been run end to end on a real Cylinder5 — see
+[Physical RGB-D 6-DoF perception](#physical-rgb-d-6-dof-perception--intel-realsense-d435).
+The calibration is read from the device: colour intrinsics fx 913.14, fy 911.73,
+cx 648.31, cy 374.92 at 1280×720, depth scale 1.0000000475 mm per unit. Those
+are **measured** and are kept distinct from the `documented_nominal` profile in
+`config/rgbd_sensors.yaml`, which remains Intel's published specification and is
+not a calibration of this unit.
+
+```bash
+./scripts/physical_c5.sh --model cylinder5 --frames 5 --roi 255,70,445,719
+```
+
+**Segmentation for the physical scene.** `depth_plane_foreground` fits the
+dominant work surface and keeps what stands on it — geometry, no learned
+detector, and no absolute depth threshold anywhere. It assumes **one** object on
+that surface, so on a bench holding several it accepts an **operator ROI**: a
+rectangle in image pixels saying where to look. The plane is still fitted on the
+whole frame — fitting it inside a narrow window would estimate the work surface
+from a sliver of tabletop — and the single-object validity rules then apply
+inside the window. The ROI never establishes *what* the object is; that stays
+`model_id`, stated by the operator.
+
+> **Refusal is the designed behaviour.** When the validity checks fail — too many
+> disconnected components, too little depth inside the mask, an object too flat
+> against the surface — no pose is estimated and **no mask is fabricated** to get
+> past the step. Observed in practice: strong ambient IR, such as direct
+> sunlight, reduces a D435's depth coverage, the tube fragments into several
+> components, and the run stops with the reason rather than registering CAD
+> against an unreliable mask. The mitigation is stable lighting or shading the
+> bench — not relaxing the thresholds, which would convert a visible refusal into
+> a silent wrong answer.
 
 #### Calibration: show the sheet once
 
@@ -3615,7 +3794,7 @@ Stated plainly, because a demonstrator that hides its edges is not evidence.
    segregation machinery.
 4. **Five of six geometry classes are bounding boxes.** Conservative, so plans
    are safe but pessimistic. Only the straight tube is exact.
-5. **KPI4 is not met** - 33-50% measured, target >50%. See [§3](#3-what-is-simulated--read-this-before-quoting-any-number).
+5. **KPI4 is not met** - 33-50% measured, target >50%. See [§3](#3-what-is-simulated---read-this-before-quoting-any-number).
 6. **Axis-aligned orientations only.** No arbitrary rotation, no curved-pipe
    collision geometry.
 7. **FIWARE history is state-oriented.** No QuantumLeap/CrateDB/Grafana stack

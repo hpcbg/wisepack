@@ -320,9 +320,41 @@ class FoundationPoseProvider:
             frame=frame, refine_iterations=refine_iterations,
             batch_id=batch_id, acquisition=ACQUISITION_REFERENCE)
 
+    def acquire_physical(self, dataset: str, model_id: str,
+                         depth_scale_mm: float, frame: int = 0,
+                         refine_iterations: int = 5,
+                         batch_id: str = "fp-physical-1",
+                         mask_source: str = "depth_plane_foreground",
+                         segmentation: Optional[Dict[str, Any]] = None
+                         ) -> ObservationBatch:
+        """A dataset CAPTURED FROM THE PHYSICAL D435, estimated the same way.
+
+        THE SAME `_estimate` AS THE REFERENCE AND ISAAC PATHS. Nothing about a
+        real camera justifies a second pose implementation; what differs is two
+        recorded facts and nothing else:
+
+            acquisition   `realsense_d435` rather than `reference` — so the
+                          provenance a dashboard renders is the truth about
+                          where the pixels came from.
+            mask_source   the capture carries NO mask (segmentation is a
+                          perception decision and `capture_dataset` refuses to
+                          guess one), so one is measured from the depth.
+
+        `workarea_pose_available` still derives False: no validated
+        camera-to-work-area extrinsic exists for the physical camera, and a
+        real acquisition does not create one.
+        """
+        return self._estimate(
+            dataset=dataset, model_id=model_id, depth_scale_mm=depth_scale_mm,
+            frame=frame, refine_iterations=refine_iterations,
+            batch_id=batch_id, acquisition=ACQUISITION_REALSENSE,
+            mask_source=mask_source, segmentation=segmentation)
+
     def _estimate(self, dataset: str, model_id: str, depth_scale_mm: float,
                   frame: int, refine_iterations: int, batch_id: str,
-                  acquisition: str) -> ObservationBatch:
+                  acquisition: str, mask_source: str = "dataset",
+                  segmentation: Optional[Dict[str, Any]] = None
+                  ) -> ObservationBatch:
         requested_at = _utc_now()
 
         def failed(reason: str) -> ObservationBatch:
@@ -362,6 +394,16 @@ class FoundationPoseProvider:
             "frame": int(frame),
             "refine_iterations": int(refine_iterations),
         }
+        # WHERE THE MASK COMES FROM, SENT ONLY WHEN IT IS NOT THE DATASET'S OWN.
+        # The reference regression keeps using the mask shipped WITH the bolt
+        # data — replacing it would stop that regression testing what it was
+        # built to test — while a physical capture has no mask at all and one is
+        # measured from the depth. NO SILENT FALLBACK between the two: the
+        # worker refuses rather than substituting.
+        if mask_source and mask_source != "dataset":
+            request["mask_source"] = mask_source
+            if segmentation:
+                request["segmentation"] = dict(segmentation)
         result, reason = self.client.estimate(request)
         if result is None:
             return failed(reason)
@@ -404,6 +446,10 @@ class FoundationPoseProvider:
                 "note": (REFERENCE_NOTE
                          if acquisition == ACQUISITION_REFERENCE else ""),
                 "frame_note": NO_EXTRINSIC_NOTE,
+                # HOW THE OBJECT REGION WAS OBTAINED, carried with the pose.
+                # A mask is an input to the measurement, so a result whose
+                # mask provenance cannot be stated is not auditable.
+                "segmentation": result.get("segmentation", {}),
                 # NOT "accuracy", and not silently omitted either.
                 "accuracy_note": result.get("accuracy_note", ""),
             })

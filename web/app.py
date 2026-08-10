@@ -524,10 +524,22 @@ def foundationpose_capability(force: bool = False) -> Dict[str, Any]:
     # WHO HOLDS THE CAMERA. Carried with the capability so the panel can say
     # what a method switch would require, rather than discovering it when two
     # providers both open one device.
+    #
+    # THE DEPTH FLAG IS THE WORKER'S ANSWER, NOT A CONSTANT. It was hard-coded
+    # False, which was true only while no D435 existed; with one attached the
+    # same response said `rgbd_camera_available: true` and, four lines below,
+    # that no RGB-D camera was attached to this host. It is read from the
+    # capability just computed — the worker's own observation, through the
+    # provider — so the dashboard still never opens the device itself.
+    #
+    # `depth_holder` STAYS EMPTY, so an attached camera reads as FREE rather
+    # than HELD. The worker owns the device but opens it only to acquire, and
+    # no acquisition has yet put a physical RGB-D frame into a run. Naming a
+    # holder here would claim a stream nobody has started.
     from wisepack_core.camera_ownership import current_ownership  # noqa: PLC0415
     answer["camera_ownership"] = current_ownership(
         colour_available=camera_capability()[0],
-        depth_available=False,
+        depth_available=bool(answer.get("rgbd_camera_available")),
         colour_holder=PerceptionMethod.PLANAR_FASTERRCNN.value
         if camera_capability()[0] else "").to_dict()
     _FOUNDATIONPOSE_CAPABILITY = answer
@@ -1598,7 +1610,10 @@ def api_foundationpose_reference_regression(payload: Optional[Dict[str, Any]] = 
         # SAID TWICE, AND DELIBERATELY: once in the data and once in a label the
         # dashboard renders. A reference result that reaches an operator without
         # this wording is indistinguishable from a live measurement.
-        "label": "reference/offline FoundationPose regression",
+        # The wording follows the control: this is a SELF-TEST, and naming the
+        # dataset in the label is what stops a bolt pose being read as a
+        # WISEPACK measurement. "offline" stays — it is the load-bearing word.
+        "label": "FoundationPose self-test — offline tutorial bolt dataset",
         "live": False,
         "note": _REFERENCE_NOTE(),
     }

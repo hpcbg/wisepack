@@ -440,6 +440,37 @@ def test_discovery_does_not_descend_into_a_datasets_own_frame_directories(tmp_pa
     assert len(app.discover_datasets(str(tmp_path))) == 1
 
 
+def test_a_physical_capture_is_a_dataset_root(tmp_path, monkeypatch):
+    """A frame the worker CAPTURED must be estimable against.
+
+    The two original roots hold third-party reference material and generated
+    Isaac cases; a physical capture is neither, so nothing could name one. The
+    worker could acquire from the D435 and then be unable to estimate from what
+    it had just written — the one combination that makes the camera useless.
+    """
+    monkeypatch.setattr(cap, "CAPTURES_DIR", str(tmp_path / "captures"))
+    monkeypatch.setattr(cap, "DATASETS_DIR", str(tmp_path / "datasets"))
+    monkeypatch.setattr(cap, "ISAAC_DATASETS_DIR", str(tmp_path / "isaac"))
+    for name in ("captures", "datasets", "isaac"):
+        (tmp_path / name).mkdir()
+    roots = cap.dataset_roots()
+    assert str(tmp_path / "captures") in roots
+    # SEARCHED LAST. The reference tree and the generated cases are the stable
+    # material; a capture directory grows with every acquisition, and a name
+    # collision must not shadow the datasets a regression depends on.
+    assert roots.index(str(tmp_path / "captures")) == len(roots) - 1
+
+
+def test_a_capture_root_that_is_not_mounted_is_simply_absent(tmp_path,
+                                                             monkeypatch):
+    """No captures directory is an ordinary state, not an error: a worker
+    started without the capture mount still serves the reference datasets."""
+    monkeypatch.setattr(cap, "CAPTURES_DIR", str(tmp_path / "nowhere"))
+    monkeypatch.setattr(cap, "DATASETS_DIR", str(tmp_path / "datasets"))
+    (tmp_path / "datasets").mkdir()
+    assert str(tmp_path / "nowhere") not in cap.dataset_roots()
+
+
 def test_a_dataset_name_cannot_escape_the_mount(tmp_path):
     """Names are caller-supplied relative paths now, so containment is checked
     rather than assumed. A read-only mount still must not become a way to read
@@ -591,3 +622,57 @@ def test_the_registry_points_at_no_import_script_that_does_not_exist():
                 encoding="utf-8").read()
     for match in re.findall(r"scripts/[\w./-]+", text):
         assert os.path.exists(os.path.join(REPO, match)), match
+
+
+# --------------------------------------------------------------------------- #
+# Segmentation as its own step
+# --------------------------------------------------------------------------- #
+
+
+def _app_source():
+    with open(os.path.join(WORKER, "app.py"), encoding="utf-8") as handle:
+        return handle.read()
+
+
+def test_a_mask_can_be_produced_without_estimating_a_pose():
+    """LOOK AT THE MASK FIRST. A mask is an input to a pose measurement, and on
+    a physical scene it is the input most likely to be wrong: plane-based
+    foreground selection assumes one object on a dominant surface, and a
+    cluttered table yields one component holding several objects. /estimate can
+    segment for itself, but only after committing to inference — too late for
+    an operator to judge whether the region is the object they meant."""
+    source = _app_source()
+    assert '@app.post("/segment")' in source
+    assert "def segment_frame" in source
+
+
+def test_segmentation_does_not_require_the_estimator():
+    """"The mask is wrong" and "the estimator is missing" are different
+    problems. Gating /segment on inference_available would present them as one
+    on every machine without a GPU."""
+    source = _app_source()
+    body = source[source.index('@app.post("/segment")'):
+                  source.index('@app.get("/camera")')]
+    assert "inference_available" not in body
+    assert "estimator.register" not in body
+
+
+def test_the_segment_route_states_the_depth_scale_is_required():
+    """A wrong depth scale moves the fitted plane, which silently changes which
+    pixels are foreground. It cannot be read from the image."""
+    source = _app_source()
+    body = source[source.index('@app.post("/segment")'):
+                  source.index('@app.get("/camera")')]
+    assert "`depth_scale_mm` is required" in body
+
+
+def test_the_mask_is_drawn_on_the_photograph_not_only_on_black():
+    """A white blob on black tells an operator its area; the same blob outlined
+    on the RGB tells them whether it is the object they meant — the only
+    question the physical segmentation step is asking."""
+    source = _app_source()
+    assert "def _render_segmentation" in source
+    body = source[source.index("def _render_segmentation"):
+                  source.index("def _render_overlay")]
+    assert 'images["segmentation"]' in body
+    assert "drawContours" in body

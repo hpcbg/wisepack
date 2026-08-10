@@ -363,10 +363,25 @@ def test_the_bolt_regression_defaults_to_the_supplied_mask():
 
 
 def test_the_provider_never_requests_a_computed_mask_for_the_reference_run():
+    """The bolt regression keeps the mask that SHIPPED with the bolt data.
+
+    SCOPED TO `acquire_reference`, not to the file. The provider now also has a
+    PHYSICAL path, and a capture carries no mask at all — so the file naming
+    `depth_plane_foreground` somewhere is correct. What must stay true is that
+    the reference run does not ask for a computed one: replacing its known
+    input would stop that regression testing what it was built to test.
+    (`test_the_reference_path_still_uses_the_dataset_s_own_mask` in
+    tests/test_foundationpose_integration.py checks the same thing against a
+    fake worker, by looking at the request that actually goes out.)
+    """
     provider = open(os.path.join(REPO, "perception", "providers",
                                  "foundationpose_rgbd.py"),
                     encoding="utf-8").read()
-    assert "depth_plane_foreground" not in provider
+    start = provider.index("def acquire_reference")
+    body = provider[start:provider.index("def ", provider.index('"""',
+                                          provider.index('"""', start) + 3))]
+    assert "depth_plane_foreground" not in body
+    assert "mask_source" not in body
 
 
 def test_segmentation_is_a_provider_registry_not_a_hard_coded_call():
@@ -484,3 +499,107 @@ def test_the_symmetry_tool_tests_the_meshs_own_axis():
                   encoding="utf-8").read()
     assert "principal" in source
     assert "centroid" in source.lower()
+
+
+# --------------------------------------------------------------------------- #
+# The operator ROI — where to look, never what is there
+# --------------------------------------------------------------------------- #
+
+
+def test_an_operator_roi_applies_the_single_object_rules_inside_it():
+    """A bench holding one intended object and several unrelated ones.
+
+    REPRODUCED ON REAL HARDWARE: the mask itself was a clean, correct outline of
+    the intended tube, and the method still refused — because the connected
+    component count is computed over the WHOLE frame, and the frame contained
+    eleven other things. The rules were right and were being applied to the
+    whole room. Inside the operator's window, "one object on a surface" is a
+    true statement again.
+    """
+    depth = _scene(tilt=0.3, box=[(60, 140, 40, 400, 40),     # the intended one
+                                  (300, 380, 60, 140, 40),    # clutter
+                                  (420, 500, 200, 280, 40),   # clutter
+                                  (520, 600, 320, 400, 40)])  # clutter
+    whole_frame = _run(depth)
+    assert whole_frame.diagnostics["components"] == 4
+    assert not whole_frame.valid
+    assert "components" in whole_frame.reason
+
+    windowed = _run(depth, roi_px=[30, 20, 180, 430])
+    assert windowed.diagnostics["components"] == 1
+    assert windowed.valid, windowed.reason
+    assert windowed.diagnostics["roi_px"] == [30, 20, 180, 430]
+
+
+def test_the_roi_records_what_it_excluded():
+    """An ROI that quietly discarded most of the object would otherwise look
+    like a clean segmentation. The full-frame foreground count is kept."""
+    depth = _scene(tilt=0.3, box=[(60, 140, 40, 400, 40),
+                                  (420, 500, 200, 280, 40)])
+    windowed = _run(depth, roi_px=[30, 20, 180, 430])
+    full = windowed.diagnostics["foreground_points_full_frame"]
+    assert full > windowed.diagnostics["foreground_points"]
+
+
+def test_the_plane_is_still_fitted_on_the_whole_frame():
+    """Fitting inside a narrow window would estimate the work surface from a
+    sliver of tabletop, and a worse plane moves every height threshold after
+    it. The plane must not depend on where the operator pointed."""
+    depth = _scene(tilt=0.3, box=[(60, 140, 40, 400, 40)])
+    whole = _run(depth)
+    windowed = _run(depth, roi_px=[30, 20, 180, 430])
+    assert windowed.diagnostics["plane_residual_mm"] == \
+        pytest.approx(whole.diagnostics["plane_residual_mm"], abs=1e-9)
+    assert windowed.diagnostics["plane_inlier_fraction"] == \
+        pytest.approx(whole.diagnostics["plane_inlier_fraction"], abs=1e-9)
+
+
+def test_an_roi_pointing_at_empty_table_says_so_and_says_where_the_object_is():
+    """"No object present" is the wrong diagnosis when the object is simply
+    outside the window. The reason must distinguish them."""
+    depth = _scene(tilt=0.3, box=[(400, 500, 200, 300, 40)])
+    result = _run(depth, roi_px=[10, 10, 150, 150])
+    assert not result.valid
+    assert "ROI" in result.reason
+    assert "FULL frame" in result.reason
+
+
+def test_an_roi_is_clamped_to_the_image_and_refused_when_empty():
+    depth = _scene(tilt=0.3, box=[(60, 140, 40, 400, 40)])
+    clamped = _run(depth, roi_px=[-50, -50, 10_000, 10_000])
+    assert clamped.diagnostics["roi_px"] == [0, 0, WIDTH, HEIGHT]
+    with pytest.raises(SegmentationError):
+        _run(depth, roi_px=[100, 100, 101, 101])
+    with pytest.raises(SegmentationError):
+        _run(depth, roi_px=["not", "a", "box", "at all"])
+
+
+def test_the_roi_is_never_derived_from_a_cad_model():
+    """WHERE TO LOOK IS NOT WHAT IS THERE. An ROI computed from a model's
+    dimensions would recognise the part by its shape and then measure its pose
+    with that same shape. Identity stays `model_id`, stated by an operator.
+
+    CODE ONLY, COMMENTS STRIPPED. The module EXPLAINS this rule at length and
+    has to name the things it must not use in order to do so; a check that
+    cannot tell the explanation from the behaviour would forbid writing the
+    reason down.
+    """
+    import re                                                 # noqa: PLC0415
+    source = open(os.path.join(REPO, "perception", "foundationpose", "worker",
+                               "segmentation.py"), encoding="utf-8").read()
+    code = re.sub(r'"""(?:.|\n)*?"""', "", source)
+    code = "\n".join(line.split("#")[0] for line in code.splitlines())
+    for forbidden in ("length_mm", "diameter_mm", "model_id", "mesh"):
+        assert forbidden not in code, \
+            f"segmentation refers to {forbidden}: it must not know the object"
+
+
+def test_the_measured_extent_is_a_diagnostic_and_selects_nothing():
+    """The region's size in millimetres is printed for a human, so a 200 mm blob
+    where a 342 mm tube was expected is visible. Using it to CHOOSE a component
+    would be identification by dimension."""
+    depth = _scene(tilt=0.3, box=[(60, 140, 40, 400, 40)])
+    result = _run(depth)
+    assert result.diagnostics["mask_extent_long_mm"] > \
+        result.diagnostics["mask_extent_across_mm"]
+    assert "NOT from any CAD model" in result.diagnostics["extent_note"]

@@ -85,10 +85,21 @@ have_docker() { command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1
 # camera's USB node — and to NOTHING ELSE. `--privileged` would work and is
 # refused: it grants every device on the host to a container that needs one.
 #
-# NARROWEST THING THAT WORKS: `--device /dev/bus/usb/<bus>/<dev>` for the
-# RealSense itself, found by its Intel vendor id in sysfs. Not `/dev/video*` —
-# that is the planar webcam's identity and a RealSense presents several such
-# nodes anyway, none of which carry intrinsics, depth scale or alignment.
+# NARROWEST THING THAT WORKS: `--device` for the nodes THIS Intel device owns,
+# found by its Intel vendor id in sysfs — the USB node
+# `/dev/bus/usb/<bus>/<dev>` AND the `/dev/video*` nodes that hang off this same
+# device's interfaces. `--privileged` would work and is refused.
+#
+# WHY /dev/video* IS NEEDED, having once been argued against here: nothing in
+# WISEPACK opens a video node by index — but librealsense's Linux backend is
+# V4L2. It enumerates through /sys/class/video4linux and then OPENS
+# /dev/videoN. With the USB node alone, `rs.context().query_devices()` returns
+# an EMPTY list inside the container while the camera is plainly on the bus —
+# which reads as a broken camera rather than as a missing device node.
+#
+# THE PLANAR WEBCAM IS STILL NOT EXPOSED. The video nodes are discovered by
+# walking down from the Intel USB device in sysfs, never by index, so the
+# webcam's own nodes (a different USB device) are not passed and cannot be.
 #
 # THE TRADE-OFF, STATED: a USB node number changes when the camera is replugged,
 # so the worker must be restarted after a replug. That is the price of not
@@ -96,9 +107,9 @@ have_docker() { command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1
 # plugged in once and left.
 INTEL_VENDOR_ID="8086"
 
-#: Echoes `--device /dev/bus/usb/BBB/DDD` for each RealSense found, or nothing.
+#: Echoes `--device <node>` for every node each RealSense owns, or nothing.
 realsense_usb_args() {
-    local sysfs bus dev vendor node
+    local sysfs bus dev vendor node v4l
     for sysfs in /sys/bus/usb/devices/*/; do
         vendor="$(cat "${sysfs}idVendor" 2>/dev/null)"
         [ "$vendor" = "$INTEL_VENDOR_ID" ] || continue
@@ -107,6 +118,11 @@ realsense_usb_args() {
         [ -n "$bus" ] && [ -n "$dev" ] || continue
         node="$(printf '/dev/bus/usb/%03d/%03d' "$bus" "$dev")"
         [ -e "$node" ] && printf -- '--device\n%s\n' "$node"
+        # The V4L2 nodes of THIS device: <usb device>/<interface>/video4linux/videoN
+        for v4l in "${sysfs}"*/video4linux/video*; do
+            [ -e "/dev/$(basename "$v4l")" ] || continue
+            printf -- '--device\n/dev/%s\n' "$(basename "$v4l")"
+        done
     done
 }
 
@@ -267,7 +283,7 @@ if [ "$CHECK_ONLY" = "1" ]; then
     echo "weights      : $(weights_state)/2 checkpoints present"
     echo "datasets dir : $DATASETS_DIR $( [ -d "$DATASETS_DIR" ] && echo '(present)' || echo '(MISSING)')"
     echo "captures dir : $CAPTURES_DIR"
-    echo "realsense    : $(host_sees_realsense && echo "host sees $(( $(realsense_usb_args | wc -l) / 2 )) Intel USB device(s)" || echo 'NOT present on the host USB bus')"
+    echo "realsense    : $(host_sees_realsense && echo "host sees $(( $(realsense_usb_args | wc -l) / 2 )) Intel device node(s)" || echo 'NOT present on the host USB bus')"
     exit 0
 fi
 
@@ -383,7 +399,7 @@ if [ "$DO_RUN" = "1" ]; then
     USB_ARGS=()
     if host_sees_realsense; then
         mapfile -t USB_ARGS < <(realsense_usb_args)
-        say "RealSense: passing through $(( ${#USB_ARGS[@]} / 2 )) USB device node(s)"
+        say "RealSense: passing through $(( ${#USB_ARGS[@]} / 2 )) device node(s)"
     else
         say "RealSense: no Intel USB device on this host — the worker starts"
         say "           without camera access and reports rgbd_camera_available"

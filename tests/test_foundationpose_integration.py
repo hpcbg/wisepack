@@ -23,8 +23,9 @@ sys.path.insert(0, os.path.join(REPO, "perception"))
 sys.path.insert(0, os.path.join(REPO, "wisepack_ws", "src", "wisepack_core"))
 
 from providers.foundationpose_rgbd import (                       # noqa: E402
-    ACQUISITION_REFERENCE, ESTIMATOR_ID, METHOD, NO_EXTRINSIC_NOTE,
-    REFERENCE_NOTE, FoundationPoseProvider, validate_response)
+    ACQUISITION_REALSENSE, ACQUISITION_REFERENCE, ESTIMATOR_ID, METHOD,
+    NO_EXTRINSIC_NOTE, REFERENCE_NOTE, FoundationPoseProvider,
+    validate_response)
 from wisepack_core.domain import PhysicalObservation              # noqa: E402
 from wisepack_core.perception import (                            # noqa: E402
     DEFAULT_PERCEPTION_METHOD, KNOWN_PERCEPTION_METHODS, ObservationBatch,
@@ -450,6 +451,82 @@ def test_the_score_is_never_reported_as_a_confidence(tmp_path):
         or "NOT measured" in batch.detector_status["accuracy_note"]
 
 
+# --------------------------------------------------------------------------- #
+# The PHYSICAL acquisition — the same estimate, two different recorded facts
+# --------------------------------------------------------------------------- #
+
+
+def test_a_physical_acquisition_is_stamped_realsense_not_reference(tmp_path):
+    """PROVENANCE IS THE POINT. A frame from the D435 and a frame from the
+    saved bolt dataset must never carry the same acquisition, or a dashboard
+    cannot tell an operator where the pixels came from."""
+    batch = _provider(tmp_path).acquire_physical(
+        dataset="cylinder5-cap", model_id="part", depth_scale_mm=1.0)
+    assert batch.acquisition == ACQUISITION_REALSENSE
+    assert batch.acquisition != ACQUISITION_REFERENCE
+    assert batch.detector_status["acquisition"] == ACQUISITION_REALSENSE
+    # AND NOT THE REFERENCE NOTE, which says "saved dataset, not a camera".
+    assert batch.detector_status["note"] == ""
+
+
+def test_a_physical_acquisition_reuses_the_one_estimate_path(tmp_path):
+    """No second pose implementation for a real camera. Everything the
+    reference path sends is sent here too, unchanged."""
+    provider = _provider(tmp_path)
+    provider.acquire_physical(dataset="cap", model_id="part",
+                              depth_scale_mm=1.0)
+    request = provider.client.requests[0]
+    assert request["dataset"] == "cap"
+    assert request["depth_scale_mm"] == 1.0
+    assert request["mesh_scale_to_metres"] == pytest.approx(0.001)
+    assert "mesh_path" in request
+
+
+def test_a_physical_capture_asks_for_a_measured_mask(tmp_path):
+    """A capture carries NO mask — `capture_dataset` refuses to guess one — so
+    the physical path must name a mask source. A silent fallback to "dataset"
+    would ask the worker for a mask that does not exist."""
+    provider = _provider(tmp_path)
+    provider.acquire_physical(dataset="cap", model_id="part",
+                              depth_scale_mm=1.0)
+    assert provider.client.requests[0]["mask_source"] == "depth_plane_foreground"
+
+
+def test_the_reference_path_still_uses_the_dataset_s_own_mask(tmp_path):
+    """The bolt regression's mask is its known reference INPUT. Replacing it
+    with a measured one would stop that regression testing what it was built to
+    test, so `mask_source` is absent and the worker's default applies."""
+    provider = _provider(tmp_path)
+    provider.acquire_reference(dataset="ds", model_id="part",
+                               depth_scale_mm=1.0)
+    assert "mask_source" not in provider.client.requests[0]
+
+
+def test_a_physical_pose_is_still_not_placeable_in_the_work_area(tmp_path):
+    """A real camera does not create an extrinsic. Until one is MEASURED, the
+    pose stays in the camera optical frame and cannot be acted on there."""
+    batch = _provider(tmp_path).acquire_physical(
+        dataset="cap", model_id="part", depth_scale_mm=1.0)
+    observation = batch.observations[0]
+    assert batch.frame_id == CAMERA_FRAME
+    assert observation.frame_id == CAMERA_FRAME
+    assert observation.workarea_pose_available is False
+
+
+def test_the_segmentation_provenance_travels_with_the_pose(tmp_path):
+    """A mask is an INPUT to the measurement. A pose whose mask provenance
+    cannot be stated is not auditable, so it is carried in detector_status."""
+    result = _pose()
+    result["segmentation"] = {"mask_source": "depth_plane_foreground",
+                              "mask_valid": True, "mask_pixels": 4242}
+    provider = _provider(tmp_path, client=FakeClient(result=result))
+    batch = provider.acquire_physical(dataset="cap", model_id="part",
+                                      depth_scale_mm=1.0)
+    carried = batch.detector_status["segmentation"]
+    assert carried["mask_source"] == "depth_plane_foreground"
+    assert carried["mask_pixels"] == 4242
+
+
 def test_the_units_are_passed_explicitly_in_both_directions(tmp_path):
     """Neither the mesh unit nor the depth scale can be read from a file, and
     guessing either is a factor-of-1000 error that looks like a real pose."""
@@ -763,12 +840,18 @@ def test_no_ownership_transfer_uses_process_matching_or_sleeps():
 
 
 def test_ownership_never_claims_a_handover_that_has_not_happened():
-    """No RGB-D camera is attached, so no transfer has been performed."""
+    """No transfer has been performed, with or without a camera attached.
+
+    ATTACHING A CAMERA IS NOT PERFORMING A HANDOVER, so the claim must survive
+    a D435 appearing on the bus — checked in both states here.
+    """
     from wisepack_core.camera_ownership import current_ownership
-    ownership = current_ownership(colour_available=True,
-                                  colour_holder="planar_fasterrcnn")
-    assert ownership.handover_tested is False
-    assert "no handover has been performed" in ownership.to_dict()["note"]
+    for depth_available in (False, True):
+        ownership = current_ownership(colour_available=True,
+                                      depth_available=depth_available,
+                                      colour_holder="planar_fasterrcnn")
+        assert ownership.handover_tested is False
+        assert "no handover has been performed" in ownership.to_dict()["note"]
 
 
 def test_an_absent_depth_camera_is_the_reason_not_a_handover_problem():
@@ -778,6 +861,42 @@ def test_an_absent_depth_camera_is_the_reason_not_a_handover_problem():
     assert ownership.depth_state == ABSENT
     reason = ownership.blocked_reason("foundationpose_rgbd")
     assert "RGB-D" in reason and "attached" in reason
+    # AND THE PANEL TEXT AGREES WITH THE STATE, which is the whole point.
+    assert "No RGB-D camera is attached" in ownership.to_dict()["note"]
+
+
+def test_an_attached_depth_camera_is_never_reported_as_absent():
+    """The contradiction this pair of assertions exists to prevent.
+
+    With a D435 on the bus the capability said `rgbd_camera_available: true`
+    while the ownership block in the SAME response said no RGB-D camera was
+    attached to this host. An operator reading either one was misled by the
+    other, and both came from one call.
+    """
+    from wisepack_core.camera_ownership import (ABSENT, FREE,
+                                                current_ownership)
+    ownership = current_ownership(colour_available=True,
+                                  depth_available=True,
+                                  colour_holder="planar_fasterrcnn")
+    assert ownership.depth_state != ABSENT
+    # FREE, not HELD: the worker owns the device but opens it only to acquire.
+    assert ownership.depth_state == FREE
+    document = ownership.to_dict()
+    assert "no RGB-D camera is attached" not in document["reasons"].get("rgb-d", "")
+    assert "No RGB-D camera is attached" not in document["note"]
+    assert "An RGB-D camera is attached" in document["note"]
+    # AND IT NO LONGER BLOCKS THE METHOD ON A MISSING DEVICE.
+    assert ownership.blocked_reason("foundationpose_rgbd") == ""
+
+
+def test_the_dashboard_reads_the_depth_flag_from_the_capability():
+    """Not a literal. `depth_available=False` was hard-coded in web/app.py, so
+    the ownership block could never notice a camera the worker had already
+    reported — the one thing this field is for."""
+    source = open(os.path.join(REPO, "web", "app.py"), encoding="utf-8").read()
+    call = source.split("current_ownership(")[1].split(").to_dict()")[0]
+    assert "depth_available=False" not in call
+    assert "rgbd_camera_available" in call
 
 
 def test_a_shared_device_needs_an_explicit_release_then_acquire():
@@ -1026,18 +1145,72 @@ def test_colour_and_depth_come_from_one_synchronised_bundle():
     assert "get_color_frame" in code and "get_depth_frame" in code
 
 
-def test_a_missing_camera_is_reported_not_raised():
-    """The capability probe runs on every /health, so it must not throw."""
-    import importlib.util
+def _worker_camera_module():
+    """The worker's camera module, imported from its file rather than installed."""
+    import importlib.util                                          # noqa: PLC0415
     spec = importlib.util.spec_from_file_location("wisepack_fp_camera",
                                                   WORKER_CAMERA)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
+    return module
+
+
+class _EmptyContext:
+    """A librealsense context that enumerates nothing — the absent camera."""
+
+    @staticmethod
+    def query_devices():
+        return []
+
+
+class _SDKWithNoDevices:
+    @staticmethod
+    def context():
+        return _EmptyContext()
+
+
+def test_a_missing_camera_is_reported_not_raised(monkeypatch):
+    """The capability probe runs on every /health, so it must not throw.
+
+    DISCOVERY IS INJECTED, NOT INHERITED FROM THE BENCH. This test is about ONE
+    path — what happens when no camera is there — and it must exercise that path
+    on every machine. Reading the real SDK made it pass or fail on whether a
+    D435 happened to be plugged in, so it silently stopped testing the absent
+    case exactly when hardware arrived. The SDK is replaced with one that
+    enumerates nothing, which is the condition under test stated directly.
+    """
+    module = _worker_camera_module()
+    monkeypatch.setattr(module, "_sdk", lambda: _SDKWithNoDevices())
+
     usable, reason = module.available()
-    assert usable is False                    # no camera in CI
+
+    assert usable is False
     assert "RealSense" in reason
     # AND IT SAYS WHY THE OBVIOUS GUESS IS WRONG.
     assert "/dev/video" in reason
+
+
+def test_an_sdk_that_raises_during_enumeration_is_reported_not_raised(
+        monkeypatch):
+    """"Must not throw" is only tested by something that throws.
+
+    A context that raises is the real shape of a permissions or libusb failure,
+    and `available()` is called on every /health — propagating it would take the
+    whole capability probe down with the camera.
+    """
+    module = _worker_camera_module()
+
+    class _Exploding:
+        @staticmethod
+        def context():
+            raise OSError("failed to open USB device: permission denied")
+
+    monkeypatch.setattr(module, "_sdk", lambda: _Exploding())
+
+    usable, reason = module.available()
+
+    assert usable is False
+    assert "permission denied" in reason      # the cause survives, not a summary
 
 
 def test_a_capture_requires_an_explicit_model_id():

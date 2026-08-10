@@ -142,6 +142,33 @@
     <div id="inspector"></div>
   </div>
 
+  <!-- DEVELOPER DIAGNOSTIC, AND SEPARATE FROM EVERY RUN.
+       This exercises the FoundationPose runtime against a SAVED dataset — the
+       tutorial bolt, with its own recorded cam_K. It proves the worker, the
+       weights and the provider still work. It is not perception: no frame is
+       acquired, no observation enters a batch, no plan or revision moves, and
+       WISEPACK does not pack bolts. It previously sat inside the live RGB-D
+       panel on the main dashboard and wrote its pose and images into that
+       panel's readout, which is the confusion this move ends. -->
+  <div class="panel full">
+    <h3>FoundationPose self-test
+      <span class="note">offline tutorial bolt dataset · developer diagnostic ·
+        not part of any WISEPACK run</span></h3>
+    <div class="btns" style="margin-bottom:6px">
+      <button id="c-fp-selftest">Run self-test</button>
+    </div>
+    <div id="fp-selftest-note" class="note" style="margin-bottom:6px"></div>
+    <div id="fp-pose" class="note" style="margin-bottom:6px"></div>
+    <div class="btns" id="fp-views" style="margin-bottom:6px">
+      <button data-v="overlay" aria-pressed="true">pose overlay</button>
+      <button data-v="rgb">RGB</button>
+      <button data-v="depth">depth</button>
+      <button data-v="mask">mask</button>
+    </div>
+    <img id="fp-image" alt="FoundationPose self-test diagnostic image"
+         style="max-width:100%;border-radius:6px;display:none"/>
+  </div>
+
   <div class="panel full">
     <h3>Security</h3>
     <div class="note" id="security"></div>
@@ -245,6 +272,112 @@ async function refresh(){
 $("#refresh").onclick=refresh;
 (function(){ try{setTheme(localStorage.getItem("wisepack-theme")||"dark")}catch(e){setTheme("dark")}
   refresh(); setInterval(refresh, 4000); })();
+
+// ------------------------------------------- FoundationPose self-test
+//
+// Moved here verbatim from the main dashboard's live RGB-D panel. It calls the
+// same unchanged endpoint with the same payload; only where the result is
+// SHOWN has changed. It holds its own state, so nothing it produces can reach
+// the live panel, and the refresh loop above never touches it — a self-test
+// result stays on screen until someone runs another one.
+let FP_VIEW = "overlay";
+let FP_LAST = null;
+
+// The last 6-DoF result. THE QUATERNION IS THE POSE; roll/pitch/yaw is shown
+// after it, marked, for readability only — differencing Euler angles is a
+// mistake and the label is what stops someone starting.
+function renderFoundationPosePose() {
+  const node = $("#fp-pose");
+  if (!node) return;
+  const doc = FP_LAST;
+  if (!doc || !doc.batch) { node.textContent = ""; return; }
+  const b = doc.batch;
+  if (b.status === "error") {
+    node.textContent = "Self-test FAILED — " + (b.error || "no reason given");
+    return;
+  }
+  const o = (b.observations || [])[0];
+  if (!o) { node.textContent = ""; return; }
+  const q = o.pose.orientation || {};
+  const r = o.pose.rpy_deg || [];
+  const parts = [
+    `x ${o.pose.x_mm} mm · y ${o.pose.y_mm} mm · z ${o.pose.z_mm} mm`,
+    `quaternion (x,y,z,w) ${[q.x, q.y, q.z, q.w].map(v => Number(v).toFixed(5)).join(", ")}`,
+    r.length ? `rpy ${r.join(", ")}° (derived, for reading only — not authoritative)` : "",
+    `Frame: ${b.frame_id}`,
+    `Object model: ${o.object_model_id || "—"}`,
+    `Symmetry: ${(o.symmetry || {}).type || "none"}`
+      + (((o.symmetry || {}).ambiguous_dof || []).length
+         ? ` — ambiguous: ${o.symmetry.ambiguous_dof.join(", ")}` : ""),
+    `Measured: ${(o.pose.measured_dof || []).join(", ")}`,
+    // TWO SEPARATE STATEMENTS, because they are two separate facts and reading
+    // one as the other is how a good measurement gets reported as a failure.
+    //
+    //   "Estimate"  — is the pose itself sound IN THE FRAME NAMED ABOVE?
+    //   "Work area" — can it be moved into the work area and acted on?
+    //
+    // A FoundationPose estimate is routinely the first without being the
+    // second: the pose is real and reproducible in the camera frame, and no
+    // validated camera-to-work-area extrinsic exists to place it.
+    o.pose.valid ? "Estimate: VALID in the frame above"
+                 : "Estimate: FAILED — not a usable pose",
+    o.pose.workarea_pose_available
+      ? "Work area: pose available — placeable"
+      : "Work area: NOT available — no validated camera-to-work-area extrinsic, "
+        + "so this pose is not placed in the work area and is not actionable there",
+    doc.acquisition === "reference"
+      ? "Acquisition: SELF-TEST / OFFLINE DATASET — saved tutorial bolt frames, "
+        + "not a live camera and not part of any run"
+      : "",
+  ].filter(Boolean);
+  node.textContent = parts.join(" · ");
+}
+
+async function runFoundationPoseSelfTest() {
+  const btn = $("#c-fp-selftest");
+  const note = $("#fp-selftest-note");
+  if (btn) { btn.disabled = true; btn.textContent = "Running…"; }
+  if (note) note.textContent = "";
+  try {
+    const res = await fetch("/api/perception/foundationpose/reference-regression", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      // STATED, NEVER DEFAULTED. The tutorial depth images are uint16
+      // millimetres; a wrong scale here is a factor-of-1000 error that still
+      // looks like a plausible pose.
+      body: JSON.stringify({ depth_scale_mm: 1.0 }),
+    });
+    const doc = await res.json();
+    if (!res.ok) {
+      if (note) note.textContent = "Refused — " + JSON.stringify(doc.detail || doc);
+      return;
+    }
+    FP_LAST = doc;
+    if (note) note.textContent = doc.label + " — " + (doc.note || "");
+    renderFoundationPosePose();
+    showFoundationPoseImage(FP_VIEW);
+  } catch (e) {
+    if (note) note.textContent = "Failed — " + e;
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = "Run self-test"; }
+  }
+}
+
+function showFoundationPoseImage(kind) {
+  FP_VIEW = kind;
+  const img = $("#fp-image");
+  if (!img) return;
+  img.src = `/api/perception/foundationpose/image/${kind}?t=${Date.now()}`;
+  img.style.display = "";
+  img.onerror = () => { img.style.display = "none"; };
+  for (const b of document.querySelectorAll("#fp-views button")) {
+    b.setAttribute("aria-pressed", String(b.dataset.v === kind));
+  }
+}
+
+if ($("#c-fp-selftest")) $("#c-fp-selftest").onclick = runFoundationPoseSelfTest;
+for (const b of document.querySelectorAll("#fp-views button")) {
+  b.onclick = () => showFoundationPoseImage(b.dataset.v);
+}
 
 // Simulator View is shown only when the ACTIVE backend actually offers a
 // visualization. A permanently-visible nav item that opens "stream unavailable"
