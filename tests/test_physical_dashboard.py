@@ -115,10 +115,55 @@ def test_live_and_replayed_are_different_claims():
     assert '"run_mode": "live" if live else "replay"' in driver
     assert "LIVE PHYSICAL D435" in driver
     assert "RECORDED PHYSICAL D435 DATA" in driver
-    # The badge follows the run rather than being hard-coded to either.
+    # THE PANEL SAYS HOW IT WAS ACQUIRED, IN THE PAST TENSE, and separately
+    # from whether it is the current run. The badge once carried "LIVE PHYSICAL
+    # D435" — true of the acquisition, and read as "now" by anyone looking at
+    # the panel later beside a planar run that IS current.
+    app = _read(APP)
+    assert '"acquired live from the camera"' in app
+    assert '"replayed from a recorded capture"' in app
     render = _physical_render()
-    assert "doc.run_label" in render
-    assert "LIVE PHYSICAL D435" not in render
+    assert "doc.acquired_how" in render
+    assert "LIVE" not in render
+
+
+def test_recorded_evidence_is_never_presented_as_the_current_run():
+    """THE REPORTED BUG. Switching the perception-method selector to
+    FoundationPose made a cached physical result look freshly acquired, beside a
+    planar run that was actually current. Nothing about the artefact changed —
+    so nothing about how fresh it looks may change either.
+
+    `is_current_run` is DERIVED from the batch on screen rather than hard-coded,
+    so it becomes true by itself on the day a physical acquisition does drive a
+    run — and is false today, because none does.
+    """
+    app = _read(APP)
+    assert "current_run = getattr(batch, \"acquisition\", \"\") == ACQUISITION_REALSENSE" in app
+    assert "Recorded physical D435 evidence — not the current run" in app
+    render = _physical_render()
+    assert "doc.is_current_run" in render
+    assert "doc.status_label" in render
+    # AND IT IS SAID ABOVE THE NUMBERS, not only in a badge.
+    html = _read(INDEX)
+    assert 'id="phys-status"' in html
+
+
+def test_the_recorded_result_names_its_capture_and_time():
+    """A cached result with no identity cannot be told from a fresh one by
+    looking at it."""
+    app = _read(APP)
+    assert '"dataset": document.get("dataset", "")' in app
+    render = _physical_render()
+    assert "doc.dataset" in render
+    assert "doc.completed_at" in render
+
+
+def test_selecting_foundationpose_runs_no_inference():
+    """A selector change configures the NEXT run; it must not acquire. The
+    physical panel only ever reads an artefact — there is no POST in it."""
+    render = _physical_render()
+    assert "POST" not in render and "method:" not in render
+    assert 'fetch("/api/perception/physical")' in render
 
 
 def test_the_pose_is_shown_in_the_camera_frame_it_was_measured_in():

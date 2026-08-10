@@ -1681,6 +1681,22 @@ def api_perception_physical():
     pose = observation.get("pose") or {}
     task = observation.get("task") or {}
     device = document.get("device") or {}
+    # IS THIS THE RUN ON SCREEN, OR EVIDENCE FROM AN EARLIER ONE?
+    #
+    # THE DEFAULT ANSWER IS "NO", AND TODAY IT IS ALWAYS "NO". Nothing routes a
+    # physical D435 pose into a WISEPACK run — deliberately, because no
+    # camera-to-work-area extrinsic exists — so this artefact is always a
+    # recording of an earlier acquisition. It was previously badged with HOW it
+    # was acquired ("LIVE PHYSICAL D435"), which is true of the acquisition and
+    # reads as "now" on a panel an operator is looking at twenty minutes later,
+    # beside a planar run that IS current.
+    #
+    # DERIVED RATHER THAN HARD-CODED so it becomes true by itself on the day a
+    # physical acquisition does drive a run.
+    with STATE.lock:
+        engine = STATE.engine
+    batch = getattr(engine, "observation_batch", None) if engine else None
+    current_run = getattr(batch, "acquisition", "") == ACQUISITION_REALSENSE
     return {
         "available": True,
         "reason": "",
@@ -1688,6 +1704,16 @@ def api_perception_physical():
         "acquisition": "Intel RealSense D435",
         "acquisition_backend": document.get("acquisition_backend", "realsense"),
         "provenance": document.get("provenance", "measured"),
+        "is_current_run": current_run,
+        "status_label": ("Physical D435 6-DoF — current run" if current_run else
+                         "Recorded physical D435 evidence — not the current run"),
+        # HOW IT WAS ACQUIRED, which is a different question from WHEN. Kept,
+        # because live-from-the-camera and replayed-from-a-capture are genuinely
+        # different claims — but worded in the past tense so neither can be read
+        # as "running now".
+        "acquired_how": ("acquired live from the camera"
+                         if document.get("run_mode") == "live"
+                         else "replayed from a recorded capture"),
         "run_mode": document.get("run_mode", ""),
         "run_label": document.get("run_label", ""),
         "run_note": document.get("run_note", ""),
@@ -1723,6 +1749,9 @@ def api_perception_physical():
         "images": sorted(k for k, name in PHYSICAL_C5_IMAGES.items()
                          if os.path.isfile(os.path.join(PHYSICAL_C5_DIR, name))),
         "completed_at": document.get("completed_at", ""),
+        # WHICH CAPTURE, AND WHEN. A cached result with no identity cannot be
+        # told from a fresh one by looking at it.
+        "dataset": document.get("dataset", ""),
         # SAID IN THE DATA, not only in the markup, so no consumer can render
         # this result as a planning input by omitting a label.
         "planning_available": False,

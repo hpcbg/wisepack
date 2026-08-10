@@ -141,28 +141,31 @@ detection and not classification, and no ROI is ever derived from a CAD model's
 dimensions. Choosing the region and naming the part are both operator decisions,
 which is the Human-in-the-Loop architecture applied to perception.
 
-### Try the demonstrations
+## Run it — three commands
 
 ```bash
-# Simulated end-to-end perception and planning
-./scripts/stage_e.sh
+# 1. The dashboard. Finds the planar camera, the D435 and the simulated RGB-D
+#    by itself; no camera environment variables.
+./run_wisepack_dashboard.sh
 
-# Physical D435 + the real Cylinder5 — live camera acquisition
-./scripts/physical_c5.sh --model cylinder5 --frames 5 --roi 255,70,445,719
+# 2. Physical D435 + the real Cylinder5, from a RECORDED REAL D435 capture.
+#    Recorded physical sensor data — NOT simulation, and reproducible without
+#    the hardware or the lighting of that day.
+./scripts/physical_c5_dashboard.sh --dataset cylinder5-20260810-133408
 
-# The same demonstration, reproducibly, from a previously captured REAL D435
-# frame. This is recorded physical sensor data, NOT simulation.
-./scripts/physical_c5.sh --dataset cylinder5-20260810-133408 \
-    --model cylinder5 --frames 5 --roi 255,70,445,719
+# 3. Simulated RGB-D perception through to planning, with quantitative error.
+./scripts/stage_e.sh --reuse
 ```
 
-The live command acquires from the camera on the desk. `--dataset` replays a real
-capture already on disk, so the demonstration reproduces without the hardware and
-without the lighting conditions of the day.
+Then open <http://127.0.0.1:8080>.
 
-**When perception is unreliable, WISEPACK refuses.** If the segmentation validity
-checks fail, no pose is estimated and no mask is fabricated to get past the step
-— see [RGB-D 6-DoF perception](#rgb-d-6-dof-perception-foundationpose_rgbd).
+To acquire from the camera on the desk instead of replaying, drop the
+`--dataset`: `./scripts/physical_c5_dashboard.sh`.
+
+**When perception is unreliable, WISEPACK refuses.** If the segmentation
+validity checks fail, no pose is estimated and no mask is fabricated to get past
+the step — see [RGB-D 6-DoF
+perception](#rgb-d-6-dof-perception-foundationpose_rgbd).
 
 ---
 
@@ -709,88 +712,43 @@ fails at demo time. It says which one it chose:
 For a run that is container-free by construction, use
 `./run_wisepack_demo.sh --core-only` — pure Python, no Docker at all.
 
-### Real camera perception (optional)
+### Cameras: nothing to configure
 
-**The camera is an additional input, not a different application mode.** Preset
-scenarios and the physical camera are both available in the SAME running
-WISEPACK, and switching between them is a dropdown — never a restart.
-
-Put two lines in `config/local.env` — read by the launcher's allowlist parser,
-so they need no `export`:
+**The camera is an additional input, not a different application mode**, and the
+launcher finds it for you:
 
 ```bash
-# config/local.env
-WISEPACK_PERCEPTION_ENABLE=1                  # have the camera ready
-WISEPACK_PERCEPTION_CAMERA=0                  # your camera index / device / URL
-```
-
-then start WISEPACK **exactly as always** — any mode, no extra step:
-
-```bash
-./run_wisepack_dashboard.sh                # full ROS 2 / DDS stack
-./run_wisepack_dashboard.sh sim            # dashboard only, no ROS
-./run_wisepack_dashboard.sh fiware         # + Orion-LD read-back
-./run_wisepack_dashboard.sh isaac          # + PHYSICAL execution
-./run_wisepack_dashboard.sh isaac-fiware
-```
-
-Or say it once, inline, without touching any file — **one command, the
-assignments as a prefix**:
-
-```bash
-WISEPACK_PERCEPTION_ENABLE=1 \
-WISEPACK_PERCEPTION_CAMERA=0 \
 ./run_wisepack_dashboard.sh
 ```
 
-**The line continuations matter.** `VAR=value command` puts the assignments in
-that command's environment. Written as separate lines they are *shell-local*
-variables of your interactive shell — set, visible to `echo`, and **not
-inherited by the launcher**, which then starts with no camera and says so:
+discovers the planar RGB camera on this host and starts its detector, exposes an
+attached RealSense D435 through the FoundationPose worker, and keeps simulated
+RGB-D available. **No camera environment variables are required.** The session
+still opens on the ordinary preset workflow; the Scenario panel's *Object
+source* switches to the camera whenever you like, applies to the NEXT run, and
+never touches the run on screen.
 
-```bash
-# DOES NOT WORK — three unrelated statements, nothing exported
-WISEPACK_PERCEPTION_ENABLE=1
-WISEPACK_PERCEPTION_CAMERA=0
-./run_wisepack_dashboard.sh                # starts with the camera unavailable
-```
+The saved plane calibration is reused, so the ArUco sheet is shown once and then
+put away — see [§15a](#15a-real-camera-perception).
 
-Use `config/local.env`, the single-command prefix form above, or `export` them
-first. The launcher prints the resolved object source at start-up, so a setting
-that did not arrive is visible immediately rather than at the moment someone
-presses *Detect & plan*.
+<details>
+<summary>Advanced overrides (not needed for ordinary use)</summary>
 
-The session opens on the **ordinary preset workflow, unchanged**. From the
-dashboard's Scenario panel:
+| Variable | Effect |
+|---|---|
+| `WISEPACK_PERCEPTION_ENABLE=1` | force the planar detector even where discovery finds no camera |
+| `WISEPACK_PERCEPTION_ENABLE=0` | opt out; leave this host's camera alone |
+| `WISEPACK_PERCEPTION_CAMERA=` | a camera index, `/dev/videoN` or a URL. Defaults to 0 |
+| `WISEPACK_PERCEPTION_SOURCE=camera` | open the session ON the camera; aborts rather than falling back to a generated scenario |
+| `PORT=9000` | run the dashboard on another port |
 
-```text
-Object source: [ Preset scenario ▼ ]      ->   [ Generate & plan ]
-Object source: [ Physical camera ▼ ]      ->   [ Detect & plan   ]
-```
+Set them in `config/local.env` (no `export` needed) or as a single-command
+prefix — `VAR=value ./run_wisepack_dashboard.sh`. On separate lines they are
+shell-local and never reach the launcher.
 
-Choose either, at any time, as often as you like. **No restart, and the run on
-screen is never touched by the choice** — a source change applies to the NEXT
-run, exactly as the preset and the robot selectors do.
+For camera and container diagnostics: `./scripts/realsense_diagnose.sh`.
 
-The launcher creates the WISEPACK perception environment on the first camera run,
-starts the perception service, waits for it to be healthy, and stops it again
-when you Ctrl-C. **You do not activate a virtual environment, start
-`perception_service.py` by hand, clone another repository, or point WISEPACK at
-another project's Python interpreter** — and nothing is installed into the system
-Python. Manual startup exists only as an advanced debugging procedure
-([§15a](#15a-real-camera-perception)).
-
-`WISEPACK_PERCEPTION_SOURCE=camera` still works and means one specific thing:
-**start this session on the camera**. It is the INITIAL selection, not a lock —
-the dropdown still switches both ways afterwards. Without any of these variables
-WISEPACK behaves exactly as it always has.
-
-Objects on the table are detected, and their measured position and orientation
-become the objects WISEPACK plans from. **The object source is a THIRD axis**,
-independent of both the data source and the execution backend, so the camera
-composes with every mode above — and, unlike the other two, it is chosen **per
-run** rather than per process. Change nothing and every session opens on preset
-scenarios, exactly as before. See [§15a](#15a-real-camera-perception).
+</details>
 
 ### Individual validations
 
@@ -2899,12 +2857,16 @@ not measured — see [Proxy-cylinder geometry](#proxy-cylinder-geometry).
 
 The detector's own annotated frame, full size:
 
-![Annotated camera frame: two bottles, four ArUco markers, the calibrated plane](images/generated/perception-camera-annotated.jpg)
+![Annotated camera frame: two detected workpieces on the calibrated plane, with no calibration sheet in the scene](images/generated/perception-camera-annotated.jpg)
 
-The green quadrilateral is the calibrated plane resolved from the four corner
-markers; each object carries its measured `(x, y)` in millimetres, its yaw, and
-the detector's confidence. The magenta box is the object the detector would pick
-first.
+**The ArUco sheet is not in this scene, and that is the point.** The green
+quadrilateral is the work area resolved from the SAVED calibration, so detection
+works over a table covered in the objects being measured — the sheet is shown
+once and then put away. Each object carries its measured `(x, y)` in
+millimetres, its yaw and the detector's confidence; the magenta box is the one
+the detector would pick first. Captured from the live A4Tech camera on this
+bench with `./run_wisepack_dashboard.sh` and no perception environment
+variables.
 
 #### 2. What WISEPACK did with it
 

@@ -505,7 +505,14 @@
            for an operator to infer from a missing button. -->
       <div id="phys-block" style="display:none;margin-top:10px;border-top:1px solid var(--line);padding-top:8px">
         <h4 style="margin:0 0 6px 0">Physical RGB-D 6-DoF — Intel RealSense D435
-          <span class="badge" id="phys-badge">PHYSICAL</span></h4>
+          <span class="badge" id="phys-badge">RECORDED EVIDENCE</span></h4>
+        <!-- SAID FIRST, ABOVE THE NUMBERS. Whether this describes the run on
+             screen is the question an operator asks of every panel, and for
+             this one the answer is normally "no": nothing routes a physical
+             D435 pose into a run, so what is shown is a recording of an earlier
+             acquisition. A panel that only implied that with a badge would let
+             a method switch make old evidence look freshly acquired. -->
+        <div id="phys-status" class="percep-error" style="margin-bottom:6px"></div>
         <div id="phys-provenance" class="note" style="margin-bottom:6px"></div>
         <div id="phys-object" class="note" style="margin-bottom:6px"></div>
         <div id="phys-segmentation" class="note" style="margin-bottom:6px"></div>
@@ -2050,22 +2057,36 @@ async function refreshPhysicalD435() {
   if (!doc || !doc.available) return;
   PHYS_LAST = doc;
 
-  // LIVE AND REPLAYED ARE DIFFERENT CLAIMS. Both are physical sensor data; a
-  // recorded capture is not evidence that the camera worked just now, and the
-  // badge carries whichever the run actually was.
+  // IS THIS THE CURRENT RUN, OR EVIDENCE FROM AN EARLIER ONE?
+  //
+  // THE BADGE ANSWERS THAT QUESTION AND NOT ANY OTHER. It used to carry HOW the
+  // artefact was acquired — "LIVE PHYSICAL D435" — which is true of the
+  // acquisition and reads as "now" to somebody looking at the panel later,
+  // beside a planar run that IS current. Switching the method selector to
+  // FoundationPose changed nothing about this artefact, so it must not change
+  // how fresh it looks.
   const badge = $("#phys-badge");
-  if (badge) badge.textContent = doc.run_label || "PHYSICAL";
+  if (badge) {
+    badge.textContent = doc.is_current_run ? "CURRENT RUN" : "RECORDED EVIDENCE";
+    badge.title = doc.status_label || "";
+  }
+  const heading = $("#phys-status");
+  if (heading) heading.textContent = doc.status_label || "";
 
   const device = doc.device || {};
   $("#phys-provenance").textContent = [
     `Acquisition: ${doc.acquisition}`,
     `Provenance: ${doc.provenance} / physical`,
     `Perception: FoundationPose RGB-D`,
+    // PAST TENSE, AND IDENTIFIED. A cached result with no capture name and no
+    // timestamp cannot be told from a fresh one by looking at it.
+    doc.acquired_how,
+    doc.dataset ? `capture ${doc.dataset}` : "",
+    doc.completed_at ? `estimated ${doc.completed_at}` : "",
     device.serial_number ? `serial ${device.serial_number}` : "",
     device.firmware_version ? `firmware ${device.firmware_version}` : "",
     doc.selected_profile && doc.selected_profile.width
       ? `${doc.selected_profile.width}x${doc.selected_profile.height}@${doc.selected_profile.fps}` : "",
-    doc.run_note,
   ].filter(Boolean).join(" · ");
 
   // THE CAMERA FRAME, NAMED. Three numbers without a frame are not a pose, and
