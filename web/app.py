@@ -44,8 +44,6 @@ from fastapi.responses import HTMLResponse, JSONResponse
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(HERE)
-RESULTS_DIR = os.path.join(REPO, "results")
-
 # wisepack_core is imported from the workspace source tree, so the dashboard
 # runs with nothing installed and nothing built. This is the same import the
 # ROS nodes do after a colcon build; only the path discovery differs.
@@ -55,9 +53,17 @@ for _pkg in ("wisepack_core", "wisepack_fiware", "wisepack_bringup"):
         sys.path.insert(0, _path)
 
 from wisepack_core.artifacts import (                              # noqa: E402
-    latest_artifact, latest_latency_p50_ms, write_run_artifacts,
+    latest_artifact, latest_latency_p50_ms, resolve_results_dir,
+    write_run_artifacts,
     write_validation_report,
 )
+
+#: RESOLVED, not assumed. This was hard-coded to `<repo>/results`, which
+#: bypassed the WISEPACK_RESULTS_DIR override the rest of the project honours —
+#: and on a shared checkout that directory can belong to another user, so every
+#: run finished by reporting a permission error it could do nothing about.
+#: Assigned AFTER the import it depends on; it sat above it and broke start-up.
+RESULTS_DIR = resolve_results_dir(repo_root=REPO)
 from wisepack_core.domain import Strategy                          # noqa: E402
 from wisepack_core.execution import physical_presets              # noqa: E402
 from wisepack_core.acquisition import (                            # noqa: E402
@@ -149,6 +155,9 @@ class DemoState:
         #: Metadata about the simulated-RGB-D acquisition currently on screen,
         #: or None. Set only by `acquire_simulated_rgbd`.
         self.simulated_rgbd: Optional[Dict[str, Any]] = None
+        #: The outcome of the last artefact write: where it went, or why it
+        #: could not. Carried on the run rather than left in a transient notice.
+        self.artifacts: Optional[Dict[str, Any]] = None
         #: (usable, reason) and when it was asked. See `camera_capability`.
         self.camera_capability = (False, "")
         self.camera_capability_at = None
@@ -693,11 +702,16 @@ async def sim_driver() -> None:
                 _write_artifacts_locked()
 
 
-def _write_artifacts_locked() -> None:
-    """Persist evidence at the end of a run. Caller holds the lock."""
+def _write_artifacts_locked() -> Dict[str, Any]:
+    """Persist evidence at the end of a run. Caller holds the lock.
+
+    THE OUTCOME IS RECORDED, not just announced. A run that completed and then
+    failed to save its evidence has half-failed, and a notice that scrolls away
+    beside a green COMPLETE badge is not a report of that.
+    """
     engine = STATE.engine
     if engine is None or engine.selected is None:
-        return
+        return {"ok": False, "reason": "no completed run to write"}
     try:
         kpis = engine.kpis(latest_latency_p50_ms(RESULTS_DIR))
         artifacts = write_run_artifacts(
@@ -706,9 +720,19 @@ def _write_artifacts_locked() -> None:
         write_validation_report(
             engine.scenario, engine.baseline, engine.optimized, engine.selected,
             kpis, engine.log, artifacts, RESULTS_DIR)
-        STATE.notice = f"artefacts written: results/wisepack-run-{artifacts.stamp}.json"
+        # THE ACTUAL PATH, not a guess at one. The old message said "results/…"
+        # whatever the destination really was, so an operator following it
+        # looked in the wrong place.
+        written = os.path.join(RESULTS_DIR, f"wisepack-run-{artifacts.stamp}.json")
+        STATE.artifacts = {"ok": True, "directory": RESULTS_DIR,
+                           "path": written, "stamp": artifacts.stamp,
+                           "error": ""}
+        STATE.notice = f"artefacts written: {written}"
     except Exception as exc:                            # noqa: BLE001
+        STATE.artifacts = {"ok": False, "directory": RESULTS_DIR, "path": "",
+                           "stamp": "", "error": str(exc)}
         STATE.notice = f"artefact write failed: {exc}"
+    return STATE.artifacts
 
 
 # --------------------------------------------------------------------------- #
@@ -1138,6 +1162,15 @@ def api_state():
         # source above, independent of the execution backend, and — like the
         # source — a per-run draft that never touches the run on screen.
         "perception_method": perception_method_state().to_dict(),
+        # THE ACQUISITION AXIS travels with the state too, so the Scenario
+        # controls can name the device the running run actually used instead of
+        # the coarser object source.
+        "acquisition": acquisition_state().to_dict(),
+        # WHERE THE EVIDENCE WENT — or why it did not. A COMPLETE run whose
+        # artefacts failed to save must say so where the completion is shown.
+        "artifacts": (STATE.artifacts
+                      or {"ok": None, "directory": RESULTS_DIR, "path": "",
+                          "error": ""}),
         "ts": time.time(),
     })
     return payload
@@ -2014,6 +2047,12 @@ def _apply_command_locked(engine: WorkflowEngine, command: str,
                                if k in STATE.settings})
         STATE.settings["object_source"] = PerceptionSource.CAMERA.value
         STATE.settings["preset"] = meta.get("preset", "cad_cylinder5_single")
+        # THE DRAFT IS SET TO WHAT THIS RUN ACTUALLY USED. Leaving the method
+        # selector on the planar default made the Scenario panel contradict the
+        # run beside it — the controls describe the NEXT run, and the sensible
+        # next run is the one just performed.
+        STATE.settings["perception_method"] = \
+            PerceptionMethod.FOUNDATIONPOSE_RGBD.value
         STATE.settings_touched = True
         # A NEW RUN, for the same reason the camera path starts one: the objects
         # come from somewhere else entirely than the scenario on screen.
@@ -2141,8 +2180,18 @@ def _apply_command_locked(engine: WorkflowEngine, command: str,
                 "awaiting_detection": source.is_physical}
 
     if command == "write_artifacts":
-        _write_artifacts_locked()
-        return {"ok": True, "notice": STATE.notice}
+        # THE REAL OUTCOME. This returned ok:True whatever happened, so a
+        # permission failure was reported to the operator as a success with a
+        # contradictory notice beside it.
+        outcome = _write_artifacts_locked()
+        if not outcome.get("ok"):
+            raise HTTPException(
+                status_code=500,
+                detail=(f"could not write artefacts to {outcome.get('directory')}: "
+                        f"{outcome.get('error') or outcome.get('reason')}. "
+                        "Set WISEPACK_RESULTS_DIR to a writable directory."))
+        return {"ok": True, "path": outcome["path"],
+                "directory": outcome["directory"], "notice": STATE.notice}
 
     # -- cut-aware HITL controls (brief §6) --
     if command == "compare_cut_aware":

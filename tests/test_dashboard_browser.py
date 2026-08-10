@@ -905,10 +905,16 @@ def test_the_perception_panel_stays_visible_during_a_preset_run(
     page.wait_for_timeout(2500)
     panel = page.query_selector("#perceppanel")
     assert panel is not None and panel.is_visible(), (
-        "the Physical Perception panel must stay visible while a camera exists")
+        "the perception panel must stay visible while a camera exists")
     text = page.inner_text("#perceppanel")
-    assert "Current run source" in text
+    # THE PANEL NAMES WHAT IS RUNNING. The wording moved from "Current run
+    # source" to "Running now" when the acquisition axis arrived — the old
+    # phrase sat beside a dropdown configuring the NEXT run and read as though
+    # it described that. The intent is unchanged: the running run is named.
+    assert "Running now" in text
     assert "Camera" in text
+    # And the heading is no longer hard-coded to the planar era.
+    assert page.inner_text("#percep-title").strip() != ""
 
 
 def test_an_absent_camera_leaves_the_preset_workflow_working(page, sim_server):

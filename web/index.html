@@ -414,7 +414,7 @@
          This panel is about where OBJECTS come from; the execution backend is a
          separate axis and is shown in its own badge elsewhere. -->
     <div class="panel" id="perceppanel" style="display:none">
-      <h3>Physical Perception
+      <h3><span id="percep-title">Perception</span>
         <span class="badge" id="percep-badge">CAMERA</span>
         <span class="note" id="percep-source"></span>
       </h3>
@@ -780,6 +780,19 @@ function renderHeader(s) {
   pill.className = "stagepill " + (stage === "DEGRADED" ? "bad"
     : stage === "WAIT_FOR_OPERATOR_APPROVAL" || stage === "REPLAN" ? "wait"
     : GO.includes(stage) ? "go" : "");
+
+  // A COMPLETE RUN THAT COULD NOT SAVE ITS EVIDENCE HAS HALF-FAILED, and the
+  // stage pill alone would show it as done. The failure is put where the
+  // completion is shown, not left in a notice that scrolls away.
+  const art = s.artifacts || {};
+  if (art.ok === false) {
+    pill.textContent = stage + " · ARTEFACTS NOT SAVED";
+    pill.className = "stagepill bad";
+    pill.title = `could not write to ${art.directory}: ${art.error}\n`
+               + "Set WISEPACK_RESULTS_DIR to a writable directory.";
+  } else if (art.ok === true && art.path) {
+    pill.title = `artefacts: ${art.path}`;
+  }
 
   const b = s.badge || {};
   const src = $("#b-source");
@@ -1528,12 +1541,12 @@ function applyPerceptionMethodVisibility(s) {
   const pm = (s && s.perception_method) || {};
   if (!note) return;
   const bits = [];
-  // "Running now" is EMPTY for a preset run and stays empty: nothing measured
-  // that batch, and naming a method would invent a provenance.
+  // EMPTY for a preset run and stays empty: nothing measured that batch, and
+  // naming a method would invent a provenance. The selector below it is a
+  // DRAFT for the next run and says so, so the two can never be read as one
+  // claim.
   if (pm.current_label) bits.push(`Measured this run: ${pm.current_label}`);
-  if (pm.changes_next_run && pm.selected_label) {
-    bits.push(`Next run: ${pm.selected_label}`);
-  }
+  bits.push(`This selector sets the NEXT run: ${pm.selected_label || "—"}`);
   if (pm.selected_measures && pm.selected_measures.length) {
     bits.push(`measures ${pm.selected_measures.join(", ")}`);
   }
@@ -1574,11 +1587,23 @@ function syncScenarioControls(s) {
   const objNote = $("#s-objsrc-note");
   if (objNote) {
     const bits = [];
-    if (objsrc.current_label) bits.push(`Running now: ${objsrc.current_label}`);
-    if (objsrc.changes_next_run && objsrc.selected_label) {
-      bits.push(`Next run: ${objsrc.selected_label}`);
+    // THESE CONTROLS CONFIGURE THE NEXT RUN. Labelling their value "Running
+    // now" made the panel contradict itself: the dropdown read "Physical
+    // camera" beside a run acquired in simulation. The running run's own
+    // source is named from the acquisition axis, and the draft is always
+    // labelled as a draft.
+    const acqNow = (s.acquisition || {});
+    const runningLabel = acqNow.current_label || objsrc.current_label;
+    if (runningLabel) bits.push(`Running now: ${runningLabel}`);
+    bits.push(`This selector sets the NEXT run: ${objsrc.selected_label || "—"}`);
+    // THE OBJECT-SOURCE DETAIL IS PLANAR-SPECIFIC — "measured on the
+    // calibrated plane" — and is simply wrong when the selected method is
+    // model-based RGB-D. The method's own note already says what it measures,
+    // so the coarser sentence is dropped rather than contradicting it.
+    const methodSel = ((s.perception_method || {}).selected) || "";
+    if (objsrc.selected_detail && methodSel !== "foundationpose_rgbd") {
+      bits.push(objsrc.selected_detail);
     }
-    if (objsrc.selected_detail) bits.push(objsrc.selected_detail);
     if (!objsrc.camera_available && objsrc.camera_unavailable_reason) {
       bits.push(`Physical camera unavailable — ${objsrc.camera_unavailable_reason}`);
     }
@@ -2314,11 +2339,27 @@ async function refreshPerception() {
   // WHICH SOURCE THE RUNNING RUN USED — never the draft. An operator who has
   // selected the camera for the next run is still watching a preset run, and
   // one line claiming both would be wrong about one of them.
+  // WHICH ACQUISITION PRODUCED THIS BATCH. "Physical camera" is the object
+  // SOURCE — correct but too coarse once several camera backends exist, and
+  // plainly wrong beside a run acquired in simulation. The acquisition axis
+  // names the actual device; the object source is the fallback for a run that
+  // predates it.
+  const acqNow = doc.acquisition || {};
+  const sourceLabel = acqNow.current_label
+    || os.current_label || doc.perception_source_label || "";
+  const methodNow = (doc.perception_method || {}).current_label || "";
   $("#percep-source").textContent =
-    `Current run source: ${os.current_label || doc.perception_source_label || ""}` +
-    (detector ? ` · Detector: ${detector}` : "") +
-    (os.changes_next_run && os.selected_label
-      ? ` · Next run: ${os.selected_label}` : "");
+    `Running now: ${sourceLabel}` +
+    (methodNow ? ` · ${methodNow}` : (detector ? ` · Detector: ${detector}` : ""));
+  const title = $("#percep-title");
+  if (title) {
+    // NEUTRAL BY DEFAULT, specific when the run says so. "Physical Perception"
+    // is a planar-era name and is wrong for a simulated acquisition.
+    const method = (doc.perception_method || {}).current || "";
+    title.textContent = method === "foundationpose_rgbd"
+      ? "RGB-D Perception"
+      : (doc.physical ? "Physical Perception" : "Perception");
+  }
   const badge = $("#percep-badge");
   // The badge tracks the CAMERA, not the panel's existence: a panel that always
   // says "CAMERA" while the camera is unplugged is worse than no badge.
@@ -2497,7 +2538,18 @@ function renderPerceptionObjects(doc, b) {
       el("td", { class: "note" },
          g.diameter_mm ? `⌀${g.diameter_mm} × ${g.length_mm} mm (${g.source})` : "—")]));
   }
-  $("#percep-proxy").textContent = doc.proxy_note || "";
+  // THE PROXY DISCLOSURE IS ABOUT STAND-IN OBJECTS on the table, and it is
+  // simply untrue of a CAD-backed observation: Cylinder5 is the real part, not
+  // a stand-in, and repeating the disclaimer there would misdescribe the run.
+  // (The disclosure text itself is served by the API, never written here — see
+  // tests/test_perception.py::test_the_dashboard_panel_stays_domain_neutral.)
+  const cadBacked = ((b && b.observations) || []).some(
+    o => (o.task || {}).object_center_mm || o.object_model_id);
+  const proxy = $("#percep-proxy");
+  if (proxy) {
+    proxy.style.display = cadBacked ? "none" : "";
+    proxy.textContent = cadBacked ? "" : (doc.proxy_note || "");
+  }
   $("#percep-confidence").textContent = doc.confidence_note || "";
 }
 

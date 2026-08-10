@@ -26,7 +26,69 @@ from .domain import PackingPlan, Scenario
 from .events import ActionLog
 from .kpi import KPIReport
 
-DEFAULT_RESULTS_DIR = os.environ.get("WISEPACK_RESULTS_DIR", "results")
+#: Where run artefacts are written. Overridable, and the override is honoured
+#: verbatim — an operator who names a directory gets that directory.
+RESULTS_DIR_ENV = "WISEPACK_RESULTS_DIR"
+
+#: Used only when the repository's own `results/` cannot be written. A
+#: user-writable state directory, chosen because it needs no privileges and no
+#: change to anything already on disk.
+FALLBACK_RESULTS_DIR = os.path.join(
+    os.environ.get("XDG_STATE_HOME") or os.path.expanduser("~/.local/state"),
+    "wisepack", "results")
+
+
+def _writable(directory: str) -> bool:
+    """Can this process actually create a file here? Tried, not inferred.
+
+    `os.access(..., W_OK)` answers about permission bits and gets group- and
+    ACL-owned directories wrong. Creating and removing a probe file is the only
+    answer that matches what the write will do.
+    """
+    try:
+        os.makedirs(directory, exist_ok=True)
+        probe = os.path.join(directory, ".wisepack-write-probe")
+        with open(probe, "w", encoding="utf-8") as handle:
+            handle.write("")
+        os.remove(probe)
+        return True
+    except OSError:
+        return False
+
+
+def resolve_results_dir(explicit: Optional[str] = None,
+                        repo_root: str = "") -> str:
+    """The artefact directory to use, as an ABSOLUTE path.
+
+    THE DEFAULT MUST BE WRITABLE BY WHOEVER LAUNCHED THE RUN. A run that plans,
+    validates and completes and then cannot save its evidence has half-failed,
+    and reporting that as success is the part that misleads.
+
+    Order, and nothing is silently skipped:
+
+      1. `explicit`, or `WISEPACK_RESULTS_DIR`. Honoured as given — if it is
+         unwritable that is the operator's own configuration and the write
+         should fail loudly rather than be redirected behind their back.
+      2. `<repo>/results`, when this process can write there. The ordinary case.
+      3. A user state directory, when it cannot. On a shared checkout `results/`
+         can belong to another user; the alternative would be requiring
+         `sudo chown` to run a dashboard, which is not a reasonable ask.
+
+    NOTHING HERE CHANGES PERMISSIONS. It chooses a destination.
+    """
+    configured = explicit or os.environ.get(RESULTS_DIR_ENV, "").strip()
+    if configured:
+        return os.path.abspath(os.path.expanduser(configured))
+
+    root = repo_root or os.path.dirname(os.path.dirname(os.path.dirname(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__))))))
+    preferred = os.path.join(root, "results")
+    if _writable(preferred):
+        return preferred
+    return FALLBACK_RESULTS_DIR
+
+
+DEFAULT_RESULTS_DIR = resolve_results_dir()
 
 
 def timestamp() -> str:
