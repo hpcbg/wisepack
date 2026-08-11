@@ -1,9 +1,15 @@
 #!/usr/bin/env python3
-"""Run CAD and model-free FoundationPose over a whole query set.
+"""Run CAD and model-free FoundationPose over a whole set of frames.
 
-RUNS INSIDE THE FOUNDATIONPOSE CONTAINER, which is given the query images and
+THE FRAMES MAY BE SIMULATED OR PHYSICAL. This runner does not know or care: it
+is given a directory of per-frame observations and two meshes, and its job is
+that the SAME observation reaches both estimators. That property is what both
+experiments rest on, so there is one implementation of it rather than two.
+
+RUNS INSIDE THE FOUNDATIONPOSE CONTAINER, which is given the frame images and
 the two meshes — and NOT the ground truth, which lives in a sibling directory
-that is never mounted. Scoring is a separate host-side step.
+that is never mounted. Scoring is a separate host-side step. (For physical
+frames no ground truth exists at all, and none is computed anywhere.)
 
 ONE ESTIMATOR PER MESH, REUSED ACROSS QUERIES. `FoundationPose` holds the mesh
 and its sampled model points; rebuilding it per query would re-pay that cost and,
@@ -32,6 +38,16 @@ def main() -> int:
     parser.add_argument("--model-free-mesh", required=True)
     parser.add_argument("--model-free-scale-to-metres", type=float, default=1.0)
     parser.add_argument("--refine-iterations", type=int, default=5)
+    # PROVENANCE CARRIED THROUGH, NOT RE-DERIVED. The scorer needs to know which
+    # object this was, which reference point to measure, and which model-free
+    # representation produced the second estimate. Passing them through means
+    # the report cannot be attached to the wrong run.
+    parser.add_argument("--model-id", default="")
+    parser.add_argument("--model-center-mm", default="",
+                        help="comma-separated reference point, mm, mesh frame")
+    parser.add_argument("--reference-digest", default="")
+    parser.add_argument("--capture-root", default="")
+    parser.add_argument("--label", default="")
     parser.add_argument("--out", required=True)
     args = parser.parse_args()
 
@@ -98,6 +114,12 @@ def main() -> int:
     document = {
         "queries_dir": args.queries_dir,
         "query_count": len(results),
+        "model_id": args.model_id,
+        "model_center_mm": ([float(v) for v in args.model_center_mm.split(",")]
+                            if args.model_center_mm else None),
+        "reference_digest": args.reference_digest,
+        "capture_root": args.capture_root,
+        "label": args.label,
         "refine_iterations": args.refine_iterations,
         "cad_mesh": args.cad_mesh, "cad_mesh_vertices": cad_verts,
         "model_free_mesh": args.model_free_mesh,

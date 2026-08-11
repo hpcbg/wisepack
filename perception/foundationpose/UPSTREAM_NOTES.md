@@ -120,3 +120,41 @@ needed with modern CUDA and is applied at build time.
 * Therefore the bolt regression (§4 of the plan) and the two-implementation
   comparison (§2 above) are **pending**, not failed, and nothing in WISEPACK
   claims either has passed.
+
+## 5. Known issue: exit 139 on model-free representation build
+
+**What happens.** `scripts/model_free_build.sh` runs the official
+`bundlesdf/run_nerf.py::run_one_ob` to build the Neural Object Field. The job
+completes — mesh, UV unwrap, baked texture, optimised poses and `model.obj` are
+all written, and the completion marker is printed — and *then* the container
+exits **139** (`SIGSEGV`, `free(): invalid pointer`) during interpreter
+shutdown. It is a teardown crash in the OSMesa/OpenGL stack in a process that
+has already finished its work.
+
+**Scope.** REPRESENTATION BUILD ONLY. It has never been observed in the pose
+estimation path: the simulated benchmark and the physical D435 run both exit
+cleanly, and neither loads pyrender or an OSMesa context. It costs nothing at
+run time because the representation is built once and cached.
+
+**Current handling, and its status.** `model_free_build.sh` judges success by
+*artefacts plus completion marker* rather than by exit code, and reports the
+crash rather than swallowing it. This is explicitly **TEMPORARY**. It is a
+workaround for a diagnosed upstream teardown crash and **must not become a
+dashboard success contract** — nothing user-facing may ever conclude "it
+worked" from the presence of a file. Any integration of model-free into the
+dashboard has to resolve this first, not inherit it.
+
+**Not yet diagnosed.** Deferred deliberately so it would not derail the
+physical experiment. The open questions, in order:
+
+1. Does `PyOpenGL-accelerate` participate? It is a separate wheel with its own
+   C extension and is the usual suspect for a `free()` at exit.
+2. Does a minimal pyrender + OSMesa script — a context, one offscreen render,
+   exit — reproduce it outside FoundationPose entirely?
+3. Does explicitly deleting the `OffscreenRenderer` and its context before
+   interpreter shutdown prevent it?
+
+**Constraints on the fix.** Do not patch FoundationPose to suppress the signal,
+and do not change any pinned dependency version to make it go away without
+reporting first: the pinned set is what the working model-free path was
+established on.
