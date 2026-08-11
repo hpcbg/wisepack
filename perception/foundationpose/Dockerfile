@@ -137,6 +137,138 @@ RUN python -m pip install pybind11     && cd ${FOUNDATIONPOSE_DIR}/mycpp     && 
 # weights inside a WISEPACK artefact.
 RUN ln -sfn /weights ${FOUNDATIONPOSE_DIR}/weights
 
+# --- Kaolin: REQUIRED BY THE MODEL-FREE / FEW-SHOT PATH ONLY ----------------
+#
+# Upstream says so itself (readme "Optional — Kaolin (only for the model-free
+# setup; version must match your PyTorch/CUDA)"). The CAD path never touches it;
+# the model-free path does, through `Utils.py`'s `OctreeManager`, which the NeRF
+# uses for ray tracing because the official configs set `use_octree: 1`:
+#
+#     Utils.py:908-944   kaolin.ops.spc.quantize_points / unbatched_points_to_octree
+#                        / scan_octrees / generate_points / unbatched_make_dual
+#                        / unbatched_make_trinkets / unbatched_query
+#     nerf_runner.py:303 near/far bounds from octree_m.ray_trace(...)
+#
+# AN OFFICIAL WHEEL, NOT A SOURCE BUILD, and one that matches the runtime
+# already pinned above EXACTLY — python 3.10, torch 2.4.1, CUDA 12.4. Nothing
+# above this line moves: not the FoundationPose revision, not torch, not CUDA,
+# not pytorch3d, not nvdiffrast. Building Kaolin from source would compile
+# against the same torch for no benefit.
+#
+# PLACED HERE, AFTER THE COMPILED LAYERS, so adding it re-runs no CUDA build.
+ARG KAOLIN_VERSION=0.17.0
+ARG KAOLIN_INDEX=https://nvidia-kaolin.s3.us-east-2.amazonaws.com/torch-2.4.1_cu124.html
+# TORCH IS PINNED THROUGH A CONSTRAINT, not left to pip's resolver. Kaolin
+# declares a torch dependency, and a resolver free to satisfy it could pull a
+# different build — which would silently unlink every CUDA extension compiled
+# above. The constraint makes "torch does not move" a property of the build
+# rather than something to verify afterwards and hope for.
+RUN printf 'torch==%s\ntorchvision\n' "${TORCH_VERSION}" > /tmp/pin.txt \
+    && python -m pip install -c /tmp/pin.txt \
+        kaolin==${KAOLIN_VERSION} -f ${KAOLIN_INDEX} \
+    && rm -f /tmp/pin.txt
+
+# --- trimesh: PINNED TO WHAT THE PINNED REVISION CAN ACTUALLY CALL ----------
+#
+# Upstream's `requirements.txt` lists `trimesh` with NO version, so the build
+# resolved whatever was current — 5.0.0 — while the pinned FoundationPose
+# revision was written against trimesh 3.x. The model-free texturing stage then
+# died on an API that no longer exists:
+#
+#     nerf_runner.py:1138   mesh.remove_duplicate_faces()
+#     AttributeError: 'Trimesh' object has no attribute 'remove_duplicate_faces'
+#
+# Everything else in this file is pinned precisely so the runtime matches the
+# revision; trimesh floating was the omission, not a deliberate choice.
+#
+# 4.8.3 IS MEASURED, NOT GUESSED. The symbol was checked in each release:
+# present in 3.23.5, 4.0.10, 4.4.9 and 4.8.3; absent in 4.12.2 and 5.0.0. So
+# 4.8.3 is the NEWEST version the pinned code can call, which keeps the drift
+# from the current runtime as small as the incompatibility allows.
+#
+# NO SOURCE PATCH. FoundationPose is used as published; the dependency is what
+# moves, because the dependency is what was wrong.
+#
+# numpy IS IN THE CONSTRAINT because trimesh would otherwise be free to pull
+# numpy 2.x back in and break kaolin, which requires <2.0.
+ARG TRIMESH_VERSION=4.8.3
+# xatlas IS THE UV-UNWRAP BACKEND `trimesh.unwrap()` IMPORTS, and the model-free
+# texturing stage calls it one line after `remove_duplicate_faces`:
+#
+#     nerf_runner.py:1139   mesh = mesh.unwrap()
+#     trimesh/base.py:2353    import xatlas
+#
+# Upstream declares it in neither `requirements.txt` nor `environment.yml` — the
+# same omission as the unpinned trimesh, and the last thing between a trained
+# Neural Object Field and a textured mesh. A prebuilt manylinux wheel, ~260 kB,
+# MIT-licensed, so it changes nothing about the NVIDIA licence position.
+ARG XATLAS_VERSION=0.0.11
+# PyOpenGL 3.1.0 CANNOT DRIVE PYRENDER'S OWN OSMESA BACKEND. `pyrender`'s
+# `platforms/osmesa.py` imports `OSMesaCreateContextAttribs`, and 3.1.0 ships
+# only `OSMesaCreateContext`. Checked per release: absent in 3.1.0, present in
+# 3.1.5 and 3.1.7.
+#
+# THE PIN THIS VIOLATES IS ITSELF THE DEFECT. The published pyrender 0.1.45
+# wheel records `Requires-Dist: PyOpenGL (==3.1.0)` — verified byte-for-byte in
+# the installed dist-info — pinning the one version whose OSMesa support its own
+# OSMesa backend cannot use. FoundationPose's own requirement is `pyOpenGL>=3.1`,
+# which 3.1.7 satisfies; the environment was already inconsistent anyway, with
+# pyopengl-accelerate at 3.1.10 against pyopengl 3.1.0.
+#
+# `pip check` therefore reports pyrender's metadata constraint. That is expected
+# and is left alone: pyrender is NOT changed to silence it, because the metadata
+# is what is wrong, not the runtime. `--no-deps` keeps the change to PyOpenGL
+# alone — nothing else is allowed to move to make version numbers look tidy.
+ARG PYOPENGL_VERSION=3.1.7
+# rtree IS TRIMESH'S SPATIAL INDEX, and the texture bake reaches it:
+#
+#     nerf_runner.py:1161   trimesh.proximity.closest_point(mesh, pts)
+#     trimesh/proximity.py:52  nearby_faces -> triangles_tree -> util.bounds_tree
+#     ModuleNotFoundError: No module named 'rtree'
+#
+# trimesh declares it only as an optional extra (`rtree; extra == "easy"`) and
+# FoundationPose's requirements.txt does not list it — the same omission as
+# xatlas. A prebuilt manylinux wheel with libspatialindex bundled, so no apt
+# package and no source build.
+ARG RTREE_VERSION=1.4.1
+RUN printf 'torch==%s\ntorchvision\nnumpy<2.0\n' "${TORCH_VERSION}" > /tmp/pin.txt \
+    && python -m pip install -c /tmp/pin.txt \
+        trimesh==${TRIMESH_VERSION} xatlas==${XATLAS_VERSION} \
+    && python -m pip install -c /tmp/pin.txt --no-deps \
+        PyOpenGL==${PYOPENGL_VERSION} \
+    && python -m pip install -c /tmp/pin.txt --no-deps \
+        rtree==${RTREE_VERSION} \
+    && rm -f /tmp/pin.txt
+
+# --- OSMesa: HEADLESS GL FOR THE MODEL-FREE TEXTURE BAKE --------------------
+#
+# The last stage of the official model-free build renders the reconstructed mesh
+# from the training views to bake a texture:
+#
+#     nerf_runner.py:1143   ModelRendererOffscreen(...)
+#     offscreen_renderer.py:47   pyrender.OffscreenRenderer(W, H)
+#
+# pyrender defaults to opening an X11 window through pyglet. Upstream never hits
+# this because their `docker/run_container.sh` runs with a real display mounted
+# in; THIS WORKER IS DELIBERATELY HEADLESS, and a container that needs an X
+# server to finish a build is a container that cannot run unattended.
+#
+# OSMesa is pyrender's own supported offscreen backend and needs no X server, no
+# display and no extra driver mounts — one apt package. It changes WHICH GL
+# BACKEND the official texture-baking code renders through, and nothing about
+# the NeRF, the reconstruction or the pose algorithm. FoundationPose itself is
+# untouched.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        libosmesa6 \
+    && rm -rf /var/lib/apt/lists/*
+
+# CHOSEN AT IMPORT TIME, so it is declared here rather than set late in Python.
+# PyOpenGL picks its platform the first time it is imported, and anything that
+# imports `pyrender` — or `OpenGL` directly, or `offscreen_renderer` — fixes the
+# choice for the whole process. Setting it inside FoundationPose source would be
+# both a patch and, in most import orders, too late.
+ENV PYOPENGL_PLATFORM=osmesa
+
 # --- RealSense runtime deps -------------------------------------------------
 #
 # `pyrealsense2` ships the librealsense runtime in its wheel; these are the
@@ -151,7 +283,20 @@ COPY worker /opt/wisepack-fp-worker
 # `mycpp/build` is where CMake leaves that module. Upstream appends it to
 # sys.path from Utils.py; the worker needs it importable directly, because it
 # probes for it BY NAME before accepting any estimate request.
-ENV PYTHONPATH=${FOUNDATIONPOSE_DIR}:${FOUNDATIONPOSE_DIR}/mycpp/build:/opt/wisepack-fp-worker
+# `bundlesdf` ITSELF IS ON THE PATH, and that is the whole mycuda fix. The
+# extensions were always built and always worked — `.so` files for `common` and
+# `gridencoder` are in the image and export the symbols the NeRF calls — but
+# upstream imports the same package two ways:
+#
+#     Utils.py:52          from bundlesdf.mycuda import common     (namespace pkg,
+#                                                                   already resolved)
+#     nerf_helpers.py:204  from mycuda.torch_ngp_grid_encoder.grid import GridEncoder
+#     Utils.py:973         from mycuda import common
+#
+# The second form needs the bundlesdf DIRECTORY on sys.path. Nothing is copied
+# and nothing is rebuilt: this is import visibility for binaries that already
+# exist at their official upstream locations.
+ENV PYTHONPATH=${FOUNDATIONPOSE_DIR}:${FOUNDATIONPOSE_DIR}/bundlesdf:${FOUNDATIONPOSE_DIR}/mycpp/build:/opt/wisepack-fp-worker
 
 WORKDIR /opt/wisepack-fp-worker
 

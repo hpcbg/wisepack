@@ -379,7 +379,21 @@ class WisepackScene:
         usd_mesh.CreateFaceVertexCountsAttr([3] * len(faces))
         usd_mesh.CreateFaceVertexIndicesAttr(faces.flatten().tolist())
         usd_mesh.CreateSubdivisionSchemeAttr().Set(UsdGeom.Tokens.none)
+        # A PHYSICALLY BASED SURFACE, not a flat colour. This was
+        # `DisplayColor(0.62, 0.64, 0.67)` — a light grey with no material at
+        # all, which rendered a steel tube as a white plastic rod on a light
+        # table. Appearance is an INPUT to the FoundationPose model-free method,
+        # which builds its object representation from rendered reference
+        # imagery, so the surface is declared once in
+        # `config/isaac_materials.yaml` and bound here.
+        #
+        # NOTHING ELSE MOVES: the mesh, its dimensions, its pose, its declared
+        # symmetry and its semantics are exactly as they were, and the instance
+        # mask comes from those semantics rather than from any pixel colour.
+        # The display colour is kept as a fallback for viewers that ignore
+        # materials; it is not what the RGB-D camera renders.
         usd_mesh.CreateDisplayColorAttr([Gf.Vec3f(0.62, 0.64, 0.67)])
+        self._bind_surface(usd_mesh.GetPrim(), model)
 
         xform = UsdGeom.Xformable(usd_mesh)
         xform.ClearXformOpOrder()
@@ -417,6 +431,29 @@ class WisepackScene:
         }
         print(f"{LOG_SCENE} item {item.item_id}: CAD {item.model_id} "
               f"({len(faces)} tris) from {mesh_file}")
+
+    def _bind_surface(self, prim, model) -> None:
+        """Give a CAD workpiece its declared physically based surface.
+
+        THE PROFILE IS CONFIGURATION, not an argument invented here: the object
+        model may name one, and otherwise the registry's declared default
+        applies. Reference views and query frames therefore render the same
+        surface by construction, which is what makes a model-free experiment
+        comparable at all.
+
+        A FAILURE IS REPORTED, NOT SWALLOWED. Rendering a workpiece with no
+        material would silently reproduce the flat-grey appearance this replaced,
+        and the reference imagery would be wrong in a way nothing downstream
+        could detect.
+        """
+        from .materials import bind, load_materials             # noqa: PLC0415
+
+        registry = load_materials()
+        profile = registry.require(getattr(model, "material_profile", ""))
+        bind(prim, profile, stage=stage_utils.get_current_stage(),
+             material_root=f"{WORLD}/Looks")
+        print(f"{LOG_SCENE} {model.model_id}: surface {profile.name} "
+              f"(metallic {profile.metallic}, roughness {profile.roughness})")
 
     def _add_camera(self) -> None:
         """A viewpoint that frames the table, the pick row, the bin and the arm.

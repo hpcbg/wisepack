@@ -255,8 +255,19 @@ def test_no_unofficial_mirror_appears_anywhere_in_the_resolver():
 
 
 def _setup_script():
-    return open(os.path.join(REPO, "scripts", "setup_foundationpose.sh"),
-                encoding="utf-8").read()
+    """The setup helper AND the library it sources, as one body of shell.
+
+    THE PROPERTIES BELOW ARE ABOUT WHAT RUNS, not about which file it lives in.
+    GPU passthrough and container ownership were moved into
+    `lib_foundationpose_gpu.sh` so the model-free scripts could reuse them
+    rather than restate them; sourcing it makes it part of the same executable
+    surface, so it is read here too. Reading only the entry point would have
+    let these safety checks pass while the code they guard sat in a file
+    nothing tested.
+    """
+    return "\n".join(
+        open(os.path.join(REPO, "scripts", name), encoding="utf-8").read()
+        for name in ("setup_foundationpose.sh", "lib_foundationpose_gpu.sh"))
 
 
 def _executable_lines(text: str) -> str:

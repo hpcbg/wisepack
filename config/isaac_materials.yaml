@@ -1,0 +1,84 @@
+# WISEPACK simulated-appearance materials.
+#
+# WHAT THIS IS FOR, AND WHAT IT IS NOT
+# ------------------------------------
+# The VISUAL appearance of a simulated workpiece, and nothing else. Geometry,
+# dimensions, pose, symmetry, mass and the instance mask are all declared
+# elsewhere and are not affected by anything in this file — a material changes
+# how a surface RESPONDS TO LIGHT, not what or where the object is.
+#
+# It is deliberately separate from `perception_objects.yaml`, which is the
+# object registry: that file says what a part IS (mesh, units, symmetry,
+# nominal geometry) and is consumed by the pose estimator and the planner. This
+# file says what a part LOOKS LIKE and is consumed only by the renderer.
+#
+# WHY IT EXISTS
+# -------------
+# Cylinder5 was drawn with a flat light-grey display colour — no material at all
+# — on a light grey table. It read as a white plastic rod, which is wrong twice
+# over: it does not look like the steel tube WISEPACK packages, and the
+# FoundationPose MODEL-FREE path builds its object representation FROM RENDERED
+# REFERENCE IMAGERY, so appearance is an input to that method rather than
+# decoration.
+#
+# WHAT IT DOES NOT FIX. Simulated segmentation uses the renderer's own exact
+# instance mask, which is derived from prim semantics and is completely
+# independent of RGB contrast. Changing the material does not improve, and is
+# not claimed to improve, simulated segmentation.
+#
+# DECLARED ONCE. Every consumer reads these numbers from here, so the reference
+# views, the simulated query and any CAD-vs-model-free comparison are rendered
+# with the same surface by construction rather than by three call sites
+# agreeing.
+
+#: Which profile a simulated workpiece uses when its object model names none.
+default_profile: brushed_steel
+
+profiles:
+
+  # --- the WISEPACK workpiece appearance ---------------------------------- #
+  #
+  # DELIBERATELY NOT MIRROR-POLISHED. A real D435 struggles with specular metal
+  # — sparse and noisy depth on a mirror surface — and the simulated
+  # D435-compatible camera does NOT reproduce that failure mode: it renders
+  # geometrically exact depth whatever the surface does. A chrome finish here
+  # would therefore LOOK like the hard case while being no harder at all, which
+  # would overstate what the simulated experiment demonstrates.
+  #
+  # Moderately rough brushed steel is both realistic for stock tube and honest
+  # about what the renderer models. Varying roughness deliberately is a later
+  # robustness experiment, not this one.
+  - name: brushed_steel
+    description: >-
+      Medium-grey brushed stainless steel. Clearly metallic, moderately rough,
+      not a mirror. Intended to resemble the stock tube WISEPACK packages.
+    shader: UsdPreviewSurface
+    # Linear-space reflectance, and a MEASURED-FIRST value did not survive
+    # contact with the renderer. Polished stainless has F0 ~0.52; at that value,
+    # under this cell's bright dome light and above a white table, a fully
+    # metallic surface reflects mostly white and the tube came out the same
+    # value as the surface it lies on — realistic for mirror-bright stock in a
+    # lightbox, useless as a workpiece appearance and failing the "visibly
+    # distinct from the work surface" requirement outright.
+    #
+    # 0.30 is the reflectance of machined / lightly oxidised carbon steel rather
+    # than polished stainless — a darker, greyer metal that is what stock tube
+    # normally looks like anyway. It is NOT black: black would be a value chosen
+    # to flatter a detector, and this is chosen to look like the part.
+    base_color: [0.30, 0.31, 0.33]
+    # A metal has no diffuse lobe. 1.0 is the physically correct value and is
+    # what makes the surface respond to the dome light as metal rather than as
+    # painted plastic.
+    metallic: 1.0
+    # 0.05 would be mirror chrome; 0.8 would be sandblasted. 0.45 is brushed
+    # stock — visible highlights that move with the view, no sharp reflections,
+    # and enough scattering that the surface reads as its own colour rather than
+    # as a picture of the dome light above it.
+    roughness: 0.45
+    # No lacquer layer on bare stock.
+    clearcoat: 0.0
+    clearcoat_roughness: 0.0
+    specular: 0.5
+    ior: 2.5
+    emissive_color: [0.0, 0.0, 0.0]
+    opacity: 1.0
