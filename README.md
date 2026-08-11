@@ -12,7 +12,7 @@ trail.
 |---|---|
 | **Scope** | Interview demonstrator, not the nine-month TRL6 implementation. See [Limitations](#17-limitations). |
 | **Runtime** | ROS 2 Jazzy on Vulcanexus / Fast DDS, Orion-LD (NGSI-LD), FastAPI dashboard |
-| **Host requirements** | Docker only. No host ROS 2, no host Vulcanexus, no host Python packages. A no-Docker mode also works ([`--core-only`](#one-command-full-acceptance-demonstration)). **Optional real-camera perception** additionally needs a camera the host can open, and uses a WISEPACK-owned `.venv-perception/` the launcher creates automatically — no other repository and no host middleware ([§15a](#15a-real-camera-perception)). |
+| **Host requirements** | Docker only. No host ROS 2, no host Vulcanexus, no host Python packages. A no-Docker mode also works ([`--core-only`](#one-command-full-acceptance-demonstration)). **Optional real-camera perception** additionally needs a camera the host can open, and uses a WISEPACK-owned `.venv-perception/` the launcher creates automatically — no other repository and no host middleware. The **optional RGB-D 6-DoF path** additionally needs an Intel RealSense D435, an NVIDIA GPU and the separately built FoundationPose container ([§15a](#15a-real-camera-perception)). |
 | **Licence** | MIT. Reuses **TEMPO**, **HARVEST** and **HARMONY** - see [NOTICE](NOTICE) and [§19](#19-attribution). |
 | **Tests** | unit, contract, QoS, cut-aware, inventory, logistics, whole-process, anomaly, diagnostics, behaviour-tree, media, Isaac backend and headless-browser |
 
@@ -56,6 +56,55 @@ camera has not been calibrated to the work area, so no validated camera→work-a
 transform exists. The missing extrinsic is represented as missing rather than as
 an identity transform, so the pose cannot be silently placed in a frame nobody
 measured. That calibration is the next step.
+
+**The missing extrinsic does not block container packing, and that is not a
+loophole.** Two different questions are being kept apart:
+
+| Question | Answered by | Status |
+|---|---|---|
+| *How big is this object?* | the named CAD model in `config/perception_objects.yaml` | **known** — D25 × L342 mm, bore 19 mm |
+| *Where is it on the bench?* | the camera→work-area extrinsic | **unknown**, and reported as unknown |
+
+The Digital Twin here is a **packing** twin: it asks how the object's geometry
+fits inside a container, and computes a **new pose inside that container**. The
+camera-frame x/y/z are provenance of the measurement and are **never** used as
+container coordinates — `to_waste_items()` reads the declared dimensions of a
+CAD-backed observation and does not touch the source pose.
+`tests/test_physical_batch_submission.py` pins this with a camera-frame position
+that would be absurd as a container coordinate. Where the object sits in the
+cell is still unanswered, and still gates **execution** through
+`workarea_pose_available`.
+
+### The live workflow, end to end
+
+The physical estimate is not a side artefact: it drives the ordinary WISEPACK
+workflow, over the real middleware, in one operator action.
+
+```text
+physical D435
+  -> FoundationPose
+  -> ObservationBatch
+  -> ROS 2 / DDS  (submit_observation_batch)
+  -> live orchestrator
+  -> replacement of the previous observation set
+  -> CAD-backed packing
+  -> Digital Twin validation
+  -> approval gate
+```
+
+Demonstrated, in one session and with no restart:
+
+| | |
+|---|---|
+| previous planar observations | **2 objects** |
+| physical FoundationPose batch | **exactly 1 Cylinder5** |
+| CAD geometry used for packing | **D25 × L342 mm, bore 19 mm** |
+| optimized plan | **1 placement in 1 container** |
+
+**Replacement, not accumulation.** Two planar observations plus one physical
+tube leaves **one** item, never three — the same contract every batch obeys. The
+new batch is a new scenario revision, so any outstanding approval is revoked and
+the workflow returns to the gate.
 
 ### Validation, honestly — there is no physical ground truth
 
@@ -141,14 +190,15 @@ detection and not classification, and no ROI is ever derived from a CAD model's
 dimensions. Choosing the region and naming the part are both operator decisions,
 which is the Human-in-the-Loop architecture applied to perception.
 
-## Run it — three commands
+## Run it
 
 ```bash
-# The dashboard. Finds the planar camera, the D435 and the simulated RGB-D by
-# itself; no camera environment variables.
+# The dashboard — both PHYSICAL camera paths run from here. Finds the planar
+# camera and the D435 by itself; no camera environment variables.
 ./run_wisepack_dashboard.sh
 
-# Simulated RGB-D perception through to planning, with quantitative error.
+# SIMULATED RGB-D FoundationPose through to planning, with quantitative error.
+# This one is still a shell script; it is not launched from the dashboard.
 ./scripts/stage_e.sh --reuse
 ```
 
@@ -481,8 +531,24 @@ Everything in this list was executed and verified on this machine.
    mode; the execution backend stayed simulated, because perception and
    execution are independent axes. See
    [§15a](#15a-real-camera-perception).
-   **What this does NOT prove:** any depth, 6-DoF or dimensional measurement, and
-   no detection RATE — see [§14](#14-kpi-definitions).
+   **What the PLANAR path does not prove:** any depth, 6-DoF or dimensional
+   measurement, and no detection RATE — see [§14](#14-kpi-definitions).
+9. **A real depth camera drives the same workflow in 6-DoF.** A physical Intel
+   RealSense D435, depth aligned to colour, depth-plane segmentation inside an
+   operator ROI, the exact Cylinder5 CAD model and FoundationPose produced a
+   valid 6-DoF pose in `camera_color_optical_frame`, which crossed ROS 2 / DDS as
+   an `ObservationBatch` (`submit_observation_batch`), **replaced** the previous
+   two planar observations in the live orchestrator, and was packed from its CAD
+   geometry — D25 × L342 mm, bore 19 mm — into **1 placement in 1 container**,
+   validated by the same independent Digital Twin validator and held at the same
+   approval gate. See [Physical RGB-D 6-DoF
+   perception](#physical-rgb-d-6-dof-perception--intel-realsense-d435).
+   **What this proves, precisely:** there is **no external ground truth for the
+   physical pose**, so **no physical accuracy claim is made** — only
+   repeatability (centre spread 0.43 mm, axis spread 0.22°) and independent
+   plausibility checks, each able to refute a pose and none able to confirm one.
+   The **quantitative** pose error (≈4.0 mm, ≈0.83°) comes from the **simulated**
+   Isaac run, where ground truth exists and is read only to score the estimate.
 
 ## 3. What is simulated - read this before quoting any number
 
@@ -503,7 +569,9 @@ so the table below says which level produced it.
 | FIWARE audit trail | **REAL** | Orion-LD, NGSI-LD, over DDS | site-level identity and access control |
 | DDS to FIWARE latency | **MEASURED** | When the benchmark has been run; `not measured` otherwise | production network conditions |
 | Perception, `sim` (default) | **SIMULATED** | Ground-truth scenario poses stand in for detection | camera, RGB-D, detector, pose estimation |
-| Perception, `camera` | **MEASURED — planar pose only** | A real USB camera through the configured perception provider. Object x/y/yaw are measured on a calibrated plane and become the objects WISEPACK plans from | depth, 6-DoF pose, object dimensions (configured proxy geometry is used), and any measured detection RATE — see §14 |
+| Perception, `camera` — **physical planar RGB** | **MEASURED — planar pose** | A real USB camera through the `planar_fasterrcnn` method. Object x/y/yaw are **real, measured** on an ArUco-calibrated plane and become the objects WISEPACK plans from. Object dimensions are **configured proxy geometry**, declared not measured | depth, 6-DoF pose, measured object dimensions, and any measured detection RATE — see §14 |
+| Perception, `camera` — **physical RGB-D** | **MEASURED — 6-DoF pose, camera frame** | A **real Intel RealSense D435**: measured RGB-D with depth aligned to colour, `depth_plane_foreground` segmentation inside an operator ROI, and a **FoundationPose 6-DoF pose in `camera_color_optical_frame`**. Packing geometry is the **exact selected CAD model**, not a proxy | **no external physical pose ground truth** — repeatability and plausibility are reported, accuracy is not; and no camera→work-area extrinsic, so `workarea_pose_available` is false |
+| Perception, **simulated RGB-D** | **SIMULATED ACQUISITION, real estimator** | Simulated **D435-compatible** RGB-D from Isaac with an exact synthetic instance mask, through the **same FoundationPose worker and provider** as the physical path. This is where the quantitative pose error comes from | nothing about a real sensor: no lens, no depth noise, no ambient IR. **Simulator ground truth is used only for evaluation** — never given to FoundationPose, never reaching the planner |
 | Robot, default backend | **SIMULATED - LOGICAL** | Deterministic workflow advance, geometric placement per the accepted plan, seeded grasp failures and workflow events | mass, inertia, gravity, kinematics, contacts, friction, collision response, settling |
 | Robot, Isaac backend | **PHYSICS-BASED SIMULATION** | A selected articulated manipulator — UFACTORY xArm 7 or Franka Emika Panda — with rigid bodies, mass, gravity, collision geometry, contacts, friction and settling in PhysX. Cylinders are carried and released, never teleported, and the measured settled pose is reported back | real hardware, safety functions, calibration, perception |
 | Pick / end-to-end success rate, logical backend | **SIMULATED LOGICAL OUTCOME** | The configured failure probability, nothing else | any physical cause of failure |
@@ -521,9 +589,12 @@ Reading the table:
   grasp or a displaced item there has a mechanical cause that can be inspected;
 * **neither mode is a real robot experiment**, and no result here is evidence
   about hardware;
-* **camera perception is real but planar**: the **Physical camera** object
-  source measures x/y/yaw from a real frame; depth, 6-DoF pose and object dimensions
-  are not measured;
+* **camera perception is real, in two methods that measure different things**:
+  the planar method measures x/y/yaw from a real frame and uses configured proxy
+  dimensions; the RGB-D method measures a 6-DoF pose from a real D435 in the
+  camera frame and packs the exact CAD geometry. Neither has an external
+  physical pose ground truth, so **no physical accuracy number is published** —
+  the quantitative error comes from the simulated RGB-D run;
 * **physical-camera observations are not yet synchronized into the Isaac
   scene** — Isaac initializes object poses from its existing scenario source.
 
@@ -602,11 +673,14 @@ Mission-Task-Skill, in the four layers the proposal describes.
  PERCEPTION      Task generator ......... deterministic, seeded
                  Perception simulator ... SIMULATED, the default
                                           (WISEPACK_PERCEPTION_SOURCE=sim)
-                 Camera provider ........ OPTIONAL, REAL: USB camera ->
+                 Camera providers ....... OPTIONAL, REAL. Two methods:
+                                          planar_fasterrcnn: USB camera ->
                                           Faster R-CNN -> ArUco-calibrated
-                                          planar x/y/yaw (see §15a).
-                                          Extension point for RGB-D / 6-DoF:
-                                          YOLOv12-OBB + SAM2 + FPFH/ICP
+                                          planar x/y/yaw;
+                                          foundationpose_rgbd: RealSense D435 ->
+                                          aligned RGB-D -> depth-plane mask ->
+                                          FoundationPose -> 6-DoF, camera frame
+                                          (see §15a)
  OPTIMIZATION    Packing optimizer ...... geometry_aware_ep_bfd, 3 strategies
  + DIGITAL TWIN  Digital Twin validator . independent process, 9 hard constraints
  HITL            py_trees orchestrator .. the approval gate
@@ -742,9 +816,11 @@ launcher finds it for you:
 ./run_wisepack_dashboard.sh
 ```
 
-discovers the planar RGB camera on this host and starts its detector, exposes an
-attached RealSense D435 through the FoundationPose worker, and keeps simulated
-RGB-D available. **No camera environment variables are required.** The session
+discovers the planar RGB camera on this host and starts its detector, and exposes
+an attached RealSense D435 through the FoundationPose worker. **No camera
+environment variables are required.** (The *simulated* RGB-D FoundationPose
+demonstration is separate and stays a shell script — `./scripts/stage_e.sh
+--reuse`.) The session
 still opens on the ordinary preset workflow; the Scenario panel's *Object
 source* switches to the camera whenever you like, applies to the NEXT run, and
 never touches the run on screen.
@@ -1561,7 +1637,9 @@ and Logistics status panels alongside the ROS topic and FIWARE mapping diagnosti
 | ROS 2 / DDS transport | Vulcanexus Fast DDS | **real** | - |
 | FIWARE event mapping | Orion-LD DDS bridge | **live** | - |
 | Physical 2-D camera | **live — selectable per run as Object source: Physical camera** | real | detected count |
-| Physical RGB-D camera (the proposal's depth pipeline) | future | not implemented | no |
+| Physical RGB-D camera (the proposal's depth pipeline) | **live — Intel RealSense D435 + FoundationPose, acquired from the dashboard** | **measured 6-DoF pose** in the camera frame; no external physical pose ground truth | detected count |
+| Simulated RGB-D FoundationPose (quantitative pose error) | `./scripts/stage_e.sh --reuse` | **measured against simulator ground truth** | no |
+| Camera→work-area extrinsic (physical) | future | not implemented — `workarea_pose_available` is false; packing uses CAD geometry, execution stays gated | no |
 | MoveIt2 execution | future | not implemented | no |
 
 The `/diagnostics` page renders this table live and, in ROS/FIWARE mode, marks
@@ -2698,15 +2776,17 @@ are not separate simulator instances.
 
 ## 15a. Real camera perception
 
-**A camera is not an execution backend.** WISEPACK has three orthogonal axes and
-this section adds the third:
+**A camera is not an execution backend.** WISEPACK has three system-level axes —
+dashboard/data source, object source and execution backend
+([§5](#three-orthogonal-axes)) — and this section is about the second of them:
 
 ```text
 WISEPACK PERCEPTION        where the OBJECT OBSERVATIONS come from
     sim
     camera
-      +-- fasterrcnn_bottle      <- the provider in use today
-      +-- (future) yolo_obb, rgbd_pose, segmentation, ...
+      +-- fasterrcnn_bottle      <- planar RGB, the default
+      +-- foundationpose_rgbd    <- RGB-D 6-DoF, physical D435 and simulated
+      +-- (future) yolo_obb, segmentation, ...
           |
           v
 generic WISEPACK object observations   (PhysicalObservation / ObservationBatch)
@@ -2722,7 +2802,9 @@ EXECUTION BACKEND          who PERFORMS the approved placements
 **WISEPACK owns perception.** A *provider* is an implementation behind that
 boundary; the perception SOURCE answers only "where do observations come from",
 never "how the frame was read". That second question is the **perception
-method**, a third independent axis:
+method** — not a fourth system-level axis, but an **additional independent
+per-run selection within perception**, made only once the object source is
+`camera`:
 
 ```
 PERCEPTION METHOD          HOW a physical frame becomes observations
@@ -2741,7 +2823,8 @@ pose-estimation pipeline, not a detector.
 camera, no GPU, no licensed weights and no CAD model. Adding a method is a new
 file in `perception/providers/` and nothing above it moves.
 
-Every combination is legal and none implies another:
+The selections are architecturally independent; capability-specific limitations
+are stated explicitly below.
 
 | | `simulated` execution | `isaac` execution |
 |---|---|---|
@@ -2821,12 +2904,24 @@ Availability is re-checked continuously, so starting the perception service —
 from the launcher, or by hand in another terminal — makes the camera selectable
 **without restarting the dashboard**.
 
-#### One control, one meaning
+#### Two actions, one meaning each
 
-The Scenario panel's button and the Physical Perception panel's button send the
-**same** command: `detect_physical_objects` acquires a batch and, when the run on
-screen came from a preset, starts a camera run first. They are two entry points
-to one operation, not two variants of it.
+The physical camera has **two perception methods**, and they do not share a
+command. Each control means exactly one thing, and neither is a variant of the
+other:
+
+| Method | Control | What it sends | How the batch reaches the orchestrator |
+|---|---|---|---|
+| **Planar RGB — Faster R-CNN** | *Detect & plan* (Scenario panel) and *Detect physical objects* (Physical Perception panel) — **the same command from two entry points** | `detect_physical_objects` | the orchestrator **pulls** the batch from the perception service over HTTP and republishes it |
+| **Physical RGB-D — FoundationPose** | *Acquire & estimate* (Physical Perception panel), after picking the CAD model and the ROI | a new acquisition through the **shared physical pipeline** (`perception/physical_pipeline.py`), then `submit_observation_batch` in live ROS/DDS mode | the batch is **pushed** to the orchestrator, already measured, over the ordinary operator command path |
+
+Both commands are generic: they carry an `ObservationBatch` and nothing about a
+detector, a camera model or a part number. Which method produced a batch is
+**provenance inside it**, never a branch in the orchestrator.
+
+`detect_physical_objects` additionally starts a camera run first when the run on
+screen came from a preset; `submit_observation_batch` applies the same new-run
+rule when it adopts a batch on a preset run.
 
 ### The demonstration, end to end
 
@@ -2984,9 +3079,26 @@ The second perception method estimates a **full 6-DoF pose** of a *known* object
 by matching its CAD mesh against an RGB-D frame, using
 [NVLabs FoundationPose](https://github.com/NVlabs/FoundationPose).
 
-**It is opt-in and it is not part of an ordinary WISEPACK run.** Preset
-scenarios and the planar method never touch it; nothing in
-`./run_wisepack_dashboard.sh` builds it.
+**It is an optional capability, and its worker is built separately.** Nothing in
+`./run_wisepack_dashboard.sh` builds it, preset scenarios and the planar method
+never touch it, and a deployment that never builds it is unaffected. What
+follows assumes `./scripts/setup_foundationpose.sh` has built the image and
+started the worker.
+
+**Once the worker is available, the physical path is an ordinary dashboard
+action.** `./run_wisepack_dashboard.sh` detects an attached D435 through the
+worker and offers *Acquire & estimate*; the resulting batch goes through the
+same packing, Digital Twin validation and approval gate every other run uses.
+There is no separate application mode and no shell command in between.
+
+| | How it is run | What it gives |
+|---|---|---|
+| **Physical** RGB-D, live D435 | the **normal WISEPACK dashboard** — *Acquire & estimate*; `./scripts/physical_c5.sh` runs the same pipeline from a shell for diagnostics | a 6-DoF pose in the camera frame, straight into the workflow. **No external pose ground truth exists** |
+| **Simulated** RGB-D | `./scripts/stage_e.sh --reuse` — **a shell script, not a dashboard control** | the quantitative pose error, against Isaac ground truth |
+
+The simulated RGB-D demonstration **still requires `./scripts/stage_e.sh
+--reuse`** and cannot yet be launched from the dashboard; nothing here claims it
+can.
 
 **Licensing.** FoundationPose is third-party software under the NVIDIA Source
 Code License — *non-commercial research use only*. WISEPACK is MIT and **vendors
@@ -3088,7 +3200,7 @@ which of seven layers failed: host USB, container visibility, SDK enumeration,
 model/serial, stream start, verified alignment, intrinsics and depth scale.
 
 **Validated on live hardware.** All seven checks pass against a physical Intel
-RealSense D435 (serial `317222072788`, firmware 5.17.0.10, USB 3.2), and the
+RealSense D435 (firmware 5.17.0.10, USB 3.2), and the
 whole path has been run end to end on a real Cylinder5 — see
 [Physical RGB-D 6-DoF perception](#physical-rgb-d-6-dof-perception--intel-realsense-d435).
 The calibration is read from the device: colour intrinsics fx 913.14, fy 911.73,
@@ -3499,14 +3611,42 @@ In the live modes the same command reaches the orchestrator over the ordinary
 operator path, and the orchestrator fetches the batch over HTTP and republishes
 it on `/wisepack/perception/*` from inside the container.
 
-Each detection **replaces** the current observation. Move the bottles, detect
-again, and WISEPACK re-plans from exactly the objects now on the table - never
-those plus the ones that used to be there. A new batch is a new batch revision,
-so any outstanding approval is revoked and the workflow returns to the gate.
+**When the batch has already been measured, it is submitted rather than
+requested.** `submit_observation_batch` is the generic operator command for an
+`ObservationBatch` that exists already — the RGB-D path uses it because its
+estimator, its depth camera and its CAD meshes live in the FoundationPose worker
+and the dashboard's own process, and a second inference implementation inside
+the orchestrator is exactly what the shared pipeline exists to prevent:
+
+```bash
+curl -sX POST localhost:8080/api/command \
+  -H 'Content-Type: application/json' \
+  -d '{"command":"submit_observation_batch","batch":{ ... }}'
+```
+
+The command carries **only** a serialised `ObservationBatch`. Which method
+measured it is provenance inside the batch, so the orchestrator learns nothing
+about a detector, a depth camera or a CAD model. **The orchestrator remains the
+workflow authority**: it is still the single writer of `/wisepack/perception/*`,
+it adopts the batch on the thread that owns the engine rather than in a DDS
+callback, and it applies the same new-run rule, revision bump, re-plan,
+revalidation and approval gate a pulled batch gets. A publish is not an outcome —
+the dashboard watches the orchestrator's own published scenario and reports
+plainly if the re-plan did not happen.
+
+Each detection or submission **replaces** the current observation. Move the
+objects, acquire again, and WISEPACK re-plans from exactly the objects now on the
+table - never those plus the ones that used to be there. **Replacement semantics
+are identical across both commands**: two planar observations followed by one
+physical Cylinder5 leaves one item, not three. A new batch is a new batch
+revision, so any outstanding approval is revoked and the workflow returns to the
+gate.
 
 With no camera available the command is **refused with a reason**. A button
 labelled "Detect" that quietly ran the preset generator would be a lie, and a
-failed camera scan never falls back to generated objects.
+failed camera scan never falls back to generated objects. A submitted batch that
+failed, or that carries no observations, is refused too — an empty batch would
+clear the scenario without having measured anything.
 
 #### Dashboard
 
@@ -3549,8 +3689,10 @@ build if a detector-specific string is ever hard-coded into the page.
 | Interface | Direction | Payload |
 |---|---|---|
 | `GET /api/perception` | dashboard | source, health, current batch, poses, scene objects |
-| `POST /api/command {"command":"detect_physical_objects"}` | dashboard | one-shot detection |
+| `POST /api/command {"command":"detect_physical_objects"}` | dashboard | one-shot detection; the orchestrator **pulls** the batch |
+| `POST /api/command {"command":"submit_observation_batch"}` | dashboard / any operator client | an **already-measured** `ObservationBatch` is **pushed** to the orchestrator, which adopts it exactly as a pulled one |
 | `GET /api/perception/image/{annotated,raw,snapshot}` | dashboard | JPEG, proxied from the detector |
+| `POST /api/perception/physical/acquire` | dashboard | a **new** physical D435 acquisition + FoundationPose estimate, then the batch is applied (submitted over DDS in live modes) |
 | `POST /api/v1/detect` (service) | HTTP | one-shot detection -> `ObservationBatch` |
 | `/wisepack/perception/objects_json` | ROS 2, `std_msgs/String` | the WISEPACK-domain `ObservationBatch`, published by the **orchestrator** |
 | `/wisepack/perception/status_json` | ROS 2, `std_msgs/String` | perception status, published by the **orchestrator** |
@@ -3681,14 +3823,26 @@ backend-neutral list of
 ```json
 {"object_id": "physical-cylinder-001", "object_type": "cylindrical_proxy",
  "frame_id": "wisepack_workarea",
- "pose": {"x_mm": 82.4, "y_mm": 46.1, "z_mm": 0.0, "yaw_deg": -31.0},
+ "pose": {"x_mm": 82.4, "y_mm": 46.1, "z_mm": 0.0, "yaw_deg": -31.0,
+          "reference_point": "object_body"},
+ "tube_axis_line": null,
  "geometry": {"shape": "cylinder", "diameter_mm": 65, "length_mm": 215,
-              "source": "configured_proxy"}}
+              "inner_diameter_mm": null, "source": "configured_proxy"},
+ "model_id": "", "perception_method": "planar_fasterrcnn"}
 ```
 
-A scene synchronizer needs an identity, a planar pose, a geometry and the frame
-the pose is in - which is exactly this, and nothing else. **No consumer will
-ever need to parse bottle-specific detector JSON inside Isaac.**
+A scene synchronizer needs an identity, a pose, a geometry and the frame the pose
+is in - which is exactly this, and nothing else. **No consumer will ever need to
+parse bottle-specific detector JSON inside Isaac.**
+
+The same shape carries an RGB-D observation without changing: the pose is the
+**physical body centre** rather than the CAD origin (for a planar observation the
+two coincide), `tube_axis_line` holds the measured long axis as a **line** when
+the method measured one, and `model_id` names the CAD part so a twin can draw the
+real geometry instead of an anonymous cylinder. What is still missing for an RGB-D
+observation is the frame: `frame_id` is `camera_color_optical_frame` and
+`workarea_pose_available` is false, so the synchronizer has nothing to place
+against until the camera→work-area extrinsic exists.
 
 ## 16. Tests and evidence
 
@@ -3739,11 +3893,13 @@ Figures in `images/generated/` are produced by running the real pipeline -
 
 Stated plainly, because a demonstrator that hides its edges is not evidence.
 
-1. **Perception is real but PLANAR, and optional.**
-   selecting **Object source: Physical camera** runs a real USB camera through
-   a real Faster R-CNN detector and an ArUco-calibrated plane, and the resulting
-   observations are what the planner packs ([§15a](#15a-real-camera-perception)).
-   What that gives, and what it does not:
+1. **Perception is real and optional, in two methods with different limits.**
+   Selecting **Object source: Physical camera** runs a real camera through the
+   selected perception method, and the resulting observations are what the
+   planner packs ([§15a](#15a-real-camera-perception)).
+
+   The **planar** method (`planar_fasterrcnn`, a USB camera, Faster R-CNN and an
+   ArUco-calibrated plane):
 
    * **measured:** object x, y and yaw in millimetres on the calibrated plane,
      plus the detector's own confidence per object;
@@ -3751,14 +3907,32 @@ Stated plainly, because a demonstrator that hides its edges is not evidence.
      measures where an object is, not how big it is, so the proxy cylinder's
      diameter and length are declared and every item is stamped
      `geometry_source: "configured_proxy"`;
-   * **not implemented:** RGB-D / depth, 6-DoF pose, arbitrary geometry
-     reconstruction;
+   * **not measured:** a detection RATE. Confidence near 1.00 is not 100%
+     accuracy — see limitation 3 and [§14](#14-kpi-definitions).
+
+   The **RGB-D** method (`foundationpose_rgbd`, a physical Intel RealSense D435):
+
+   * **measured:** RGB-D with depth aligned to colour, a depth-plane
+     segmentation, and a **full 6-DoF pose** in `camera_color_optical_frame`;
+     packing geometry is the **exact CAD model**, not a proxy;
+   * **no external ground truth, so no accuracy claim.** Nothing knows where the
+     physical tube truly is. Repeatability (0.43 mm, 0.22°) and independent
+     plausibility checks are published; an accuracy figure is not. The
+     quantitative error (≈4.0 mm, ≈0.83°) is from the **simulated** run;
+   * **not implemented:** the camera→work-area extrinsic.
+     `workarea_pose_available` stays false. Container packing is unaffected
+     because it uses the CAD geometry, but **execution is still gated** by it;
+   * **operator-supplied, not inferred:** the object identity (`model_id`) and,
+     on a crowded bench, the ROI;
+   * **still a shell script:** the *simulated* RGB-D demonstration
+     (`./scripts/stage_e.sh --reuse`) is not launchable from the dashboard.
+
+   Common to both:
+
    * **not implemented:** synchronizing the physical `ObservationBatch` into the
      **Isaac scene** — Isaac still builds its scene from ground-truth scenario
      poses. The boundary for that work already exists and is exercised:
-     `ObservationBatch.scene_objects()`;
-   * **not measured:** a detection RATE. Confidence near 1.00 is not 100%
-     accuracy — see limitation 3 and [§14](#14-kpi-definitions).
+     `ObservationBatch.scene_objects()`.
 
    The default remains `sim`, which uses ground-truth scenario poses and says so.
    Extension point for the simulated path: `wisepack_sim/perception_sim.py::detect()`.
@@ -3809,7 +3983,7 @@ Stated plainly, because a demonstrator that hides its edges is not evidence.
 
 | Step | Work | Maps to |
 |---|---|---|
-| 1 | **Done for planar RGB:** a real camera provider (Faster R-CNN + ArUco) now measures x/y/yaw and feeds the ordinary planning path ([§15a](#15a-real-camera-perception)). What remains on this line: **(a)** synchronize the physical `ObservationBatch` into the Isaac scene via `scene_objects()`, **(b)** RGB-D / depth, **(c)** 6-DoF pose and measured geometry (YOLOv12-OBB + SAM2 + FPFH/ICP), **(d)** a labelled ground-truth trial so KPI1 becomes a measured detection rate rather than `not_measured` | O1, KPI1, MS2 |
+| 1 | **Done for planar RGB:** a real camera provider (Faster R-CNN + ArUco) measures x/y/yaw and feeds the ordinary planning path. **Done for RGB-D:** a physical Intel RealSense D435 and FoundationPose measure a 6-DoF pose from real depth, and the CAD-backed batch drives packing, validation and the approval gate over ROS 2 / DDS ([§15a](#15a-real-camera-perception)). What remains on this line: **(a)** synchronize the physical `ObservationBatch` into the Isaac scene via `scene_objects()`, **(b)** the **camera→work-area extrinsic**, so a measured pose becomes placeable and `workarea_pose_available` can be true, **(c)** an external physical pose reference, so the physical 6-DoF result can be scored rather than only shown repeatable, **(d)** a labelled ground-truth trial so KPI1 becomes a measured detection rate rather than `not_measured` | O1, KPI1, MS2 |
 | 2 | Exact geometry for the five approximated classes (convex decomposition or voxel masks) instead of bounding boxes | O3, KPI4 |
 | 3 | **Add the real xArm 7 execution backend** using the same ROS 2 execution contract, with hardware drivers, calibrated robot/camera/tool/facility frames, safety integration and hardware-aware motion planning. **Retain Isaac as the pre-deployment and regression-testing environment.** There are now two simulator levels - the lightweight logical simulator and the Isaac physics simulator - and the hardware backend is a **sibling of Isaac, not a replacement for all simulation** | O2, KPI2/KPI3, MS4 |
 | 4 | Add **collision-aware motion planning** to the Isaac execution backend. This is the structural gap the xArm 7 migration exposed: differential IK has no collision model and no null-space control, so a shorter arm working a bench-scale cell folds into the space its own remaining source objects occupy and disturbs them. Moving coordinates further apart took a four-item xArm run from 1/4 to 3/4 and cannot take it further — see [Measured xArm 7 behaviour](#measured-xarm-7-behaviour-and-what-is-not-yet-solid) | O2, MS4 |
