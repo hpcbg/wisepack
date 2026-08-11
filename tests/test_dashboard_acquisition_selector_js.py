@@ -87,6 +87,30 @@ function sample(w, tag) {
     note: note ? note.textContent : "",
     method: methodSample(w),
     button: (w.document.querySelector("#c-reset") || {}).textContent || "",
+    panels: panelSample(w),
+  };
+}
+
+// The two RGB-D result panels and the planar image. A RESULT BELONGS TO A RUN:
+// each of these used to populate from an artefact on disk, so a freshly loaded
+// preset session displayed results it had nothing to do with.
+function panelSample(w) {
+  const shown = (sel) => {
+    const n = w.document.querySelector(sel);
+    return Boolean(n) && n.style.display !== "none";
+  };
+  const models = (sel) => {
+    const n = w.document.querySelector(sel);
+    return n ? { value: n.value, options: [...n.options].map(o => o.value),
+                 labels: [...n.options].map(o => o.textContent) }
+             : { value: null, options: [], labels: [] };
+  };
+  return {
+    simBlock: shown("#sim-block"),
+    physBlock: shown("#phys-block"),
+    planarImage: shown("#percep-image"),
+    physModel: models("#phys-model"),
+    simModel: models("#sim-model"),
   };
 }
 
@@ -775,3 +799,83 @@ def test_the_preset_choice_is_not_stored_as_an_acquisition_device(server):
         f"settings.acquisition is {state['settings']['acquisition']!r}; a preset "
         "acquires from no device and the honest value is empty")
     assert document["samples"], "the driver produced no samples"
+
+
+# --------------------------------------------------------------------------- #
+# 7. Reported in references/Bugs.pdf, second round
+# --------------------------------------------------------------------------- #
+
+
+def test_a_preset_session_shows_no_rgbd_results(server):
+    """REPORTED: "On preset scenario the Simulated RGB-D run and Physical RGB-D
+    6-DoF sections are NOT supposed to be populated with data."
+
+    Both panels used to render from an artefact on disk, so a session that had
+    acquired nothing displayed a physical D435 result and a simulated one —
+    labelled stale, but populated, which invites the reading that the preset run
+    measured them.
+    """
+    document = _drive(server)
+    for tag in ("load", "poll-1", "poll-2"):
+        panels = _by_tag(document, tag)["panels"]
+        assert panels["simBlock"] is False, (
+            f"at {tag} a preset session shows the simulated RGB-D result")
+        assert panels["physBlock"] is False, (
+            f"at {tag} a preset session shows the physical D435 result")
+
+
+def test_a_preset_session_shows_no_planar_detector_image(server):
+    """The annotated frame belongs to the planar detector and to the run it
+    measured; a preset run has neither."""
+    panels = _by_tag(_drive(server), "load")["panels"]
+    assert panels["planarImage"] is False
+
+
+def test_selecting_the_d435_shows_its_controls_before_anything_is_acquired(
+        server):
+    """The panel is where the model and the ROI are chosen, so selecting the
+    source has to bring it on screen — that is a DRAFT, not an acquisition."""
+    document = _drive(server, state="all-available",
+                      selectValue=ACQUISITION_REALSENSE)
+    panels = _by_tag(document, "after-edit")["panels"]
+    assert panels["physBlock"] is True, (
+        "the physical RGB-D controls are not reachable after selecting it")
+
+
+# ONLY THE PHYSICAL DROPDOWN IS EXERCISED HERE. This fixture runs with
+# `WISEPACK_DISABLE_SIMULATED_RGBD=1`, so the backend rightly refuses to select
+# the simulated source and its panel never renders — driving it would need a
+# FoundationPose worker, which is not a deterministic test dependency. The
+# simulated control reads the SAME `default_model_id` from the SAME endpoint;
+# `tests/test_object_model_default.py` asserts that it does.
+@pytest.mark.parametrize("choice,control", [
+    (ACQUISITION_REALSENSE, "physModel"),
+])
+def test_the_cad_dropdown_defaults_to_the_declared_model(server, choice, control):
+    """REPORTED: "the drop down menu show tutorial_bolt, but it should be
+    cylinder5 as default and tested one."
+
+    An acquisition ran against the tutorial bolt because the control opened on
+    whatever the list put first and then remembered whatever ran last.
+    """
+    document = _drive(server, state="all-available", selectValue=choice)
+    # CHECKED ONCE THE PANEL HAS RENDERED. The property is which model the
+    # control opens on, not how many milliseconds it takes to be populated —
+    # both panels fetch their list, and the physical and simulated ones do it on
+    # different polls.
+    models = _by_tag(document, "poll-2")["panels"][control]
+    assert models["options"], f"the {control} dropdown was never populated"
+    assert models["value"] == "cylinder5", (
+        f"the {control} dropdown opens on {models['value']!r}")
+
+
+def test_the_reference_bolt_is_last_and_labelled(server):
+    """It is a regression asset, not a workpiece, and must not read like one."""
+    document = _drive(server, state="all-available",
+                      selectValue=ACQUISITION_REALSENSE)
+    models = _by_tag(document, "poll-2")["panels"]["physModel"]
+    assert models["options"], "the model list is empty"
+    assert models["options"][-1] == "tutorial_bolt", (
+        f"the list ends with {models['options'][-1]!r}; workpieces come first")
+    assert "reference asset" in models["labels"][-1].lower(), (
+        f"the bolt reads {models['labels'][-1]!r}")

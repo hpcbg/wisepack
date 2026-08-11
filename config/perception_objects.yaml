@@ -34,6 +34,20 @@
 # which rotates the mesh onto itself and reports the residual. Where a value
 # came out differently from the obvious guess, the entry says so.
 
+# WHICH MODEL A CONTROL OFFERS FIRST when the operator has not chosen one.
+#
+# DECLARED HERE, never derived from ordering or from what was used last. An
+# alphabetical list put `cylinder1` first, and a "last successful model" memory
+# made a mistaken choice permanent: an acquisition ran against `tutorial_bolt`
+# and registered a bolt CAD onto a photograph of tubes, which produces a
+# confident wrong pose (13.5 mm centre spread, 56 deg axis spread) rather than a
+# visible failure. Cylinder5 is the part every physical and simulated run in
+# this repository was validated on.
+#
+# It must name an object below, and it must not name a `reference_*` type:
+# those exist to exercise the estimator against a saved dataset.
+default_model_id: cylinder5
+
 objects:
 
   # --- the first deterministic regression object -------------------------- #

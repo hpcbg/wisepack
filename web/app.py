@@ -2464,18 +2464,28 @@ def api_perception_physical_models():
     try:
         _ensure_perception_path()
         from physical_pipeline import eligible_models              # noqa: PLC0415
+        from wisepack_core.rgbd import load_object_registry        # noqa: PLC0415
         models = eligible_models(REPO)
+        default = load_object_registry(repo_root=REPO).preferred(
+            "foundationpose_rgbd")
     except Exception as exc:                                       # noqa: BLE001
         return {"models": [], "error": f"{type(exc).__name__}: {exc}"}
     document = _physical_c5_document() or {}
     return {
         "models": models,
         "error": "",
-        # THE LAST SUCCESSFUL SETTINGS, so the operator does not retype them.
-        # Prefilled, never applied on their own: nothing acquires until the
-        # button is pressed.
-        "last_model_id": document.get("model_id", ""),
+        # WHICH ONE A CONTROL OPENS ON, declared in the registry rather than
+        # left to alphabetical order or to whatever ran last. Both of those put
+        # the tutorial bolt in front of an operator acquiring a tube, and a bolt
+        # CAD registered onto a photograph of tubes returns a confident wrong
+        # pose rather than failing visibly.
+        "default_model_id": default,
+        # THE LAST ROI, so the operator does not retype it. NOT the last model:
+        # that memory is what made one mistaken choice permanent.
         "last_roi_px": document.get("operator_roi_px"),
+        # Reported for provenance — what the last acquisition actually used —
+        # and deliberately NOT used to preselect the control.
+        "last_model_id": document.get("model_id", ""),
     }
 
 

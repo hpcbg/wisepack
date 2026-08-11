@@ -430,15 +430,24 @@ def eligible_models(repo_root: str = REPO) -> List[Dict[str, Any]]:
             continue
         if not model.mesh_exists(registry.root):
             continue
+        label = (f"{model.model_id} — D{model.diameter_mm} x L{model.length_mm} mm"
+                 if model.diameter_mm and model.length_mm else model.model_id)
         listing.append({
             "model_id": model.model_id,
-            "label": f"{model.model_id} — D{model.diameter_mm} x L{model.length_mm} mm"
-                     if model.diameter_mm and model.length_mm else model.model_id,
+            # SAID IN THE OPTION ITSELF. A regression asset that reads like an
+            # ordinary part is how one came to be selected for a live
+            # acquisition of a tube.
+            "label": label + (" (reference asset — not a WISEPACK part)"
+                              if model.is_reference else ""),
             "diameter_mm": model.diameter_mm,
             "length_mm": model.length_mm,
             "object_type": model.object_type,
+            "is_reference": model.is_reference,
         })
-    return sorted(listing, key=lambda m: m["model_id"])
+    # WORKPIECES FIRST, reference assets last. Ordering is not a substitute for
+    # the declared default, but a list that opens on a bolt invites the mistake
+    # the default exists to prevent.
+    return sorted(listing, key=lambda m: (m["is_reference"], m["model_id"]))
 
 
 def run(model_id: str, roi_px: Optional[List[int]] = None, frames: int = 5,

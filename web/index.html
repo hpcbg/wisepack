@@ -500,7 +500,7 @@
       <div style="margin-bottom:8px">
         <img id="percep-image" alt="annotated detector result"
              style="max-width:100%;border-radius:6px;display:none"/>
-        <div id="percep-noimage" class="note">no detector image yet — run a detection</div>
+        <div id="percep-noimage" class="note">no detector image for this run — press the planar detection button</div>
       </div>
       <div class="btns" id="percep-views" style="margin-bottom:6px">
         <button data-v="annotated" aria-pressed="true">annotated result</button>
@@ -1628,12 +1628,14 @@ async function onDraftChanged() {
     });
   } catch (e) { /* local copy still holds it */ }
   syncScenarioControls(STATE);
-  // THE PHYSICAL CONTROLS FOLLOW THE DRAFT IMMEDIATELY. They are shown by the
-  // physical panel's own 5 s poll, and waiting five seconds after choosing
-  // FoundationPose to be offered the model and the ROI reads as the selection
-  // not having taken. It still ACQUIRES NOTHING — this only decides what is on
-  // screen.
+  // THE RGB-D CONTROLS FOLLOW THE DRAFT IMMEDIATELY. Both panels are shown by
+  // their own multi-second polls, and waiting five seconds after choosing a
+  // source to be offered its model and ROI reads as the selection not having
+  // taken. The SIMULATED panel had the same gap as the physical one and is
+  // refreshed here for the same reason. Neither ACQUIRES anything — this only
+  // decides what is on screen.
   refreshPhysicalD435();
+  refreshPerception();
 }
 
 // Shows what is RUNNING versus what the controls would generate. Never disables
@@ -2346,11 +2348,18 @@ function renderSimulatedRGBD(doc) {
   // one is "what will the next run use", the other is "what did the last one
   // produce", and merging them hid the control until after it was used.
   const wanted = ac.selected === "isaac_simulated";
-  block.style.display = (sim || wanted) ? "" : "none";
+  // THE RESULT BELONGS TO A RUN. `sim` is truthy whenever an artefact exists on
+  // disk, so this block used to populate a freshly loaded PRESET session with a
+  // simulated RGB-D result it had nothing to do with. Shown when the run on
+  // screen was built from it, or when the operator has selected it for the next
+  // one — the second is what puts the model and the button on screen before
+  // anything has been acquired.
+  const mine = Boolean(sim) && !sim.stale;
+  block.style.display = (mine || wanted) ? "" : "none";
   const acquire = $("#sim-acquire");
   if (acquire) acquire.style.display = wanted ? "" : "none";
   if (wanted) fillSimulatedModels();
-  if (!sim) {
+  if (!mine) {
     for (const id of ["#sim-provenance", "#sim-object", "#sim-eval"]) {
       const node = $(id);
       if (node) node.textContent = "";
@@ -2429,8 +2438,13 @@ async function fillSimulatedModels() {
     const doc = await api("/api/perception/physical/models");
     sel.textContent = "";
     for (const m of (doc.models || [])) {
-      sel.append(el("option", { value: m.model_id },
-        `${m.model_id} — ${m.label || m.object_type || ""}`));
+      sel.append(el("option", { value: m.model_id }, m.label || m.model_id));
+    }
+    // THE SAME DECLARED DEFAULT the physical control uses. Two dropdowns over
+    // one registry must not open on different parts.
+    if (doc.default_model_id
+        && [...sel.options].some(o => o.value === doc.default_model_id)) {
+      sel.value = doc.default_model_id;
     }
   } catch (e) { SIM_MODELS_FILLED = false; }
 }
@@ -2513,8 +2527,12 @@ function showSimulatedImage(kind) {
 let PHYS_VIEW = "overlay";
 let PHYS_LAST = null;
 
+// THE MODEL IS NAMED FROM THE RESULT, never written into the caption. This
+// read "the Cylinder5 CAD" beside a run that had registered the TUTORIAL BOLT,
+// which is the one place a reader could have caught that mistake and instead
+// was told the reassuring thing.
 const PHYS_CAPTIONS = {
-  overlay: "REAL / PHYSICAL D435 — the Cylinder5 CAD reprojected at the "
+  overlay: "REAL / PHYSICAL D435 — the {model} CAD reprojected at the "
          + "ESTIMATED pose. No simulator ground truth is used; none exists for "
          + "a physical object.",
   rgb: "REAL / PHYSICAL D435 — the actual colour frame the estimate was "
@@ -2540,8 +2558,19 @@ async function refreshPhysicalD435() {
   }
   const block = $("#phys-block");
   if (!block) return;
-  block.style.display = (doc && doc.available) ? "" : "none";
-  if (!doc || !doc.available) {
+  // A RESULT BELONGS TO A RUN, AND SO DOES ITS PANEL. This showed whenever an
+  // artefact existed on disk, so a freshly loaded preset session displayed a
+  // physical D435 result it had nothing to do with — clearly labelled, but
+  // populated, which invites the reading that the preset run measured it.
+  //
+  // SHOWN WHEN IT IS THIS RUN'S, or when the operator has selected this source
+  // for the NEXT one — the second is what puts the model, the ROI and the
+  // button on screen before anything has been acquired.
+  const acq = (STATE && STATE.acquisition_choice) || {};
+  const relevant = Boolean(doc && doc.available)
+    && (doc.is_current_run || acq.selected === "realsense_d435");
+  block.style.display = relevant ? "" : "none";
+  if (!relevant) {
     // THE PANEL AND ITS TIMELINE NOTE GO TOGETHER. If the artefact disappears
     // mid-session the note would otherwise be left pointing at a block that is
     // no longer on screen.
@@ -2666,7 +2695,10 @@ function showPhysicalImage(kind) {
   img.style.display = "";
   img.onerror = () => { img.style.display = "none"; };
   const caption = $("#phys-caption");
-  if (caption) caption.textContent = PHYS_CAPTIONS[kind] || "";
+  if (caption) {
+    const model = (PHYS_LAST && PHYS_LAST.model_id) || "selected";
+    caption.textContent = (PHYS_CAPTIONS[kind] || "").replace("{model}", model);
+  }
   for (const b of document.querySelectorAll("#phys-views button"))
     b.setAttribute("aria-pressed", String(b.dataset.v === kind));
 }
@@ -2694,10 +2726,14 @@ async function fillPhysicalModels() {
   PHYS_MODELS_FILLED = true;
   sel.textContent = "";
   for (const m of doc.models) sel.append(el("option", { value: m.model_id }, m.label));
-  // PREFILLED FROM THE LAST SUCCESSFUL RUN, never applied on its own.
-  if (doc.last_model_id
-      && [...sel.options].some(o => o.value === doc.last_model_id)) {
-    sel.value = doc.last_model_id;
+  // THE REGISTRY'S DECLARED DEFAULT, not the first option and not whatever ran
+  // last. Alphabetical order opened on `cylinder1`; a "last successful model"
+  // memory made a mistaken choice permanent, and an acquisition ran against the
+  // tutorial bolt — registering a bolt CAD onto a photograph of tubes, which
+  // returns a confident wrong pose instead of failing visibly.
+  if (doc.default_model_id
+      && [...sel.options].some(o => o.value === doc.default_model_id)) {
+    sel.value = doc.default_model_id;
   }
   const roi = $("#phys-roi");
   if (roi && !roi.value && doc.last_roi_px) roi.value = doc.last_roi_px.join(",");
@@ -3013,6 +3049,23 @@ async function refreshPhysical() {
 let PERCEP_VIEW = "annotated";
 let PERCEP_IMAGE_REV = 0;
 
+// WHOSE FRAME IS THIS? The annotated image belongs to the PLANAR detector, and
+// the element kept showing the last one after an RGB-D acquisition replaced the
+// run — a detector frame from a run that no longer exists, displayed as though
+// it were the current one. The batch says which method measured it, so the
+// question is answered rather than assumed.
+function batchIsPlanar(b) {
+  if (!b) return false;
+  const method = b.perception_method || "";
+  const acquisition = b.acquisition || "";
+  // EMPTY IS ALLOWED, and deliberately: a perception service older than the
+  // acquisition axis stamps neither field, and refusing its image would hide a
+  // working planar run. What is refused is a batch that NAMES another method.
+  if (method) return method === "planar_fasterrcnn";
+  if (acquisition) return acquisition === "planar_webcam";
+  return true;
+}
+
 function percepTri(value, yes, no, unknown) {
   if (value === true) return yes;
   if (value === false) return no;
@@ -3209,7 +3262,7 @@ async function refreshPerception() {
     img.src = doc.live_url;
     img.style.display = "";
     none.style.display = "none";
-  } else if (b && b.status !== "error" && b.captured_at) {
+  } else if (b && b.status !== "error" && b.captured_at && batchIsPlanar(b)) {
     // Cache-busted on the BATCH, not on the clock: the annotated image only
     // changes when a detection runs, and re-fetching a JPEG every poll would
     // put a needless megabyte a second through the proxy.

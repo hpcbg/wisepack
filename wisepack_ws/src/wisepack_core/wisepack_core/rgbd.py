@@ -409,6 +409,16 @@ class ObjectModel:
                            f"{self.resolved_path(root)}")
         return True, ""
 
+    @property
+    def is_reference(self) -> bool:
+        """A regression asset rather than a workpiece WISEPACK packages.
+
+        DECLARED BY `object_type`, not by name-matching: the registry already
+        says what each entry IS, and a check on the string "bolt" would miss the
+        next reference object and catch a part that happened to be called one.
+        """
+        return str(self.object_type).startswith("reference")
+
     def supports(self, method: str) -> bool:
         """An empty `methods` means "any" — a model is not method-specific by
         default, and listing every method on every model would rot."""
@@ -418,6 +428,7 @@ class ObjectModel:
         return {
             "model_id": self.model_id,
             "object_type": self.object_type,
+            "is_reference": self.is_reference,
             "mesh_path": self.mesh_path,
             "mesh_units": self.mesh_units,
             "scale": self.scale,
@@ -472,6 +483,13 @@ class ObjectModelRegistry:
     models: Dict[str, ObjectModel] = field(default_factory=dict)
     root: str = ""
     error: str = ""
+    #: Which model a control should offer FIRST when the operator has not
+    #: chosen. DECLARED, never derived from ordering: an alphabetical list put
+    #: `cylinder1` first and a "last used" memory made a mistaken choice
+    #: permanent — an acquisition ran against the tutorial bolt and registered a
+    #: bolt CAD onto a photograph of tubes, which is a confident wrong pose
+    #: rather than a visible failure.
+    default_model_id: str = ""
 
     def get(self, model_id: str) -> Optional[ObjectModel]:
         return self.models.get(str(model_id))
@@ -507,7 +525,31 @@ class ObjectModelRegistry:
             if model.model_id in models:
                 raise RGBDError(f"duplicate object model {model.model_id!r}")
             models[model.model_id] = model
-        return ObjectModelRegistry(models=models, root=root)
+        default = str((d or {}).get("default_model_id", "") or "")
+        if default and default not in models:
+            raise RGBDError(
+                f"default_model_id {default!r} is not a configured object "
+                "model; a default nothing can select is worse than none")
+        return ObjectModelRegistry(models=models, root=root,
+                                   default_model_id=default)
+
+    def preferred(self, method: str = "") -> str:
+        """The model to offer first, or "" when the registry declares none.
+
+        NEVER A REFERENCE ASSET. The tutorial bolt exists to exercise the
+        estimator against a saved dataset; WISEPACK does not package bolts, and
+        offering one as the default acquisition target is how a run ends up
+        measuring the wrong shape.
+        """
+        usable = [m for m in self.models.values()
+                  if (not method or m.supports(method))
+                  and m.mesh_exists(self.root)]
+        if self.default_model_id:
+            declared = self.models.get(self.default_model_id)
+            if declared in usable:
+                return declared.model_id
+        parts = [m.model_id for m in usable if not m.is_reference]
+        return sorted(parts)[0] if parts else ""
 
 
 #: Where the registry lives, relative to the repository root.
