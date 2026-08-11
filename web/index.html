@@ -353,7 +353,64 @@
              source, its plan and its approval until the operator starts the
              next acquisition. The options are filled from the backend, which
              also says whether the camera is actually available. -->
-        <label class="f" id="s-objsrc-field">Object source
+        <!-- ACQUISITION — WHERE THE NEXT RUN'S OBJECTS COME FROM. Four
+             answers, because there are four: a generated preset, a planar
+             webcam, a physical D435 and a simulated RGB-D camera. This replaces
+             a two-way "Object source" under which "Physical camera" meant three
+             different things depending on state nobody could see.
+
+             IT IS A PRESENTATION OF TWO EXISTING AXES, not a new model: each
+             choice maps onto an object source (sim|camera) and an acquisition
+             device. Changing it acquires NOTHING and touches no running run. -->
+        <label class="f" id="s-acq-field">Object source
+          <!-- WHERE THE NEXT RUN'S OBJECTS COME FROM. The label is the
+               operator's word; `acquisition` remains the internal name of the
+               axis, in the API, the enums and the batch provenance, because
+               that is what those identify — WHICH DEVICE produced a batch. What
+               an operator chooses here is the SOURCE of the objects, and the
+               control beside it answers the separate question of HOW a frame
+               from that source becomes observations.
+
+               ALL FOUR MODES ARE IN THE MARKUP, and none of them is ever
+               removed. WISEPACK SUPPORTS four ways of acquiring objects, and
+               that is a fact about the system, not about whether a cable is
+               plugged in right now. An operator who cannot see "Physical RGB-D
+               camera" cannot tell a build that lacks the capability from a
+               deployment whose camera is unplugged — so an unavailable mode
+               stays visible, DISABLED, with the reason on the option and in the
+               note below.
+
+               THEY ARE STATIC because this was the one VISIBLE control whose
+               entire contents came from the backend: a state document that did
+               not carry `acquisition_choice` (an older server, a transient
+               fetch failure, a panel that errored before this ran) first left
+               it blank, and then — once a single fallback option existed — left
+               it showing only the preset. `panel()` catches such a failure per
+               panel, so the rest of the page looks fine either way. The floor is
+               now the whole list.
+
+               THE THREE CAMERAS START DISABLED and are enabled by
+               `fillAcquisitions` when the backend reports each one available,
+               INDEPENDENTLY of the other two. Preset is never disabled: it needs
+               no service, no camera and no worker. -->
+          <select id="s-acq">
+            <option value="preset">Preset scenario</option>
+            <option value="planar_webcam" disabled
+                    title="checking the perception service…">Physical RGB camera — checking…</option>
+            <option value="realsense_d435" disabled
+                    title="checking the FoundationPose worker and the D435…">Physical RGB-D camera — checking…</option>
+            <option value="isaac_simulated" disabled
+                    title="checking the simulated RGB-D path…">Simulated RGB-D camera — checking…</option>
+          </select>
+          <div class="note" id="s-acq-note" style="margin-top:4px"></div></label>
+        <!-- THE OLD TWO-WAY SELECT, kept in the DOM and hidden. The visible
+             "Object source" control above is the one an operator uses; it sets
+             both axes through one command, and two visible controls over the
+             same fact would let an operator put them in disagreement. This one
+             is not deleted because the object-source axis is still real and
+             other panels read it. It is a READER, never a writer — see
+             `draftObjectSource`. -->
+        <label class="f" id="s-objsrc-field" style="display:none">Object source (legacy, hidden)
           <select id="s-objsrc"></select>
           <div class="note" id="s-objsrc-note" style="margin-top:4px"></div></label>
         <!-- PERCEPTION METHOD — HOW the camera frame is read, a THIRD axis,
@@ -468,7 +525,28 @@
            consumed, so the images, the estimate and the plan cannot disagree. -->
       <div id="sim-block" style="display:none;margin-top:10px;border-top:1px solid var(--line);padding-top:8px">
         <h4 style="margin:0 0 6px 0">Simulated RGB-D run
-          <span class="badge" id="sim-badge">SYNTHETIC</span></h4>
+          <span class="badge" id="sim-badge">SIMULATED</span></h4>
+        <!-- ACQUIRE A NEW SIMULATED RESULT, from the ordinary dashboard. This
+             used to need ./scripts/stage_e.sh, which started a SECOND dashboard
+             on another port to show a result the first one could not produce.
+
+             THE WORDING IS NOT THE PHYSICAL PANEL'S. Nothing here says camera,
+             sensor or D435 on its own: the frame is rendered, and a control
+             that borrowed physical wording for a simulated acquisition would be
+             the exact confusion this panel exists to prevent. -->
+        <div id="sim-acquire" style="display:none;margin-bottom:8px">
+          <label class="f" style="margin-bottom:4px">Object model (CAD)
+            <select id="sim-model"></select></label>
+          <label class="f" style="margin-bottom:4px">
+            <input id="sim-render" type="checkbox"/>
+            Render a new frame in Isaac (about a minute) — otherwise re-estimate
+            from the last render
+          </label>
+          <div class="btns">
+            <button class="pri" id="c-sim-acquire">Acquire &amp; estimate</button>
+          </div>
+          <div id="sim-acquire-note" class="note" style="margin-top:6px"></div>
+        </div>
         <div id="sim-stale" class="percep-error" style="display:none;margin-bottom:6px"></div>
         <div id="sim-provenance" class="note" style="margin-bottom:6px"></div>
         <div id="sim-object" class="note" style="margin-bottom:6px"></div>
@@ -1420,6 +1498,20 @@ function renderLog(events) {
   }
 }
 
+// WHERE THE NEXT RUN'S OBJECTS COME FROM, derived from the ONE control the
+// operator uses. The hidden legacy `#s-objsrc` still exists because other
+// panels read the object-source axis, but it must not be a second WRITER: it
+// sat on "sim" while the acquisition selector said "Physical RGB camera", and
+// every draft POST carried that stale "sim" — which raced `set_acquisition`,
+// put the backend back on the preset, and made the selector snap back a moment
+// after the operator changed it.
+function draftObjectSource() {
+  const acq = $("#s-acq");
+  if (acq && acq.value) return acq.value === "preset" ? "sim" : "camera";
+  const legacy = $("#s-objsrc");
+  return legacy ? legacy.value : null;
+}
+
 // ------------------------------------------------------------------ wiring
 function readSettings() {
   const parsePair = (s) => {
@@ -1432,7 +1524,7 @@ function readSettings() {
     // WHERE THE NEXT RUN'S OBJECTS COME FROM. Carried on the acquisition, which
     // is the only path that turns the draft into a running run — exactly like
     // the preset and the robot above it.
-    object_source: $("#s-objsrc") ? $("#s-objsrc").value : null,
+    object_source: draftObjectSource(),
     // HOW the next acquisition reads the frame. Carried on the acquisition —
     // the only path that turns a draft into a running run — exactly like the
     // object source above it.
@@ -1452,7 +1544,10 @@ function readSettings() {
     // name of an arm that never moved.
     robot_id: (STATE && STATE.robot_selector && $("#s-robot"))
       ? ($("#s-robot").value || null) : null,
-    object_source: $("#s-objsrc") ? $("#s-objsrc").value : null,
+    object_source: draftObjectSource(),
+    // WHICH DEVICE the next acquisition uses. Carried on the acquisition, the
+    // only path that turns a draft into a running run.
+    acquisition: $("#s-acq") ? ($("#s-acq").value || null) : null,
     // HOW the next acquisition reads the frame. Carried on the acquisition —
     // the only path that turns a draft into a running run — exactly like the
     // object source above it.
@@ -1486,7 +1581,12 @@ function currentDraft() {
     strategy: $("#s-strategy") ? $("#s-strategy").value : null,
     robot_id: (STATE && STATE.robot_selector && $("#s-robot"))
       ? ($("#s-robot").value || null) : null,
-    object_source: $("#s-objsrc") ? $("#s-objsrc").value : null,
+    object_source: draftObjectSource(),
+    // WHICH DEVICE the next acquisition uses. IN THE DRAFT LIKE EVERYTHING
+    // ELSE — this is the wire whose absence made `#s-method` look broken: a
+    // selector that notifies nothing is never recorded, and the next poll puts
+    // it back on the stored value within a second.
+    acquisition: $("#s-acq") ? ($("#s-acq").value || null) : null,
     // HOW the next acquisition reads the frame. Carried on the acquisition —
     // the only path that turns a draft into a running run — exactly like the
     // object source above it.
@@ -1520,14 +1620,20 @@ async function onDraftChanged() {
 // anything: an active run is a reason to CONFIRM, not a reason to lock the
 // operator out of the only control that could start a different one.
 function genLabelFor(s) {
-  // ONE BUTTON, NAMED AFTER WHAT IT WILL ACTUALLY DO. With the camera selected
-  // it detects; with a preset it generates. A control labelled "Generate" that
-  // ran a detector — or sat disabled beside a second button — is how an
-  // operator ends up unsure which one applies.
+  // ONE BUTTON, NAMED AFTER WHAT IT WILL ACTUALLY DO. A preset generates, a
+  // planar camera detects, an RGB-D camera acquires and estimates. A control
+  // labelled "Generate" that ran a detector — or one carrying physical-camera
+  // wording for a simulated acquisition — is how an operator ends up unsure
+  // what they just pressed. THE BACKEND NAMES IT, per acquisition choice.
+  const ac = (s && s.acquisition_choice) || {};
   const os = (s && s.object_source) || {};
-  const base = os.action_label || "Generate & plan";
+  const base = ac.action_label || os.action_label || "Generate & plan";
   if (!s || !s.run_active) return base;
-  return os.selected === "camera" ? "Reset run & detect" : "Reset run & generate";
+  if (ac.selected && ac.selected !== "preset") {
+    return ac.selected === "planar_webcam"
+      ? "Reset run & detect" : "Reset run & acquire";
+  }
+  return "Reset run & generate";
 }
 
 // The object-source selector, built from the backend. An unavailable source is
@@ -1564,6 +1670,132 @@ function fillObjectSources(s) {
       && [...sel.options].some(o => o.value === os.selected)) {
     sel.value = os.selected;
   }
+}
+
+// The ACQUISITION selector — the four-way control the operator actually uses.
+// Same rules as everything else in this panel: options come from the backend, an
+// unavailable one is offered DISABLED WITH ITS REASON rather than hidden, and a
+// poll never reverts a selection mid-edit.
+// PRESET NEEDS NOTHING and is therefore never disabled: no service, no camera,
+// no worker, no GPU. Every other mode is enabled only on the backend's own
+// say-so about that mode alone.
+const ACQ_ALWAYS_ENABLED = "preset";
+
+//: How much of a capability's reason goes in the option text. The whole reason
+//: can be several joined blockers, which would make the dropdown unreadable; the
+//: full text is on the tooltip and in the note under the selector.
+const ACQ_REASON_IN_OPTION = 48;
+
+// A value may be put on this selector ONLY if it is one of the options actually
+// in it and that option is selectable. Assigning anything else silently leaves
+// the control blank — `select.value = "x"` with no matching option sets
+// selectedIndex to -1 and displays nothing — which is worse than showing the
+// wrong thing, because it looks like a broken widget rather than a wrong state.
+function acqCanSelect(sel, value) {
+  return Boolean(value) && [...sel.options].some(
+    o => o.value === value && !o.disabled);
+}
+
+function acqShorten(reason) {
+  const text = String(reason || "").replace(/\s+/g, " ").trim();
+  if (!text) return "";
+  return text.length <= ACQ_REASON_IN_OPTION
+    ? text : text.slice(0, ACQ_REASON_IN_OPTION - 1).trimEnd() + "…";
+}
+
+// UPDATED IN PLACE, NEVER REBUILT. The four modes are in the markup and stay
+// there: what a poll changes is whether each is SELECTABLE and what it says
+// about itself. Rebuilding the list made the contents of a supported control
+// depend on a payload arriving, which is how the selector came to show one
+// option on a deployment that supports four.
+function fillAcquisitions(s) {
+  const sel = $("#s-acq");
+  if (!sel) return;
+  const ac = (s && s.acquisition_choice) || {};
+  const options = Array.isArray(ac.options) ? ac.options : [];
+
+  for (const opt of options) {
+    let node = [...sel.options].find(o => o.value === opt.value);
+    if (!node) {
+      // A MODE THIS PAGE DOES NOT KNOW. Appended rather than ignored, so a
+      // backend that gains one is not silently unrepresented here.
+      node = el("option", { value: opt.value }, opt.label || opt.value);
+      sel.append(node);
+    }
+    // EACH CAPABILITY ANSWERS FOR ITSELF. A missing webcam must not disable the
+    // simulated path, and a missing D435 must not disable either of the others.
+    const enabled = Boolean(opt.available) || opt.value === ACQ_ALWAYS_ENABLED;
+    const reason = acqShorten(opt.reason);
+    const label = enabled
+      ? (opt.label || opt.value)
+      : `${opt.label || opt.value} — unavailable${reason ? ` (${reason})` : ""}`;
+    // WRITTEN ONLY WHEN IT CHANGED, so a 1 s poll does not churn the DOM under
+    // an operator who has the dropdown open.
+    if (node.textContent !== label) node.textContent = label;
+    if (node.disabled === enabled) node.disabled = !enabled;
+    const title = opt.reason || opt.detail || "";
+    if (node.title !== title) node.title = title;
+  }
+
+  // Seeded from the backend while untouched, then owned by the operator — the
+  // same rule the preset, the robot and the method follow, so a poll can never
+  // revert a selection mid-edit.
+  if (!DRAFT_TOUCHED && acqCanSelect(sel, ac.selected)) {
+    sel.value = ac.selected;
+  }
+  ensureAcquisitionVisible(sel, ac);
+}
+
+// THE CONTROL ALWAYS SHOWS SOMETHING SELECTABLE. Reached when the rebuild left
+// nothing selected: the operator's choice was a camera that has since gone
+// away, or the list was replaced while the value was empty. Every candidate is
+// checked against the options actually present, so nothing unknown is ever
+// assigned — if none of them can be selected the value is left alone rather
+// than invented.
+function ensureAcquisitionVisible(sel, ac) {
+  if (sel.selectedIndex >= 0 && sel.value) return;
+  for (const candidate of [ac.selected, ac.current, "preset"]) {
+    if (acqCanSelect(sel, candidate)) { sel.value = candidate; return; }
+  }
+  const first = [...sel.options].find(o => !o.disabled);
+  if (first) sel.value = first.value;
+}
+
+// What the acquisition selector SAYS. Three separate facts, never merged: what
+// produced the run on screen, what the next run will use, and — where the two
+// differ in perception method — that switching will change the method too.
+function applyAcquisitionNote(s) {
+  const note = $("#s-acq-note");
+  const ac = (s && s.acquisition_choice) || {};
+  if (!note) return;
+  const bits = [];
+  // EMPTY FOR A RUN THAT ACQUIRED NOTHING, and stays empty: a preset run
+  // measured nothing and naming a device would invent a provenance.
+  if (ac.current_label) {
+    bits.push(`Running now: ${ac.current_label}`
+      + (ac.current_provenance ? ` (${ac.current_provenance})` : ""));
+  }
+  bits.push(`This selector sets the NEXT run: ${ac.selected_label || "—"}`);
+  const opt = (ac.options || []).find(o => o.value === ac.selected);
+  if (opt && opt.detail) bits.push(opt.detail);
+  // THE OPERATOR'S OWN CHOICE HAVING GONE AWAY IS THE ONE THEY MOST NEED TOLD.
+  // The selection is NOT moved for them — that would be a silent fall back to
+  // something they did not choose — so the control still shows it and this says
+  // it can no longer run.
+  if (opt && !opt.available) {
+    bits.push(`THIS SELECTION CANNOT RUN — ${opt.reason || "unavailable"}`);
+  }
+  // THE FORCED METHOD CHANGE, SAID OUT LOUD. Each RGB-D device can be read one
+  // way and the webcam another, so selecting one may change the perception
+  // method. It is stated here rather than happening silently in the backend.
+  if (ac.method_conflict && (ac.selected_methods || []).length) {
+    bits.push(`selecting this sets the perception method to `
+      + `${ac.selected_methods.join(" or ")}`);
+  }
+  for (const o of (ac.options || [])) {
+    if (!o.available && o.reason) bits.push(`${o.label} unavailable — ${o.reason}`);
+  }
+  note.textContent = bits.join(" · ");
 }
 
 // The perception-method selector. Identical rules to the object source above:
@@ -1603,8 +1835,14 @@ function fillPerceptionMethods(s) {
 function applyPerceptionMethodVisibility(s) {
   const field = $("#s-method-field");
   if (!field) return;
+  // FOLLOWS THE ACQUISITION SELECTOR, which is the control that now decides
+  // whether a frame is read at all. A preset acquires nothing, so "how the
+  // frame is read" is a question with no answer and the row is hidden.
+  const acq = $("#s-acq");
   const objsrc = $("#s-objsrc");
-  const cameraSelected = Boolean(objsrc) && objsrc.value === "camera";
+  const cameraSelected = acq
+    ? (acq.value && acq.value !== "preset")
+    : (Boolean(objsrc) && objsrc.value === "camera");
   field.style.display = cameraSelected ? "" : "none";
   const note = $("#s-method-note");
   const pm = (s && s.perception_method) || {};
@@ -1630,8 +1868,11 @@ function applyPerceptionMethodVisibility(s) {
 // Grey out and disable the fields that describe a GENERATED batch while the
 // camera is selected. Called at the end of syncScenarioControls — see there.
 function applyObjectSourceEmphasis() {
+  const acq = $("#s-acq");
   const sel = $("#s-objsrc");
-  const cameraSelected = Boolean(sel) && sel.value === "camera";
+  const cameraSelected = acq
+    ? (acq.value && acq.value !== "preset")
+    : (Boolean(sel) && sel.value === "camera");
   for (const id of ["s-preset", "s-count", "s-len", "s-dia"]) {
     const node = $("#" + id);
     if (!node) continue;
@@ -1649,6 +1890,8 @@ function syncScenarioControls(s) {
   const p = $("#s-preset");
   if (!p) return;
 
+  fillAcquisitions(s);
+  applyAcquisitionNote(s);
   fillObjectSources(s);
   fillPerceptionMethods(s);
   applyPerceptionMethodVisibility(s);
@@ -1700,6 +1943,14 @@ function syncScenarioControls(s) {
         && [...rb.options].some(o => o.value === wantRobot && !o.disabled)) {
       rb.value = wantRobot;
     }
+    // THE ACQUISITION FOLLOWS THE SAME RULE, and needs to for the same reason:
+    // the line below marks a stored draft as the operator's, after which no
+    // poll may seed this selector again. Without an explicit restore here, a
+    // returning browser would carry a stored choice the control never showed.
+    const acq = $("#s-acq");
+    const wantAcq = (stored && stored.acquisition)
+      || ((s.acquisition_choice || {}).selected);
+    if (acq && acqCanSelect(acq, wantAcq)) acq.value = wantAcq;
     if (stored) DRAFT_TOUCHED = true;      // a stored draft is the operator's
     const sd = $("#s-seed");
     if (sd && s.settings && s.settings.seed !== undefined
@@ -2002,8 +2253,28 @@ function renderSimulatedRGBD(doc) {
   const block = $("#sim-block");
   if (!block) return;
   const sim = doc && doc.simulated_rgbd;
-  block.style.display = sim ? "" : "none";
-  if (!sim) return;
+  const ac = (doc && doc.acquisition_choice) || {};
+  // THE ACQUIRE CONTROLS FOLLOW THE DRAFT, so an operator who selected the
+  // simulated camera is offered the button before anything has been acquired.
+  // The BLOCK still needs a result to render, which is a different condition:
+  // one is "what will the next run use", the other is "what did the last one
+  // produce", and merging them hid the control until after it was used.
+  const wanted = ac.selected === "isaac_simulated";
+  block.style.display = (sim || wanted) ? "" : "none";
+  const acquire = $("#sim-acquire");
+  if (acquire) acquire.style.display = wanted ? "" : "none";
+  if (wanted) fillSimulatedModels();
+  if (!sim) {
+    for (const id of ["#sim-provenance", "#sim-object", "#sim-eval"]) {
+      const node = $(id);
+      if (node) node.textContent = "";
+    }
+    const emptyStale = $("#sim-stale");
+    if (emptyStale) emptyStale.style.display = "none";
+    const img = $("#sim-image");
+    if (img) img.style.display = "none";
+    return;
+  }
 
   // A STALE ARTEFACT IS LABELLED, NOT SHOWN AS CURRENT. Pairing the newest
   // image with an older plan is exactly the confusion to avoid.
@@ -2013,37 +2284,119 @@ function renderSimulatedRGBD(doc) {
     stale.textContent = sim.stale ? (sim.stale_reason || "stale acquisition") : "";
   }
 
-  const acq = sim.acquisition || {};
+  const badge = $("#sim-badge");
+  // NEVER "PHYSICAL", NEVER "REAL CAMERA". The badge carries the run mode as
+  // well, because a re-estimate from an earlier render is not the same claim as
+  // a frame rendered during this run.
+  if (badge) {
+    badge.textContent = sim.run_mode === "acquired"
+      ? "SIMULATED — RENDERED THIS RUN" : "SIMULATED — LAST RENDER";
+  }
   $("#sim-provenance").textContent = [
-    `Backend: ${acq.backend === "isaac_sim" ? "Isaac Sim" : (acq.backend || "?")}`,
-    "Camera: D435-compatible simulated RGB-D",
-    "Provenance: synthetic",
-    `Perception: FoundationPose RGB-D`,
-    `Mask: ${acq.mask_source || "?"} [${acq.mask_provenance || "?"}]`,
-    `Run: ${sim.run_id || "?"} rev ${sim.scenario_revision}`,
-  ].join(" · ");
+    `Acquisition: ${sim.acquisition_label || sim.acquisition || "?"}`,
+    `Provenance: ${sim.provenance || "simulated"}`,
+    `Camera profile: ${sim.camera_profile || "d435_compatible_simulated"}`,
+    "Estimator: FoundationPose RGB-D (the real one)",
+    `Mask: ${sim.mask_source || "?"} [${sim.mask_provenance || "?"}]`,
+    sim.run_id ? `Run: ${sim.run_id} rev ${sim.scenario_revision}` : "",
+  ].filter(Boolean).join(" · ");
 
   const task = sim.task_reference_point || {};
   const centre = (task.object_center_mm || []).map(v => Math.round(v * 100) / 100);
   const axis = (task.tube_axis_line || []).map(v => Math.round(v * 1000) / 1000);
+  // THE MODEL IS NAMED FROM THE RESULT, not hard-coded: this panel must not
+  // become Cylinder5-specific just because Cylinder5 is what runs today.
   $("#sim-object").textContent = [
-    `Object: cylinder5 (cad_mesh)`,
-    `centre ${JSON.stringify(centre)} mm in wisepack_workarea`,
+    `Object: ${sim.model_id || "?"} (cad_model)`,
+    `centre ${JSON.stringify(centre)} mm in ${sim.workarea_pose_available
+      ? "wisepack_workarea" : "camera_color_optical_frame"}`,
     `tube axis ${JSON.stringify(axis)}`,
     `D${task.diameter_mm} x L${task.length_mm} mm, bore ${task.inner_diameter_mm} mm`,
+    `workarea_pose_available ${sim.workarea_pose_available}`,
   ].join(" · ");
 
-  // GROUND TRUTH IS EVALUATION ONLY, and says so where it is shown.
+  // GROUND TRUTH IS EVALUATION ONLY, and says so where it is shown. THE NUMBERS
+  // ARE THIS RUN'S, computed from the estimate just made — never a remembered
+  // headline figure.
   const ev = sim.evaluation || {};
   const evalNode = $("#sim-eval");
   if (evalNode) {
     evalNode.textContent = (ev.position_error_mm === undefined) ? "" :
-      `Evaluation only (simulator ground truth, never used by the robot): `
+      `Evaluation only — simulator ground truth, read AFTER the estimate and `
+      + `never used by perception, planning or the robot: `
       + `position error ${Number(ev.position_error_mm).toFixed(2)} mm, `
-      + `tube-axis error ${Number(ev.tube_axis_line_error_deg).toFixed(3)}°`;
+      + `tube-axis-line error ${Number(ev.tube_axis_line_error_deg).toFixed(3)}°`;
   }
   showSimulatedImage(SIM_VIEW);
 }
+
+// The CAD models a simulated estimate can name. THE SAME REGISTRY ENDPOINT the
+// physical panel uses — a second model list would agree with the registry only
+// until one of them was edited.
+let SIM_MODELS_FILLED = false;
+
+async function fillSimulatedModels() {
+  const sel = $("#sim-model");
+  if (!sel || SIM_MODELS_FILLED) return;
+  SIM_MODELS_FILLED = true;
+  try {
+    const doc = await api("/api/perception/physical/models");
+    sel.textContent = "";
+    for (const m of (doc.models || [])) {
+      sel.append(el("option", { value: m.model_id },
+        `${m.model_id} — ${m.label || m.object_type || ""}`));
+    }
+  } catch (e) { SIM_MODELS_FILLED = false; }
+}
+
+async function acquireSimulated() {
+  const btn = $("#c-sim-acquire");
+  const note = $("#sim-acquire-note");
+  const model = $("#sim-model") ? $("#sim-model").value : "";
+  const render = $("#sim-render") ? $("#sim-render").checked : false;
+  if (btn) { btn.disabled = true; btn.textContent = "Acquiring…"; }
+  if (note) {
+    note.textContent = render
+      ? "rendering a new frame in Isaac Sim, then estimating — about a minute"
+      : "estimating from the last rendered frame — the estimate is fresh, "
+        + "the frame is not";
+  }
+  try {
+    const res = await fetch("/api/perception/simulated/acquire", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ model_id: model, acquire: render }),
+    });
+    const doc = await res.json();
+    if (!res.ok) {
+      if (note) note.textContent = "Refused — " + JSON.stringify(doc.detail || doc);
+    } else if (!doc.ok) {
+      // THE REFUSAL, WITH ITS STAGE. Nothing is substituted: not ground truth,
+      // not an earlier result, not the physical camera.
+      if (note) note.textContent = `REFUSED at ${doc.stage}: ${doc.reason}`;
+    } else if (note) {
+      const plan = doc.planning || {};
+      const ev = doc.evaluation || {};
+      // A SUPERSEDED RESULT IS REPORTED AS ONE. The estimate still happened;
+      // what did not happen is the re-plan, and the two are separate facts.
+      const applied = plan.applied
+        ? `${plan.items} item(s) in ${plan.containers} container(s) at revision `
+          + `${plan.scenario_revision}`
+        : `NOT APPLIED — ${plan.reason || "the plan was not regenerated"}`;
+      note.textContent = `${doc.run_label} — ${doc.model_id}, frame `
+        + `${doc.frame_id}, position error `
+        + `${Number(ev.position_error_mm).toFixed(2)} mm / `
+        + `${Number(ev.tube_axis_line_error_deg).toFixed(3)}° (evaluation only) `
+        + `· ${applied}`;
+    }
+  } catch (e) {
+    if (note) note.textContent = "Failed — " + e;
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = "Acquire & estimate"; }
+    await refreshAll();
+  }
+}
+
+if ($("#c-sim-acquire")) $("#c-sim-acquire").onclick = acquireSimulated;
 
 function showSimulatedImage(kind) {
   SIM_VIEW = kind;
@@ -2381,12 +2734,56 @@ async function refreshState() {
   // planar draft within a second. The selector looked broken; the state model
   // underneath it was always right, and the wire was simply missing.
   for (const sel of ["#s-preset", "#s-seed", "#s-strategy", "#s-robot",
-                     "#s-method"]) {
+                     "#s-method", "#s-acq"]) {
     const node = $(sel);
     if (node && !node.dataset.draftBound) {
       node.dataset.draftBound = "1";
       node.addEventListener("change", onDraftChanged);
     }
+  }
+  // THE ACQUISITION SELECTOR goes through the command path for the same reason
+  // the object source below it does: the backend validates the choice against
+  // what is actually available and sets BOTH axes, and a selector holding a
+  // value the backend refused would show a camera that is not going to run.
+  //
+  // IT IS IN THE DRAFT-BOUND LIST ABOVE AS WELL, and that is not redundant:
+  // `onDraftChanged` is what sets DRAFT_TOUCHED and persists the selection, and
+  // its absence is exactly the bug that made `#s-method` look broken — a
+  // selection that notified nothing was reverted by the next poll within a
+  // second. Both wires are needed; either alone is the old failure.
+  const acq = $("#s-acq");
+  if (acq && !acq.dataset.acqBound) {
+    acq.dataset.acqBound = "1";
+    acq.addEventListener("change", async () => {
+      // `onDraftChanged` HAS ALREADY RUN. It is bound in the loop above, which
+      // executes first, so DRAFT_TOUCHED is set and the selection is persisted
+      // before this handler makes any network call — which is what stops a poll
+      // arriving mid-request from reverting it.
+      try {
+        await command("set_acquisition", { acquisition: acq.value });
+      } catch (e) { /* the notice carries the refusal */ }
+      await refreshState();
+      // THE BACKEND IS THE AUTHORITY. A refusal therefore shows its reason AND
+      // leaves the control on the value actually in force, instead of
+      // displaying a selection nothing holds.
+      const settled = ((STATE || {}).acquisition_choice || {}).selected;
+      if (settled && acq.value !== settled
+          && [...acq.options].some(o => o.value === settled)) {
+        acq.value = settled;
+      }
+      // THE METHOD MAY HAVE FOLLOWED. `set_acquisition` moves it when only one
+      // method can read the chosen device; the selector is re-synced from the
+      // backend so the operator SEES the change rather than discovering it when
+      // the run does something else.
+      const method = $("#s-method");
+      const settledMethod = ((STATE || {}).perception_method || {}).selected;
+      if (method && settledMethod
+          && [...method.options].some(o => o.value === settledMethod)) {
+        method.value = settledMethod;
+      }
+      syncScenarioControls(STATE);
+      refreshPhysicalD435();
+    });
   }
   // THE OBJECT SOURCE GOES THROUGH THE COMMAND PATH, not through the local
   // draft endpoint. In a live mode the orchestrator owns the selection and
@@ -2609,11 +3006,11 @@ async function refreshPerception() {
     if (err) err.style.display = "none";
     badge.textContent = "SIMULATED RGB-D";
     badge.className = "badge phys";
-    const acq = (doc.simulated_rgbd.acquisition || {});
+    const sim = doc.simulated_rgbd || {};
     const model = doc.object_model || {};
     $("#percep-status").textContent = [
       `Acquisition: ${acqState.current_label} [${acqState.current_provenance}]`,
-      `Mask: ${acq.mask_source || "?"} [${acq.mask_provenance || "?"}]`,
+      `Mask: ${sim.mask_source || "?"} [${sim.mask_provenance || "?"}]`,
       "Perception: FoundationPose RGB-D",
       `Object model: ${model.model_id || "—"}`,
       `Objects: ${b && b.status !== "error" ? b.count : "—"}`,
@@ -2634,7 +3031,7 @@ async function refreshPerception() {
     if (note) note.textContent =
       "This run's objects came from the simulated RGB-D camera. The planar "
       + "detector controls are hidden because that service is not part of "
-      + "this run. Re-acquire with ./scripts/stage_e.sh.";
+      + "this run. Re-acquire from the Simulated RGB-D block below.";
     renderSimulatedRGBD(doc);
     renderFoundationPose(doc);
     renderPerceptionObjects(doc, b);

@@ -332,7 +332,14 @@ def test_the_generate_button_renames_itself_when_a_run_is_active():
     # text, so they cannot drift. It moved into a helper when the robot selector
     # started quoting it too; the property is unchanged — one source, three
     # readers.
-    assert 'return os.selected === "camera" ? "Reset run & detect" : "Reset run & generate";' in html
+    #
+    # THE ACTIVE-RUN LABEL IS NOW PER ACQUISITION, because there are four and
+    # they do different things: a preset generates, a planar camera detects, and
+    # both RGB-D cameras acquire. The property under test is unchanged — with a
+    # run on screen the button says it will RESET that run first.
+    assert '"Reset run & detect"' in html
+    assert '"Reset run & acquire"' in html
+    assert '"Reset run & generate"' in html
     assert "const genLabel = genLabelFor(s);" in html
     assert "gen.textContent = genLabel" in html
     assert 'press “${genLabel}”' in html, "the help must quote the actual button"

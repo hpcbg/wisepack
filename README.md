@@ -190,28 +190,35 @@ detection and not classification, and no ROI is ever derived from a CAD model's
 dimensions. Choosing the region and naming the part are both operator decisions,
 which is the Human-in-the-Loop architecture applied to perception.
 
-## Run it
+## Run it — one command
 
 ```bash
-# The dashboard — both PHYSICAL camera paths run from here. Finds the planar
-# camera and the D435 by itself; no camera environment variables.
+# Every object-acquisition capability runs from this one dashboard. It finds the
+# planar camera, the D435 and the simulated RGB-D backend by itself; no camera
+# environment variables.
 ./run_wisepack_dashboard.sh
-
-# SIMULATED RGB-D FoundationPose through to planning, with quantitative error.
-# This one is still a shell script; it is not launched from the dashboard.
-./scripts/stage_e.sh --reuse
 ```
 
-Then open <http://127.0.0.1:8080>. **Both physical camera paths run from the
-dashboard itself** — no shell command between them:
+Then open <http://127.0.0.1:8080>. The Scenario panel's **Acquisition** selector
+offers four sources, and each names the action it will actually perform:
 
-| Object source | Perception method | Action |
+| Acquisition | Perception method | Action |
 |---|---|---|
-| Physical camera | Planar RGB — Faster R-CNN | *Detect & plan* → a fresh A4Tech detection |
-| Physical camera | RGB-D 6-DoF — FoundationPose | pick the CAD model and the ROI, then *Acquire & estimate* → a **new** D435 capture, segmentation and 6-DoF pose |
+| Preset scenario | — nothing is perceived | *Generate & plan* → the preset's deterministic objects |
+| Physical RGB camera | Planar RGB — Faster R-CNN | *Detect & plan* → a fresh webcam detection |
+| Physical RGB-D camera | RGB-D 6-DoF — FoundationPose | pick the CAD model and the ROI, then *Acquire & estimate* → a **new** D435 capture, segmentation and 6-DoF pose |
+| Simulated RGB-D camera | RGB-D 6-DoF — FoundationPose | *Acquire & estimate* → a D435-compatible frame rendered by Isaac, the same FoundationPose estimate, and the pose error against simulator ground truth |
 
-Switching the method selector configures the next run and acquires nothing;
-only the button acquires.
+**Acquisition and perception method are separate selectors**, because they
+answer different questions: where the frame comes from, and how it is read.
+Where only one method can read the selected device the selector says so and
+moves with it — stated on screen, never silently. Switching either configures the
+next run and acquires nothing; only the button acquires.
+
+`./scripts/stage_e.sh --reuse` still exists as a **deterministic regression and
+unattended-demo helper** — it takes a cold machine to a dashboard showing one
+known result, through the same shared pipeline. It is no longer needed for
+ordinary interactive use.
 
 <details>
 <summary>Reproducing the physical result from the command line</summary>
@@ -816,13 +823,12 @@ launcher finds it for you:
 ./run_wisepack_dashboard.sh
 ```
 
-discovers the planar RGB camera on this host and starts its detector, and exposes
-an attached RealSense D435 through the FoundationPose worker. **No camera
-environment variables are required.** (The *simulated* RGB-D FoundationPose
-demonstration is separate and stays a shell script — `./scripts/stage_e.sh
---reuse`.) The session
-still opens on the ordinary preset workflow; the Scenario panel's *Object
-source* switches to the camera whenever you like, applies to the NEXT run, and
+discovers the planar RGB camera on this host and starts its detector, exposes an
+attached RealSense D435 through the FoundationPose worker, and offers the
+simulated RGB-D backend where Isaac Sim and the worker are both present. **No
+camera environment variables are required.** The session still opens on the
+ordinary preset workflow; the Scenario panel's *Acquisition* selector switches
+to any of the three cameras whenever you like, applies to the NEXT run, and
 never touches the run on screen.
 
 The saved plane calibration is reused, so the ArUco sheet is shown once and then
@@ -1638,7 +1644,7 @@ and Logistics status panels alongside the ROS topic and FIWARE mapping diagnosti
 | FIWARE event mapping | Orion-LD DDS bridge | **live** | - |
 | Physical 2-D camera | **live — selectable per run as Object source: Physical camera** | real | detected count |
 | Physical RGB-D camera (the proposal's depth pipeline) | **live — Intel RealSense D435 + FoundationPose, acquired from the dashboard** | **measured 6-DoF pose** in the camera frame; no external physical pose ground truth | detected count |
-| Simulated RGB-D FoundationPose (quantitative pose error) | `./scripts/stage_e.sh --reuse` | **measured against simulator ground truth** | no |
+| Simulated RGB-D camera (quantitative pose error) | **live — Isaac-rendered D435-compatible RGB-D + FoundationPose, acquired from the dashboard** | estimate is **real**; the frame is **simulated**. Pose error **measured against simulator ground truth**, read only after the estimate | no |
 | Camera→work-area extrinsic (physical) | future | not implemented — `workarea_pose_available` is false; packing uses CAD geometry, execution stays gated | no |
 | MoveIt2 execution | future | not implemented | no |
 
@@ -2848,17 +2854,35 @@ are used only as physical proxies for cylindrical workpieces.
 > the selected execution backend — and independently of which provider produced
 > it.
 
-### Choosing the object source, per run
+### Choosing the acquisition, per run
 
-**The camera is an additional input capability, not a replacement application
-mode.** Both sources are available in one running WISEPACK, and the Scenario
+**A camera is an additional input capability, not a replacement application
+mode.** All four sources are available in one running WISEPACK, and the Scenario
 panel offers the choice:
 
 ```text
-Object source: [ Preset scenario ▼ ]        Object source: [ Physical camera ▼ ]
-Preset:        [ mixed_pipes_dense ▼ ]      Preset:        (de-emphasised)
-     [ Generate & plan ]                         [ Detect & plan ]
+Acquisition:       [ Preset scenario        ▼ ]   -> [ Generate & plan ]
+                   [ Physical RGB camera    ▼ ]   -> [ Detect & plan ]
+                   [ Physical RGB-D camera  ▼ ]   -> [ Acquire & estimate ]
+                   [ Simulated RGB-D camera ▼ ]   -> [ Acquire & estimate ]
+
+Perception method: [ Planar RGB — Faster R-CNN     ▼ ]   (hidden under a preset)
+                   [ RGB-D 6-DoF — FoundationPose  ▼ ]
 ```
+
+**The two selectors are not merged, because they answer different questions:**
+*where the frame comes from* and *how it is read*. Only meaningful combinations
+are offered — the planar detector cannot use depth and FoundationPose cannot work
+without it — and where the selected device leaves exactly one compatible method,
+the note beside the selector states that choosing it will move the method too.
+The change happens on that explicit selection, never on a poll, and never
+silently in the backend.
+
+**One selector over two axes that already exist.** Each choice maps onto the
+`object_source` the workflow has always had (`sim` | `camera`) and the
+`acquisition` device axis (`planar_webcam` | `realsense_d435` |
+`isaac_simulated`) — see `wisepack_core/acquisition.py`. There is no third model
+underneath, and nothing downstream branches on the selector.
 
 THREE THINGS ARE KEPT SEPARATE, and conflating any two of them is the bug this
 design exists to prevent:
@@ -2882,13 +2906,25 @@ approval again. **An approval never crosses a source or batch change.**
 A typical session, with no restart anywhere:
 
 ```text
-Object source: Preset scenario  ->  Generate & plan  ->  40 generated objects  -> approve?
-Object source: Physical camera  ->  Detect & plan    ->   2 measured objects   -> approve?
-Object source: Preset scenario  ->  Generate & plan  ->  16 generated objects  -> approve?
+Preset scenario         ->  Generate & plan     ->  40 generated objects   -> approve?
+Physical RGB camera     ->  Detect & plan       ->   2 measured objects    -> approve?
+Physical RGB-D camera   ->  Acquire & estimate  ->   1 measured Cylinder5  -> approve?
+Simulated RGB-D camera  ->  Acquire & estimate  ->   1 estimated Cylinder5 -> approve?
+Preset scenario         ->  Generate & plan     ->  16 generated objects   -> approve?
 ```
 
-The Digital Twin simply shows the current plan, so the switch is visible: forty
-items, then two small proxy cylinders, then sixteen.
+The Digital Twin simply shows the current plan, so every switch is visible:
+forty items, then two proxy cylinders, then one CAD-backed tube, then one again,
+then sixteen. **Replacement works in both directions** — a preset run after a
+perceived one does not inherit the tube, and a perceived batch after a preset
+does not accumulate onto forty generated items.
+
+**A slow acquisition cannot overwrite a newer run.** An Isaac render plus
+inference is about a minute; a physical capture plus five inference passes is
+tens of seconds. Each acquisition captures the `run_id` and `scenario_revision`
+it was started for, and a result that lands after the operator has started a
+different run is refused with both named. The measurement still stands and is
+still reported; what is refused is letting it replace the run on screen.
 
 #### When the camera is not there
 
@@ -3085,20 +3121,55 @@ never touch it, and a deployment that never builds it is unaffected. What
 follows assumes `./scripts/setup_foundationpose.sh` has built the image and
 started the worker.
 
-**Once the worker is available, the physical path is an ordinary dashboard
-action.** `./run_wisepack_dashboard.sh` detects an attached D435 through the
-worker and offers *Acquire & estimate*; the resulting batch goes through the
-same packing, Digital Twin validation and approval gate every other run uses.
-There is no separate application mode and no shell command in between.
+**Once the worker is available, BOTH RGB-D paths are ordinary dashboard
+actions.** `./run_wisepack_dashboard.sh` offers each as an *Acquisition* choice,
+and either batch goes through the same packing, Digital Twin validation and
+approval gate every other run uses. There is no separate application mode and no
+shell command in between.
 
 | | How it is run | What it gives |
 |---|---|---|
-| **Physical** RGB-D, live D435 | the **normal WISEPACK dashboard** — *Acquire & estimate*; `./scripts/physical_c5.sh` runs the same pipeline from a shell for diagnostics | a 6-DoF pose in the camera frame, straight into the workflow. **No external pose ground truth exists** |
-| **Simulated** RGB-D | `./scripts/stage_e.sh --reuse` — **a shell script, not a dashboard control** | the quantitative pose error, against Isaac ground truth |
+| **Physical** RGB-D, live D435 | *Acquisition: Physical RGB-D camera* → *Acquire & estimate*. `./scripts/physical_c5.sh` runs the same pipeline from a shell for diagnostics | a 6-DoF pose in the camera frame, straight into the workflow. **No external pose ground truth exists**, so no accuracy is claimed |
+| **Simulated** RGB-D | *Acquisition: Simulated RGB-D camera* → *Acquire & estimate*. `./scripts/stage_b.sh` / `./scripts/stage_c.sh` / `./scripts/stage_e.sh` drive the same library from a shell | the quantitative pose error, against Isaac ground truth read **after** the estimate |
 
-The simulated RGB-D demonstration **still requires `./scripts/stage_e.sh
---reuse`** and cannot yet be launched from the dashboard; nothing here claims it
-can.
+Both call `perception/simulated_rgbd_pipeline.py` and
+`perception/physical_pipeline.py` respectively — **one implementation each, two
+callers**, so a pose seen in the browser is produced by exactly the code the
+regression scripts run.
+
+**The simulated acquisition renders or re-estimates, and says which.** A fresh
+Isaac render takes about a minute; re-estimating from the last render takes
+seconds. **The estimate is fresh either way** — the worker runs again — and the
+panel distinguishes `SIMULATED — RENDERED THIS RUN` from
+`SIMULATED — LAST RENDER` rather than letting a reused frame read as a new one.
+
+**`isaac_simulated`, never "a D435 in Isaac".** The camera is *constructed* from
+the D435's published geometry (`config/rgbd_sensors.yaml`); NVIDIA ships no D435
+USD asset and loading a D455 under that label would put a different sensor behind
+the name. Provenance is `simulated` and the profile is
+`d435_compatible_simulated` on every artefact. **No sensor fidelity is claimed:**
+there is no stereo matching, no IR pattern and no dropout on low-texture metal.
+The FoundationPose estimator, the CAD mesh and the declared units are the real
+ones.
+
+**The work-area frame differs from the physical path, for a stated reason.** The
+simulated camera is part of the scene, which exported an exact
+camera→work-area transform; it is applied through the same generic
+`RigidTransform` the physical camera will use once a measured extrinsic exists,
+so a simulated observation legitimately reaches `wisepack_workarea` with
+`workarea_pose_available: true`. The physical D435 has no such transform, keeps
+`camera_color_optical_frame` and `workarea_pose_available: false`, and **the
+simulated path's transform is never borrowed for it**.
+
+**Ground truth is evaluation only, and structurally so.** `estimate()` is not
+given the scene — it cannot read a ground-truth pose because it never receives
+one — and the evaluation functions take an already-computed observation as their
+first argument, so a comparison can only ever follow an estimate. The comparison
+lives in the result document, never on the `ObservationBatch`, and never reaches
+the optimizer or a placement. The reported figures are **this run's**: position
+error and the undirected **tube-axis-line** error
+`acos(|dot(axis_est, axis_gt)|)`, which scores neither an end-for-end reversal
+nor spin about the tube's own axis as error.
 
 **Licensing.** FoundationPose is third-party software under the NVIDIA Source
 Code License — *non-commercial research use only*. WISEPACK is MIT and **vendors
@@ -3894,9 +3965,9 @@ Figures in `images/generated/` are produced by running the real pipeline -
 Stated plainly, because a demonstrator that hides its edges is not evidence.
 
 1. **Perception is real and optional, in two methods with different limits.**
-   Selecting **Object source: Physical camera** runs a real camera through the
-   selected perception method, and the resulting observations are what the
-   planner packs ([§15a](#15a-real-camera-perception)).
+   Selecting a camera under **Acquisition** runs it through the selected
+   perception method, and the resulting observations are what the planner packs
+   ([§15a](#15a-real-camera-perception)).
 
    The **planar** method (`planar_fasterrcnn`, a USB camera, Faster R-CNN and an
    ArUco-calibrated plane):
@@ -3924,8 +3995,11 @@ Stated plainly, because a demonstrator that hides its edges is not evidence.
      because it uses the CAD geometry, but **execution is still gated** by it;
    * **operator-supplied, not inferred:** the object identity (`model_id`) and,
      on a crowded bench, the ROI;
-   * **still a shell script:** the *simulated* RGB-D demonstration
-     (`./scripts/stage_e.sh --reuse`) is not launchable from the dashboard.
+   * **simulated RGB-D is a separate acquisition with separate limits:** the
+     frame is rendered, not measured, so it carries no sensor noise and no
+     depth dropout and is **not evidence about a real sensor**. Its quantitative
+     pose error is measured against simulator ground truth, which exists only
+     because the scene is simulated.
 
    Common to both:
 

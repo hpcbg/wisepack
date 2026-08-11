@@ -31,9 +31,15 @@ def test_the_simulated_camera_is_a_source_in_its_own_right():
     assert ACQUISITION_ISAAC != ACQUISITION_PLANAR
 
 
-def test_only_the_simulated_source_is_synthetic():
-    """Provenance is carried, never inferred at the call site."""
-    assert acquisition_provenance(ACQUISITION_ISAAC) == "synthetic"
+def test_only_the_simulated_source_is_simulated():
+    """Provenance is carried, never inferred at the call site.
+
+    ONE WORD PER SIDE. `simulated` rather than `synthetic`, so the acquisition
+    axis, the dashboard panel and the written reports all use the same term for
+    the same fact — `synthetic` still describes the CONTENT of a rendered mask,
+    which is a different claim from where the frame came from.
+    """
+    assert acquisition_provenance(ACQUISITION_ISAAC) == "simulated"
     assert acquisition_provenance(ACQUISITION_REALSENSE) == "measured"
     assert acquisition_provenance(ACQUISITION_PLANAR) == "measured"
 

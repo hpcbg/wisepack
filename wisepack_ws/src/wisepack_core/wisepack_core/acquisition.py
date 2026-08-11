@@ -52,10 +52,16 @@ _LABELS = {
     ACQUISITION_ISAAC: "Isaac Sim (simulated D435-compatible RGB-D)",
 }
 
+#: `measured` or `simulated`, and nothing else. ONE WORD PER SIDE, because two
+#: words for the same fact is how a panel ends up saying "synthetic" where a
+#: report says "simulated" and a reader has to decide whether they mean the same
+#: thing. `synthetic` survives where it describes the CONTENT of a frame — the
+#: mask a renderer knew rather than measured — which is a different claim from
+#: where the acquisition came from.
 _PROVENANCE = {
     ACQUISITION_PLANAR: "measured",
     ACQUISITION_REALSENSE: "measured",
-    ACQUISITION_ISAAC: "synthetic",
+    ACQUISITION_ISAAC: "simulated",
 }
 
 _DETAILS = {

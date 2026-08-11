@@ -75,6 +75,7 @@ from wisepack_core.perception import (                             # noqa: E402
     WORKAREA_FRAME_ID, WorkAreaFrame,
 )
 from wisepack_core.domain import PhysicalObservation                # noqa: E402
+from wisepack_core.acquisition import ACQUISITION_PLANAR            # noqa: E402
 from calibration import (                                           # noqa: E402
     CALIBRATION_INVALID, PlaneCalibration, UNCALIBRATED_SENTINEL,
 )
@@ -486,6 +487,10 @@ def observations_from_detections(
             frame_id=frame.frame_id, captured_at=captured_at,
             requested_at=requested_at,
             detector=DETECTOR_ID, model_id=model_id,
+            # A FAILED BATCH STILL NAMES ITS DEVICE. Which camera failed is the
+            # first thing an operator needs, and a failure with no acquisition
+            # leaves the panel describing a device it has to guess at.
+            acquisition=ACQUISITION_PLANAR,
             calibration_status=calibration_status or "unknown",
             calibration_revision=calibration_revision,
             detector_status=_detector_status(payload))
@@ -602,6 +607,11 @@ def observations_from_detections(
         requested_at=requested_at,
         detector=DETECTOR_ID,
         model_id=model_id,
+        # WHICH DEVICE READ THE FRAME, carried rather than inferred. This was
+        # empty, so a dashboard asking "what acquired the batch on screen" had
+        # to guess from the method — and the guess mapped a physical D435 batch
+        # onto the webcam. Every acquisition path now names itself.
+        acquisition=ACQUISITION_PLANAR,
         calibration_status=resolved_calibration,
         calibration_revision=calibration_revision,
         detector_status=detector_status,
@@ -623,7 +633,7 @@ def parse_detection_json(text: str, **kwargs: Any) -> ObservationBatch:
             batch_id=batch_id,
             source=str(kwargs.get("source", PerceptionSource.CAMERA.value)),
             error=f"malformed detector message: not valid JSON ({exc})",
-            detector=DETECTOR_ID,
+            detector=DETECTOR_ID, acquisition=ACQUISITION_PLANAR,
             frame_id=WORKAREA_FRAME_ID)
     return observations_from_detections(payload, **kwargs)
 

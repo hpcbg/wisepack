@@ -350,6 +350,38 @@ class FoundationPoseProvider:
             batch_id=batch_id, acquisition=ACQUISITION_REALSENSE,
             mask_source=mask_source, segmentation=segmentation)
 
+    def acquire_simulated(self, dataset: str, model_id: str,
+                          depth_scale_mm: float, frame: int = 0,
+                          refine_iterations: int = 5,
+                          batch_id: str = "fp-simulated-1") -> ObservationBatch:
+        """A dataset RENDERED BY ISAAC, estimated by the same real estimator.
+
+        WHY THIS IS NOT `acquire_reference`. The Isaac path used to borrow the
+        reference method, which stamps `acquisition="reference"` and attaches
+        REFERENCE_NOTE — "must not be planned against". That is the correct
+        thing to say about the saved tutorial bolt and the wrong thing to say
+        about a simulated workcell run that DOES plan, validate and reach the
+        approval gate. One string was doing two jobs and told the operator the
+        opposite of the truth for one of them.
+
+        WHAT IS SIMULATED AND WHAT IS NOT. The frame is synthetic: colour and
+        depth rendered through a camera built to the D435's published geometry,
+        with an exact instance mask the renderer knows rather than one measured
+        from depth. THE ESTIMATOR IS REAL — the same FoundationPose worker, the
+        same CAD mesh, the same declared units. `acquisition` records the
+        difference so nothing downstream has to infer it.
+
+        `workarea_pose_available` still derives False HERE, and that is
+        deliberate: this method reports what FoundationPose reported, in the
+        camera frame. The simulator's exact camera-to-workarea transform is a
+        separate, later step applied through the generic `RigidTransform` — the
+        provider does not know a work area exists.
+        """
+        return self._estimate(
+            dataset=dataset, model_id=model_id, depth_scale_mm=depth_scale_mm,
+            frame=frame, refine_iterations=refine_iterations,
+            batch_id=batch_id, acquisition=ACQUISITION_ISAAC)
+
     def _estimate(self, dataset: str, model_id: str, depth_scale_mm: float,
                   frame: int, refine_iterations: int, batch_id: str,
                   acquisition: str, mask_source: str = "dataset",

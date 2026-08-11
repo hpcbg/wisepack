@@ -1,13 +1,25 @@
 #!/usr/bin/env bash
 # ---------------------------------------------------------------------------
-# stage_e.sh — launch WISEPACK showing the simulated-RGB-D Cylinder5 run.
+# stage_e.sh — a DETERMINISTIC REGRESSION/DEMO HELPER for the simulated RGB-D run.
 #
 #     ./scripts/stage_e.sh            # acquire a fresh frame first, then launch
 #     ./scripts/stage_e.sh --reuse    # launch using the last Stage C result
 #
-# Starts the ORDINARY WISEPACK dashboard and acquires the simulated RGB-D batch
-# through the normal workflow, so the perception panel, the plan, the Digital
-# Twin and the approval gate all describe one run at one revision.
+# NOT REQUIRED FOR ORDINARY INTERACTIVE USE ANY MORE.
+#
+#     ./run_wisepack_dashboard.sh
+#         -> Acquisition: Simulated RGB-D camera
+#         -> Acquire & estimate
+#
+# does the same thing from the normal dashboard, on the normal port, in the
+# normal session — and through the SAME shared implementation
+# (`perception/simulated_rgbd_pipeline.py`) this script drives. What this script
+# still gives is a scripted, repeatable path from a cold machine to a dashboard
+# showing exactly one known result, which is what makes it useful as a
+# regression and as an unattended demo.
+#
+# It starts a dashboard on its OWN port so it cannot disturb a session already
+# running on 8080.
 #
 # IT DOES NOT MOVE THE ROBOT. Approving here records the decision; execution is
 # a separate step and Stage E does not take it.
@@ -55,11 +67,16 @@ cat <<EOF
 
 [stage-e] open  http://127.0.0.1:$PORT
 
-  Physical Perception panel   backend, camera, mask source, estimated centre,
-                              tube axis, position/axis error vs ground truth,
-                              and the RGB / depth / mask / pose-overlay images
+  Perception panel            acquisition, provenance, mask source, estimated
+                              centre, tube axis, position/axis error vs ground
+                              truth (evaluation only), and the RGB / depth /
+                              mask / pose-overlay images
   Digital Twin                the plan for this revision
   Approval                    pending — approving does NOT move the robot
+
+The ordinary dashboard does this too, without this script:
+  ./run_wisepack_dashboard.sh -> Acquisition: Simulated RGB-D camera
+                              -> Acquire & estimate
 
 Press Ctrl-C to stop the dashboard.
 EOF
