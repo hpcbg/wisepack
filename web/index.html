@@ -422,8 +422,17 @@
              Same discipline as the object source: options come from the
              backend, an unavailable method is offered but DISABLED with its
              reason, and changing it touches nothing that is running. -->
-        <label class="f" id="s-method-field" style="display:none">Perception method
-          <select id="s-method"></select>
+        <label class="f" id="s-method-field">Perception method
+          <!-- ALWAYS PRESENT, like the source above it. It is DISABLED under a
+               preset rather than hidden: a panel that changes shape as the
+               source changes moves the controls under the operator's cursor,
+               and an operator who never sees this row cannot tell that WISEPACK
+               asks the question at all. Its options are filtered to the methods
+               that can actually read the selected source. -->
+          <select id="s-method" disabled
+                  title="a preset scenario reads no camera frame, so no perception method applies">
+            <option value="" disabled selected>Not applicable</option>
+          </select>
           <div class="note" id="s-method-note" style="margin-top:4px"></div></label>
         <label class="f" id="s-preset-field">Preset<select id="s-preset"></select><div class="note" id="s-lock-note" style="margin-top:4px"></div></label>
         <!-- ROBOT. The options are EMPTY here on purpose and are filled from
@@ -1512,6 +1521,17 @@ function draftObjectSource() {
   return legacy ? legacy.value : null;
 }
 
+// WHICH DEVICE, and only ever a device. The selector's fourth value — `preset`
+// — is an OBJECT SOURCE, not an acquisition, and sending it as one put the
+// string "preset" into the settings field that names a camera: the acquisition
+// axis then reported `selected_label: "preset"`, a label for a device that does
+// not exist. A preset run acquires from nothing, and the honest value is empty.
+function draftAcquisitionDevice() {
+  const acq = $("#s-acq");
+  if (!acq || !acq.value) return null;
+  return acq.value === "preset" ? "" : acq.value;
+}
+
 // ------------------------------------------------------------------ wiring
 function readSettings() {
   const parsePair = (s) => {
@@ -1547,7 +1567,7 @@ function readSettings() {
     object_source: draftObjectSource(),
     // WHICH DEVICE the next acquisition uses. Carried on the acquisition, the
     // only path that turns a draft into a running run.
-    acquisition: $("#s-acq") ? ($("#s-acq").value || null) : null,
+    acquisition: draftAcquisitionDevice(),
     // HOW the next acquisition reads the frame. Carried on the acquisition —
     // the only path that turns a draft into a running run — exactly like the
     // object source above it.
@@ -1586,7 +1606,7 @@ function currentDraft() {
     // ELSE — this is the wire whose absence made `#s-method` look broken: a
     // selector that notifies nothing is never recorded, and the next poll puts
     // it back on the stored value within a second.
-    acquisition: $("#s-acq") ? ($("#s-acq").value || null) : null,
+    acquisition: draftAcquisitionDevice(),
     // HOW the next acquisition reads the frame. Carried on the acquisition —
     // the only path that turns a draft into a running run — exactly like the
     // object source above it.
@@ -1803,16 +1823,46 @@ function applyAcquisitionNote(s) {
 // rather than hidden, and never reverted mid-edit by a poll.
 let METHOD_OPTIONS_KEY = "";
 
+// EACH SOURCE OFFERS ONLY THE METHODS THAT CAN READ IT. The list used to be
+// every method this deployment can run, whatever was selected beside it — so
+// "Physical RGB camera" offered FoundationPose, which cannot read a webcam, and
+// "Physical RGB-D camera" offered the planar detector, which cannot use depth.
+// An operator could put the two selectors into a combination that has no
+// implementation, and the panel showed it as a normal choice.
+//
+// THE COMPATIBILITY IS THE BACKEND'S, not a second table here:
+// `acquisition_choice.selected_methods` is derived from `METHOD_ACQUISITIONS`,
+// which is where the relation is defined.
 function fillPerceptionMethods(s) {
   const sel = $("#s-method");
   const pm = (s && s.perception_method) || {};
+  const ac = (s && s.acquisition_choice) || {};
   if (!sel || !pm.options) return;
-  const key = JSON.stringify(pm.options.map(o => [o.value, o.available, o.reason]));
+  // ABSENT IS NOT EMPTY, and the difference decides what is shown. An EMPTY
+  // `selected_methods` is the backend saying "this source reads no frame", and
+  // "Not applicable" is the honest answer. `selected_methods` MISSING is a
+  // payload that did not carry the field — an older server, a partial state —
+  // and collapsing the control to nothing on that basis would repeat the
+  // mistake that emptied the source selector. Unknown means show what the
+  // deployment can run, exactly as before.
+  const known = Array.isArray(ac.selected_methods);
+  const applicable = known
+    ? pm.options.filter(o => ac.selected_methods.includes(o.value))
+    : pm.options.slice();
+  const key = JSON.stringify([ac.selected || "",
+    applicable.map(o => [o.value, o.available, o.reason])]);
   if (key !== METHOD_OPTIONS_KEY) {
     METHOD_OPTIONS_KEY = key;
     const keep = sel.value;
     sel.textContent = "";
-    for (const opt of pm.options) {
+    if (!applicable.length) {
+      const none = el("option", { value: "" }, "Not applicable");
+      none.disabled = true;
+      none.title = "the selected object source reads no camera frame, so no "
+        + "perception method applies";
+      sel.append(none);
+    }
+    for (const opt of applicable) {
       const label = opt.available ? opt.label : `${opt.label} — unavailable`;
       const node = el("option", { value: opt.value }, label);
       node.disabled = !opt.available;
@@ -1827,23 +1877,39 @@ function fillPerceptionMethods(s) {
       && [...sel.options].some(o => o.value === pm.selected)) {
     sel.value = pm.selected;
   }
+  // THE METHOD CANNOT BE LEFT NAMING SOMETHING THE SOURCE CANNOT USE. When the
+  // source changed under it, the backend has already moved the draft (and said
+  // so); this makes the control agree rather than displaying the old value.
+  if (sel.selectedIndex < 0 || (sel.value && applicable.length
+      && !applicable.some(o => o.value === sel.value))) {
+    const first = [...sel.options].find(o => !o.disabled);
+    sel.value = first ? first.value : "";
+    if (sel.selectedIndex < 0 && sel.options.length) sel.selectedIndex = 0;
+  }
 }
 
-// The method row is only meaningful when a camera will be used. Hidden — not
-// disabled — under a preset, because "how the frame is read" is not a question
-// that has an answer when there is no frame.
+// The method row STAYS IN PLACE and is disabled under a preset, rather than
+// disappearing. Hiding it made the Scenario panel change shape as the source
+// changed, and left an operator unable to see that "how the frame is read" is a
+// question WISEPACK asks at all. "Not applicable", greyed out, says the same
+// thing without moving the controls under the cursor.
 function applyPerceptionMethodVisibility(s) {
   const field = $("#s-method-field");
   if (!field) return;
-  // FOLLOWS THE ACQUISITION SELECTOR, which is the control that now decides
-  // whether a frame is read at all. A preset acquires nothing, so "how the
-  // frame is read" is a question with no answer and the row is hidden.
+  // FOLLOWS THE OBJECT-SOURCE SELECTOR, which is the control that decides
+  // whether a frame is read at all.
   const acq = $("#s-acq");
   const objsrc = $("#s-objsrc");
   const cameraSelected = acq
     ? (acq.value && acq.value !== "preset")
     : (Boolean(objsrc) && objsrc.value === "camera");
-  field.style.display = cameraSelected ? "" : "none";
+  const method = $("#s-method");
+  if (method) {
+    method.disabled = !cameraSelected;
+    method.title = cameraSelected ? ""
+      : "a preset scenario reads no camera frame, so no perception method applies";
+  }
+  field.style.opacity = cameraSelected ? "" : "0.55";
   const note = $("#s-method-note");
   const pm = (s && s.perception_method) || {};
   if (!note) return;
@@ -2199,14 +2265,34 @@ $("#c-reset").onclick = async () => {
     }
     if (!window.confirm(what)) return;
   }
-  // ONE BUTTON, TWO ACQUISITIONS. With the camera selected the acquisition IS
-  // the detection: `detect_physical_objects` starts the camera run and fills it
-  // from a real frame. Sending `reset` there would create a run with no objects
-  // and leave the operator looking at a button that appeared to do nothing.
-  const selected = ((STATE.object_source || {}).selected) || "sim";
+  // ONE BUTTON, FOUR SOURCES, and it does what the operator's own control says.
+  //
+  // IT READS `#s-acq`, NOT A POLLED SNAPSHOT. This branched on
+  // `STATE.object_source.selected`, which is a copy of server state refreshed
+  // once a second, and it knew only "preset or camera". Two failures followed
+  // from that, and both were reported:
+  //
+  //   * with an RGB-D source selected it sent `detect_physical_objects` — the
+  //     PLANAR detector — because every camera looked alike to it. The Faster
+  //     R-CNN ran where FoundationPose was asked for.
+  //   * changing the source and pressing the button before the next poll used
+  //     the PREVIOUS source, so a run switched back to a preset still detected.
+  //
+  // The control the operator is looking at cannot be stale by definition.
   const settings = readSettings();
-  if (selected === "camera") {
+  const choice = ($("#s-acq") && $("#s-acq").value) || "preset";
+  if (choice === "planar_webcam") {
+    // The acquisition IS the detection: `detect_physical_objects` starts the
+    // camera run and fills it from a real frame.
     await command("detect_physical_objects", settings);
+  } else if (choice === "realsense_d435" || choice === "isaac_simulated") {
+    // THE SAME FUNCTION THE PANEL BUTTON CALLS. The RGB-D estimators live where
+    // their camera and their CAD meshes are, so their acquisition is an HTTP
+    // call rather than an orchestrator command — and routing it through
+    // `detect_physical_objects` is what ran the planar detector instead. Both
+    // acquire endpoints start a new run themselves when the run on screen came
+    // from a preset, so no `reset` is sent first.
+    await (choice === "realsense_d435" ? acquirePhysical() : acquireSimulated());
   } else {
     await command("reset", settings);
   }
@@ -2356,10 +2442,19 @@ async function acquireSimulated() {
   const render = $("#sim-render") ? $("#sim-render").checked : false;
   if (btn) { btn.disabled = true; btn.textContent = "Acquiring…"; }
   if (note) {
-    note.textContent = render
+    // WHY THIS IS QUICKER THAN THE PHYSICAL BUTTON, said where the difference is
+    // noticed. The estimator is the same one; what differs is the work around
+    // it, and an unexplained speed gap invites the reading that the simulated
+    // path is doing something less.
+    note.textContent = (render
       ? "rendering a new frame in Isaac Sim, then estimating — about a minute"
       : "estimating from the last rendered frame — the estimate is fresh, "
-        + "the frame is not";
+        + "the frame is not")
+      + " · Faster than the physical button because the frame is rendered, not "
+      + "captured: no device to open or warm up, an exact mask the renderer "
+      + "already knows instead of a depth segmentation, and one inference pass "
+      + "instead of five frames for repeatability. Same worker, same CAD, same "
+      + "estimator.";
   }
   try {
     const res = await fetch("/api/perception/simulated/acquire", {
@@ -2614,8 +2709,14 @@ async function acquirePhysical() {
   const model = $("#phys-model") ? $("#phys-model").value : "";
   const roiRaw = ($("#phys-roi") ? $("#phys-roi").value : "").trim();
   if (!model) {
-    if (note) note.textContent = "Choose the CAD model that is on the table. "
-      + "FoundationPose estimates the pose OF A KNOWN SHAPE.";
+    const why = "Choose the CAD model that is on the table, in the Physical "
+      + "Perception panel. FoundationPose estimates the pose OF A KNOWN SHAPE, "
+      + "and which part is on the table is the operator's to state.";
+    if (note) note.textContent = why;
+    // ALSO WHERE THE OPERATOR IS LOOKING. This refusal is reachable from the
+    // Scenario panel's button now, and a message that only appears in a panel
+    // further down the page reads as a control that did nothing.
+    $("#notice").textContent = "Acquire & estimate — " + why;
     return;
   }
   let roi = null;

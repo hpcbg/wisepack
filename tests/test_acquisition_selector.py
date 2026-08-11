@@ -255,9 +255,20 @@ def test_the_acquisition_is_carried_in_the_draft_payload():
     js = _js_only(_read(INDEX))
     draft = js[js.index("function currentDraft"):]
     draft = draft[:draft.index("\n}")]
-    assert 'acquisition: $("#s-acq")' in draft, (
+    assert "acquisition: draftAcquisitionDevice()" in draft, (
         "the draft must carry the acquisition, or DRAFT_TOUCHED protects a "
         "value nobody stored")
+
+
+def test_the_draft_carries_a_device_never_the_preset_choice():
+    """`preset` is an OBJECT SOURCE, not a camera. Sending it as an acquisition
+    put the string "preset" into the settings field that names a device, and the
+    axis then reported a label for a device that does not exist."""
+    js = _js_only(_read(INDEX))
+    body = js[js.index("function draftAcquisitionDevice"):]
+    body = body[:body.index("\n}")]
+    assert '=== "preset" ? ""' in body, (
+        "the preset choice must map to an EMPTY device, not to itself")
 
 
 def test_the_poll_only_seeds_the_selector_while_untouched():

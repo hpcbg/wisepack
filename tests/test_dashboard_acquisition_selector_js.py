@@ -43,6 +43,10 @@ import pytest
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 WEB = os.path.join(REPO, "web")
+sys.path.insert(0, os.path.join(REPO, "wisepack_ws", "src", "wisepack_core"))
+
+from wisepack_core.acquisition import (                            # noqa: E402
+    ACQUISITION_ISAAC, ACQUISITION_PLANAR, ACQUISITION_REALSENSE)
 
 NODE = shutil.which("node") or shutil.which("nodejs")
 if NODE is None:                                                # pragma: no cover
@@ -81,6 +85,22 @@ function sample(w, tag) {
     labels: Object.fromEntries([...s.options].map(o => [o.value, o.textContent])),
     titles: Object.fromEntries([...s.options].map(o => [o.value, o.title])),
     note: note ? note.textContent : "",
+    method: methodSample(w),
+    button: (w.document.querySelector("#c-reset") || {}).textContent || "",
+  };
+}
+
+// The perception-method control beside it. WHAT IT OFFERS is the point: a source
+// must not present a method that cannot read it.
+function methodSample(w) {
+  const m = w.document.querySelector("#s-method");
+  if (!m) return { present: false };
+  return {
+    present: true, value: m.value, disabled: m.disabled,
+    selectedIndex: m.selectedIndex,
+    optionValues: [...m.options].map(o => o.value),
+    enabledValues: [...m.options].filter(o => !o.disabled).map(o => o.value),
+    shownText: m.selectedOptions[0] ? m.selectedOptions[0].textContent : null,
   };
 }
 
@@ -92,12 +112,23 @@ let PHASE = "before";
 (async () => {
   const html = await (await fetch(BASE + "/")).text();
   const problems = [];
+  //: Every operator command and acquisition endpoint the page POSTs, in order.
+  //: Which one a control sends is the behaviour under test — a button that
+  //: calls the planar detector for an RGB-D source looks identical from the
+  //: outside until you watch the wire.
+  const posted = [];
   const dom = new JSDOM(html, {
     url: BASE + "/", runScripts: "dangerously", resources: "usable",
     pretendToBeVisual: true,
     beforeParse(w) {
       w.fetch = async (u, o) => {
         const url = String(u).startsWith("http") ? String(u) : BASE + u;
+        if (o && String(o.method).toUpperCase() === "POST") {
+          let name = url.replace(BASE, "");
+          try { const body = JSON.parse(o.body); if (body.command) name = body.command; }
+          catch (e) { /* not a command envelope */ }
+          posted.push(name);
+        }
         // A STUBBED COMMAND PATH, only when a case asks for it: the rule under
         // test is the FRONTEND's (a poll must not revert an edit), and on a
         // deployment with one available acquisition the backend would rightly
@@ -134,6 +165,7 @@ let PHASE = "before";
                             { status: 200, headers: { "content-type": "application/json" } });
       };
       w.WebSocket = function () { this.close = () => {}; };
+      w.confirm = () => true;
       w.localStorage.clear();
       if (opts.storedDraft) {
         w.localStorage.setItem("wisepack-draft", JSON.stringify(opts.storedDraft));
@@ -155,8 +187,17 @@ let PHASE = "before";
     const s = w.document.querySelector("#s-acq");
     s.value = opts.selectValue;
     s.dispatchEvent(new w.Event("change", { bubbles: true }));
-    await new Promise(r => setTimeout(r, 400));
+    // PRESSED IMMEDIATELY when a case asks for it: the reported failure was a
+    // button that used the PREVIOUS source because no poll had landed yet.
+    if (opts.clickImmediately) w.document.querySelector("#c-reset").click();
+    await new Promise(r => setTimeout(r, opts.clickImmediately ? 3500 : 400));
     samples.push(sample(w, "after-edit"));
+  }
+  if (opts.clickAfterSettle) {
+    posted.length = 0;
+    w.document.querySelector("#c-reset").click();
+    await new Promise(r => setTimeout(r, 3500));
+    samples.push(sample(w, "after-click"));
   }
 
   // AT LEAST TWO MORE POLLING CYCLES. The poll runs every second, and reverting
@@ -175,7 +216,7 @@ let PHASE = "before";
   await new Promise(r => setTimeout(r, 1400));
   samples.push(sample(w, "poll-2"));
 
-  console.log(JSON.stringify({ samples, problems }));
+  console.log(JSON.stringify({ samples, problems, posted }));
   process.exit(0);
 })().catch(e => { console.log(JSON.stringify({ fatal: String(e && e.stack || e) })); process.exit(0); });
 """
@@ -607,3 +648,130 @@ def test_a_selected_mode_going_unavailable_does_not_blank_the_selector(
     told = _by_tag(document, "poll-2")["note"].lower()
     assert "cannot run" in told, (
         f"the note does not say the selection cannot run: {told!r}")
+
+
+# --------------------------------------------------------------------------- #
+# 6. Reported in references/Bugs.pdf
+# --------------------------------------------------------------------------- #
+#
+# Each source must present ONLY the perception methods that can read it. The
+# method list used to be every method the deployment can run, whatever sat
+# beside it — so "Physical RGB camera" offered FoundationPose, which cannot read
+# a webcam, and "Physical RGB-D camera" offered the planar detector, which
+# cannot use depth. Two selectors could be put into a combination with no
+# implementation, and the panel showed it as an ordinary choice.
+
+#: source -> the methods that can read it, from `METHOD_ACQUISITIONS`.
+COMPATIBLE = {
+    "preset": [],
+    ACQUISITION_PLANAR: ["planar_fasterrcnn"],
+    ACQUISITION_REALSENSE: ["foundationpose_rgbd"],
+    ACQUISITION_ISAAC: ["foundationpose_rgbd"],
+}
+
+
+def test_a_preset_offers_no_perception_method(server):
+    """It reads no camera frame, so no method applies — said, not hidden."""
+    document = _drive(server)
+    method = _by_tag(document, "load")["method"]
+    assert method["present"]
+    assert method["disabled"] is True
+    assert method["shownText"] == "Not applicable"
+    assert method["enabledValues"] == [], (
+        f"a preset offers {method['enabledValues']}, none of which can run")
+
+
+@pytest.mark.parametrize("choice", [ACQUISITION_REALSENSE, ACQUISITION_ISAAC])
+def test_an_rgbd_source_offers_only_foundationpose(server, choice):
+    """It cannot be read by the planar detector, so that must not be offered."""
+    document = _drive(server, state="all-available", selectValue=choice)
+    method = _by_tag(document, "after-edit")["method"]
+    assert method["enabledValues"] == COMPATIBLE[choice], (
+        f"{choice} offers {method['enabledValues']}, expected "
+        f"{COMPATIBLE[choice]}")
+    assert "planar_fasterrcnn" not in method["optionValues"], (
+        "the planar detector is offered for a depth source; it cannot use depth")
+    assert method["value"] == "foundationpose_rgbd"
+
+
+def test_the_planar_source_offers_only_faster_rcnn(server_with_camera):
+    """FoundationPose cannot read a colour webcam, so it must not be offered."""
+    document = _drive(server_with_camera, selectValue=ACQUISITION_PLANAR)
+    method = _by_tag(document, "after-edit")["method"]
+    assert method["enabledValues"] == ["planar_fasterrcnn"], (
+        f"the webcam offers {method['enabledValues']}")
+    assert "foundationpose_rgbd" not in method["optionValues"]
+    assert method["value"] == "planar_fasterrcnn"
+
+
+@pytest.mark.parametrize("choice", ["preset", ACQUISITION_REALSENSE,
+                                    ACQUISITION_ISAAC])
+def test_the_method_selector_is_never_blank(server, choice):
+    """Filtering the list must not leave the control showing nothing."""
+    document = _drive(server, state="all-available", selectValue=choice)
+    method = _by_tag(document, "after-edit")["method"]
+    assert method["selectedIndex"] >= 0, f"{choice} left the method blank"
+    assert method["shownText"]
+
+
+# --- the Scenario button must act on the SELECTED source -------------------- #
+
+
+@pytest.mark.parametrize("choice", [ACQUISITION_REALSENSE, ACQUISITION_ISAAC])
+def test_the_scenario_button_never_runs_the_planar_detector_for_rgbd(
+        server, choice):
+    """REPORTED: "Looks like the RGB – Faster R-CNN was called instead."
+
+    The button branched on a polled `object_source` that knew only "preset or
+    camera", so every camera looked alike to it and an RGB-D source ran the
+    planar detector.
+    """
+    document = _drive(server, state="all-available", selectValue=choice,
+                      clickAfterSettle=True)
+    assert "detect_physical_objects" not in document["posted"], (
+        f"the button ran the planar detector for {choice}: {document['posted']}")
+    assert any("acquire" in call for call in document["posted"]), (
+        f"the button did not reach an acquisition endpoint: {document['posted']}")
+
+
+def test_switching_to_preset_and_pressing_at_once_generates_a_preset(server):
+    """REPORTED: after switching back to Preset, Reset did not produce a preset.
+
+    The button read a snapshot refreshed once a second, so pressing it before
+    the next poll used the PREVIOUS source. Pressed here with no poll in
+    between, which is what an operator does.
+    """
+    document = _drive(server, state="all-available", selectValue="preset",
+                      clickImmediately=True)
+    assert "detect_physical_objects" not in document["posted"], (
+        f"a preset reset called the detector: {document['posted']}")
+    assert "reset" in document["posted"], (
+        f"no reset was sent for a preset source: {document['posted']}")
+
+
+def test_the_button_label_matches_the_command_it_sends(server_with_camera):
+    """A control named for one thing that does another is the whole class of
+    bug this file exists for."""
+    document = _drive(server_with_camera, selectValue=ACQUISITION_PLANAR,
+                      clickAfterSettle=True)
+    label = _by_tag(document, "after-click")["button"].lower()
+    assert "detect" in label, f"the button reads {label!r}"
+    assert "detect_physical_objects" in document["posted"], document["posted"]
+
+
+# --- the draft must never carry a selector value as a device ---------------- #
+
+
+def test_the_preset_choice_is_not_stored_as_an_acquisition_device(server):
+    """`preset` is an OBJECT SOURCE, not a camera. Sending it as one put the
+    string "preset" in the field that names a device, and the acquisition axis
+    then reported a label for a device that does not exist."""
+    document = _drive(server, selectValue="preset", clickAfterSettle=True)
+    import json as _json
+    import urllib.request
+    with urllib.request.urlopen(server.url + "/api/state", timeout=30) as handle:
+        state = _json.load(handle)
+    assert state["settings"]["acquisition"] in ("", None), (
+        f"settings.acquisition is {state['settings']['acquisition']!r}; a preset "
+        "acquires from no device and the honest value is empty")
+    assert document["samples"], "the driver produced no samples"
