@@ -108,6 +108,12 @@
 
   /* ------------------------------------------------------------- controls */
   .ctl{display:grid;grid-template-columns:repeat(auto-fit,minmax(126px,1fr));gap:8px}
+  /* THE TWO PERCEPTION SELECTORS CARRY THE LONGEST LABELS ON THE PAGE —
+     "Simulated RGB-D camera", "RGB-D 6-DoF — FoundationPose" — and at the
+     grid's minimum column they truncated to "Simulated RGB-D car", which is
+     the one place an operator has to read the whole thing to know what the
+     next run will do. Given two columns each, they fit. */
+  #s-acq-field,#s-method-field{grid-column:span 2}
   label.f{display:flex;flex-direction:column;gap:3px;font-size:11px;color:var(--mut)}
   select,input{background:var(--inset);color:var(--ink);border:1px solid var(--line);
     border-radius:6px;padding:5px 7px;font:13px ui-sans-serif,system-ui;width:100%}
@@ -344,7 +350,7 @@
       <div class="scroll"><table id="cut-table"><tbody></tbody></table></div>
     </div>
 
-    <div class="panel">
+    <div class="panel" id="scenario-panel">
       <h3>Scenario</h3>
       <div class="ctl">
         <!-- OBJECT SOURCE — where the NEXT run's objects come from.
@@ -1814,8 +1820,15 @@ function applyAcquisitionNote(s) {
     bits.push(`selecting this sets the perception method to `
       + `${ac.selected_methods.join(" or ")}`);
   }
+  // ONE LINE PER UNAVAILABLE SOURCE, SHORTENED. A capability's own reason can
+  // be several sentences of remedy — the planar service's runs to four lines —
+  // and pasted in full it buried everything above it. The whole text stays on
+  // the option's tooltip, where it is read deliberately rather than by
+  // everyone, all the time.
   for (const o of (ac.options || [])) {
-    if (!o.available && o.reason) bits.push(`${o.label} unavailable — ${o.reason}`);
+    if (!o.available && o.reason) {
+      bits.push(`${o.label} unavailable — ${acqShorten(o.reason)}`);
+    }
   }
   note.textContent = bits.join(" · ");
 }
@@ -1921,13 +1934,26 @@ function applyPerceptionMethodVisibility(s) {
   // DRAFT for the next run and says so, so the two can never be read as one
   // claim.
   if (pm.current_label) bits.push(`Measured this run: ${pm.current_label}`);
-  bits.push(`This selector sets the NEXT run: ${pm.selected_label || "—"}`);
-  if (pm.selected_measures && pm.selected_measures.length) {
-    bits.push(`measures ${pm.selected_measures.join(", ")}`);
+  // THE NOTE DESCRIBES THE CONTROL BESIDE IT, not a field that can disagree
+  // with it. `pm.selected_label` is the backend's draft, which still names a
+  // method when the selected SOURCE has none — so a preset showed "Not
+  // applicable" in the selector and "sets the NEXT run: Planar RGB — Faster
+  // R-CNN" underneath it, one of which had to be wrong.
+  const applies = Boolean(method) && !method.disabled && method.value;
+  if (!applies) {
+    bits.push("Not applicable — the selected object source reads no camera "
+              + "frame");
+  } else {
+    const shown = method.selectedOptions && method.selectedOptions[0];
+    bits.push(`This selector sets the NEXT run: `
+      + `${(shown && shown.textContent) || pm.selected_label || "—"}`);
+    if (pm.selected_measures && pm.selected_measures.length) {
+      bits.push(`measures ${pm.selected_measures.join(", ")}`);
+    }
   }
   for (const opt of (pm.options || [])) {
     if (!opt.available && opt.reason) {
-      bits.push(`${opt.label} unavailable — ${opt.reason}`);
+      bits.push(`${opt.label} unavailable — ${acqShorten(opt.reason)}`);
     }
   }
   note.textContent = bits.join(" · ");
@@ -3155,21 +3181,34 @@ async function refreshPerception() {
   const acqState = doc.acquisition || {};
   const simRun = acqState.current === "isaac_simulated"
                  && doc.simulated_rgbd && !doc.simulated_rgbd.stale;
-  if (simRun) {
+  // EITHER RGB-D SOURCE, not just the simulated one. A run acquired with the
+  // D435 was still described by the PLANAR service's health — "DETECTOR
+  // OFFLINE" and an unreachable-service error, in red, about a webcam that run
+  // never used and does not need. The two methods fail independently, and the
+  // panel must report the one that actually produced the batch.
+  const rgbdRun = simRun || (acqState.current === "realsense_d435"
+                             && (doc.perception_method || {}).current
+                                === "foundationpose_rgbd");
+  if (rgbdRun) {
     const err = $("#percep-error");
     if (err) err.style.display = "none";
-    badge.textContent = "SIMULATED RGB-D";
+    badge.textContent = simRun ? "SIMULATED RGB-D" : "PHYSICAL RGB-D";
     badge.className = "badge phys";
     const sim = doc.simulated_rgbd || {};
     const model = doc.object_model || {};
     $("#percep-status").textContent = [
       `Acquisition: ${acqState.current_label} [${acqState.current_provenance}]`,
-      `Mask: ${sim.mask_source || "?"} [${sim.mask_provenance || "?"}]`,
+      // THE MASK IS THE SIMULATED PATH'S FACT. The physical one measures its
+      // own from depth and reports it in its own block, so naming a synthetic
+      // mask here would describe the wrong run.
+      simRun ? `Mask: ${sim.mask_source || "?"} [${sim.mask_provenance || "?"}]` : "",
       "Perception: FoundationPose RGB-D",
       `Object model: ${model.model_id || "—"}`,
       `Objects: ${b && b.status !== "error" ? b.count : "—"}`,
       `Frame: ${(b && b.frame_id) || "?"}`,
-    ].join(" · ");
+      // EMPTIES DROPPED. The mask line belongs to the simulated path only, and
+      // an omitted field left a " · · " gap in the middle of the sentence.
+    ].filter(Boolean).join(" · ");
     // THE PLANAR CONTROLS ARE HIDDEN, not merely unexplained. "Detect & plan"
     // calls the planar service, which this run does not use and which is not
     // answering — pressing it would produce an error about a device that was
@@ -3183,9 +3222,9 @@ async function refreshPerception() {
     if (detect) detect.style.display = "none";
     const note = $("#percep-action-note");
     if (note) note.textContent =
-      "This run's objects came from the simulated RGB-D camera. The planar "
-      + "detector controls are hidden because that service is not part of "
-      + "this run. Re-acquire from the Simulated RGB-D block below.";
+      `This run's objects came from the ${acqState.current_label || "RGB-D"} `
+      + "source. The planar detector controls are hidden because that service "
+      + "is not part of this run. Re-acquire from the RGB-D block below.";
     renderSimulatedRGBD(doc);
     renderFoundationPose(doc);
     renderPerceptionObjects(doc, b);

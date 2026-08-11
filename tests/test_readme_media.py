@@ -44,6 +44,20 @@ CAMERA_MEDIA = [
     "perception-camera-annotated.jpg",      # the detector's own annotated frame
 ]
 
+#: THE OBJECT SOURCE / PERCEPTION METHOD UI, captured from a real deployment by
+#: `generate_readme_gifs.py --attach <url> --source-shots`. Listed separately
+#: from the reproducible sim screenshots because each one requires the source it
+#: shows to be genuinely available: the RGB-D pair needs the FoundationPose
+#: worker, and the physical one needs a D435 attached.
+SOURCE_MEDIA = [
+    "source-selector-light.png",            # all four sources, real availability
+    "source-draft-vs-current-light.png",    # a camera run, a preset drafted
+    "source-physical-rgbd-light.png",       # source + forced method
+    "source-physical-rgbd-result-light.png",
+    "source-simulated-rgbd-light.png",
+    "source-simulated-rgbd-result-light.png",
+]
+
 NEW_GIFS = ["cut-aware-comparison.gif", "container-inventory.gif",
             "container-logistics.gif", "anomaly-workflow.gif"]
 OLD_GIFS = ["hitl-approve-execute.gif", "hitl-dynamic-replan.gif",
@@ -149,3 +163,63 @@ def test_generator_defaults_to_light_theme():
         src = fh.read()
     assert 'default="light"' in src, "README media must default to the light theme"
     assert 'color_scheme=args.theme' in src or 'color_scheme=theme' in src
+
+
+# --------------------------------------------------------------------------- #
+# The Object source / Perception method screenshots
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.parametrize("name", SOURCE_MEDIA)
+def test_the_source_media_exists_and_is_a_real_capture(name):
+    """A few kB would mean an empty panel saved with a 200."""
+    path = os.path.join(GEN, name)
+    assert os.path.isfile(path), (
+        f"{name} is missing — regenerate it against a running deployment:\n"
+        "  ./run_wisepack_dashboard.sh\n"
+        "  python3 scripts/generate_readme_gifs.py --attach <url> --source-shots")
+    assert os.path.getsize(path) > 20_000, f"{name} is too small to be a capture"
+
+
+@pytest.mark.parametrize("name", SOURCE_MEDIA)
+def test_the_source_media_is_referenced_by_the_readme(name):
+    """Evidence nobody can see is not evidence."""
+    readme = open(os.path.join(REPO, "README.md"), encoding="utf-8").read()
+    assert name in readme, f"{name} is not referenced anywhere in the README"
+
+
+def test_the_source_capture_refuses_a_source_it_cannot_actually_run():
+    """The guard EXISTS and covers the whole claim.
+
+    A source this deployment cannot run must be SKIPPED WITH ITS REASON, never
+    staged: a panel captioned "Physical RGB camera, detecting" that no camera
+    produced would be the one failure in this file no later reader could detect.
+    """
+    src = open(os.path.join(REPO, "scripts", "generate_readme_gifs.py"),
+               encoding="utf-8").read()
+    assert "def _capture_source_screenshots" in src
+    assert "skipped.append" in src, "a source is dropped with no reason recorded"
+    # It must ACQUIRE, not merely select — and it must wait for the panel to
+    # agree that what it acquired is the run on screen.
+    assert "/api/perception/physical/acquire" in src
+    assert "/api/perception/simulated/acquire" in src
+    assert "(d.acquisition || {}).current" in src, (
+        "the capture does not wait for the panel to report the acquisition it "
+        "just performed, so a shot can mix two runs")
+
+
+def test_the_readme_names_the_current_scenario_button_wording():
+    """§9: the primary Scenario action is "Reset run & …", not the older names."""
+    readme = open(os.path.join(REPO, "README.md"), encoding="utf-8").read()
+    for wording in ("Reset run & generate", "Reset run & detect",
+                    "Reset run & acquire"):
+        assert wording in readme, f"the README never names {wording!r}"
+
+
+def test_the_readme_uses_the_operator_facing_source_label():
+    """The visible control is "Object source"; "Acquisition" is internal."""
+    readme = open(os.path.join(REPO, "README.md"), encoding="utf-8").read()
+    for stale in ("**Acquisition** selector", "*Acquisition* selector",
+                  "| Acquisition | Perception method |",
+                  "Object source: Physical camera"):
+        assert stale not in readme, f"stale operator-facing wording: {stale!r}"

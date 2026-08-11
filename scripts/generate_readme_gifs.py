@@ -565,6 +565,209 @@ def _capture_camera_screenshots(browser, dash, theme: str) -> List[str]:
     return written
 
 
+#: The four object sources, in the order the selector offers them, with the
+#: perception method each one can actually be read with. THE SAME RELATION the
+#: dashboard derives from `METHOD_ACQUISITIONS` — restated here only as the
+#: caption text, never as a second source of truth: every value in the captured
+#: image comes from the running deployment.
+SOURCE_SHOTS = (
+    ("preset", "source-preset-light.png", "Preset scenario"),
+    ("planar_webcam", "source-physical-rgb-light.png", "Physical RGB camera"),
+    ("realsense_d435", "source-physical-rgbd-light.png", "Physical RGB-D camera"),
+    ("isaac_simulated", "source-simulated-rgbd-light.png",
+     "Simulated RGB-D camera"),
+)
+
+
+def _source_state(dash) -> Dict:
+    """The acquisition axis as the ATTACHED deployment reports it right now."""
+    import urllib.request                                        # noqa: PLC0415
+    with urllib.request.urlopen(dash.url + "/api/state", timeout=30) as handle:
+        return json.load(handle).get("acquisition_choice") or {}
+
+
+def _capture_source_screenshots(browser, dash, theme: str) -> List[str]:
+    """The Object source / Perception method UI, from a real deployment.
+
+    WHAT THESE ARE FOR. The architecture changed shape: one selector now names
+    four places objects can come from, and a second names the one method that
+    can read the chosen one. A table can state that; a screenshot of the actual
+    control is what lets an evaluator check it.
+
+    EVERY SHOT IS OF A REAL DEPLOYMENT, and a source this machine cannot run is
+    SKIPPED WITH ITS REASON rather than staged. A dashboard pointed at a camera
+    that is not there would show the option disabled — which is honest — but a
+    picture captioned "Physical RGB camera, detecting" that no camera produced
+    would not be, so the acquisitions here are actually performed.
+    """
+    axis = _source_state(dash)
+    available = set(axis.get("available") or [])
+    if not available:
+        raise SystemExit(
+            "--source-shots needs a dashboard reporting its acquisition axis; "
+            f"{dash.url}/api/state carries no `acquisition_choice`.")
+    written: List[str] = []
+    skipped: List[str] = []
+
+    ctx = browser.new_context(viewport=VIEWPORT, device_scale_factor=1,
+                              color_scheme=theme)
+    page = ctx.new_page()
+    errors: List[str] = []
+    page.on("pageerror", lambda e: errors.append(str(e)))
+    page.goto(dash.url + "/", wait_until="networkidle")
+    page.wait_for_timeout(2500)
+    if theme == "light":
+        set_light_theme(page)
+    page.wait_for_timeout(1000)
+
+    panel = page.locator("#scenario-panel")
+    if not panel.is_visible():
+        raise SystemExit("the Scenario panel is not on screen")
+
+    def save(name: str, locator) -> None:
+        out = os.path.join(OUT_DIR, name)
+        # THE PAGE HEADER IS STICKY and sits above everything at z-index 20, so
+        # an element shot of a panel scrolled under it came out with the header
+        # printed across its first two lines. It is page chrome, not part of the
+        # panel, and it is un-stuck for the shutter only — nothing inside the
+        # panel is touched.
+        page.evaluate("() => { const h = document.querySelector('header');"
+                      " if (h) h.style.visibility = 'hidden'; }")
+        locator.scroll_into_view_if_needed()
+        page.wait_for_timeout(250)
+        locator.screenshot(path=out)
+        page.evaluate("() => { const h = document.querySelector('header');"
+                      " if (h) h.style.visibility = ''; }")
+        if errors:
+            raise SystemExit(f"{name}: page errors {errors}")
+        written.append(out)
+        print(f"[source] {name} ({os.path.getsize(out)/1e3:.0f} kB)")
+
+    # -- A. every source, with its real availability ------------------------ #
+    #
+    # A native <select> popup is drawn by the window system and cannot be
+    # captured, so the control is EXPANDED IN PLACE with `size`. The options,
+    # their labels and their disabled state are the running deployment's own —
+    # nothing is substituted, only shown at once.
+    page.evaluate("() => { const s = document.querySelector('#s-acq');"
+                  " s.dataset.shotSize = s.size; s.size = s.options.length; }")
+    page.wait_for_timeout(400)
+    save("source-selector-light.png", panel)
+    page.evaluate("() => { const s = document.querySelector('#s-acq');"
+                  " s.size = Number(s.dataset.shotSize || 0); }")
+    page.wait_for_timeout(300)
+
+    # -- B/C/D. each source, with the method it forces ---------------------- #
+    for value, name, label in SOURCE_SHOTS:
+        if value != "preset" and value not in available:
+            reason = (axis.get("unavailable_reasons") or {}).get(value, "")
+            skipped.append(f"{label}: {reason or 'not available here'}")
+            continue
+        # `command` reports the HTTP status and the raw body — a refusal is a
+        # 409 with the capability's own reason, and reading it as one is the
+        # difference between skipping with an explanation and skipping blind.
+        result = command(page, "set_acquisition", {"acquisition": value})
+        if int(result.get("status", 0)) != 200:
+            skipped.append(f"{label}: the dashboard refused the selection "
+                           f"({result.get('status')}: "
+                           f"{str(result.get('body'))[:160]})")
+            continue
+        page.wait_for_timeout(1500)
+        # THE ACQUISITION IS PERFORMED, not implied. A panel captioned with a
+        # source that never ran would be the one thing these images exist to
+        # rule out.
+        if value == "realsense_d435":
+            _acquire(page, "/api/perception/physical/acquire",
+                     {"model_id": "cylinder5", "roi_px": [255, 70, 445, 719],
+                      "frames": 5})
+        elif value == "isaac_simulated":
+            _acquire(page, "/api/perception/simulated/acquire",
+                     {"model_id": "cylinder5", "acquire": False})
+        elif value == "planar_webcam":
+            command(page, "detect_physical_objects")
+            page.wait_for_timeout(3000)
+        else:
+            command(page, "reset", {"preset": "mixed_pipes_dense", "seed": 42})
+            page.wait_for_timeout(1500)
+        # THE PANEL MUST AGREE WITH WHAT JUST RAN before the shutter opens.
+        # The Scenario panel, the perception panel and the D435 block are
+        # refreshed by three different pollers, and a shot taken between them
+        # showed a physical acquisition beside a SIMULATED header from the
+        # previous run — two runs in one picture, which is exactly what these
+        # images exist to rule out. An incoherent panel is now an ERROR, not a
+        # published screenshot.
+        try:
+            page.wait_for_function(
+                """async (want) => {
+                     const r = await fetch('/api/perception');
+                     const d = await r.json();
+                     return ((d.acquisition || {}).current || '') === want;
+                   }""", arg=value, timeout=30_000)
+        except Exception:                                        # noqa: BLE001
+            skipped.append(f"{label}: the panel never reported this "
+                           "acquisition as the current run")
+            continue
+        # EVERY PANEL, AT ONE INSTANT. The acquisition was driven through the
+        # endpoint rather than the button, so the page's own post-acquisition
+        # refresh never ran and the D435 block was left on its 5 s poll — which
+        # is how a stale "CURRENT RUN" badge came to sit under a simulated
+        # header. This calls the dashboard's OWN refresh; nothing is redrawn by
+        # the generator.
+        page.evaluate("async () => { if (typeof refreshAll === 'function')"
+                      " await refreshAll(); }")
+        page.wait_for_timeout(2500)
+        shown = page.locator("#s-acq").input_value()
+        if shown != value:
+            skipped.append(f"{label}: the selector settled on {shown!r}")
+            continue
+        save(name, panel)
+        # THE RESULT, for the sources that produce one. The Scenario panel shows
+        # what WILL run; this shows what DID — the provenance badge, the frame
+        # the pose is in, and for the simulated source the ground-truth
+        # comparison that only exists because the scene is simulated.
+        if value in ("realsense_d435", "isaac_simulated", "planar_webcam"):
+            result = page.locator("#perceppanel")
+            if result.is_visible():
+                save(name.replace("-light.png", "-result-light.png"), result)
+            else:
+                skipped.append(f"{label}: the perception panel is not on screen")
+
+    # -- E. the draft is not the running run -------------------------------- #
+    #
+    # Captured LAST, so the run on screen is a real acquisition and the selector
+    # beside it genuinely disagrees with it.
+    running = (_source_state(dash) or {}).get("current")
+    if running and running != "preset":
+        command(page, "set_acquisition", {"acquisition": "preset"})
+        page.wait_for_timeout(2000)
+        text = panel.inner_text()
+        if "Running now" not in text:
+            skipped.append("draft-vs-current: the panel names no running source")
+        else:
+            save("source-draft-vs-current-light.png", panel)
+    else:
+        skipped.append("draft-vs-current: no camera run was on screen to "
+                       "contrast a preset draft against")
+
+    ctx.close()
+    for note in skipped:
+        print(f"[source] SKIPPED — {note}")
+    return written
+
+
+def _acquire(page, route: str, payload: Dict) -> None:
+    """Run one acquisition through the dashboard's own endpoint, and wait."""
+    result = page.evaluate(
+        "async ([route, body]) => {"
+        " const r = await fetch(route, {method: 'POST',"
+        "   headers: {'Content-Type': 'application/json'},"
+        "   body: JSON.stringify(body)});"
+        " return await r.json(); }", [route, payload])
+    if not result.get("ok"):
+        raise SystemExit(f"{route} refused: "
+                         f"{result.get('reason') or result.get('detail') or result}")
+
+
 def _capture_screenshots(browser, dash, theme: str) -> List[str]:
     """The required light-theme still screenshots (brief §22)."""
     written: List[str] = []
@@ -651,6 +854,11 @@ def main() -> int:
                               "a sim one — for the live-only panels"))
     parser.add_argument("--live-shots", action="store_true",
                         help="with --attach: capture the live-deployment stills")
+    parser.add_argument("--source-shots", action="store_true",
+                        help=("with --attach: capture the Object source / "
+                              "Perception method UI. Each source is SELECTED "
+                              "and ACQUIRED for real; one this deployment "
+                              "cannot run is skipped with its reason."))
     parser.add_argument("--camera-shots", action="store_true",
                         help=("with --attach: capture the PHYSICAL-CAMERA "
                               "evidence. Refuses unless the attached stack is "
@@ -677,6 +885,12 @@ def main() -> int:
     try:
         with sync_playwright() as pw:
             browser = pw.chromium.launch()
+            if args.source_shots:
+                written = _capture_source_screenshots(browser, dash, args.theme)
+                browser.close()
+                dash.close()
+                print(f"\nwrote {len(written)} source screenshot(s).")
+                return 0
             if args.camera_shots:
                 written = _capture_camera_screenshots(browser, dash, args.theme)
                 browser.close()

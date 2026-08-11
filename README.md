@@ -199,21 +199,32 @@ which is the Human-in-the-Loop architecture applied to perception.
 ./run_wisepack_dashboard.sh
 ```
 
-Then open <http://127.0.0.1:8080>. The Scenario panel's **Acquisition** selector
-offers four sources, and each names the action it will actually perform:
+Then open <http://127.0.0.1:8080>. The Scenario panel's **Object source**
+selector offers four sources, and each names the action it will actually
+perform:
 
-| Acquisition | Perception method | Action |
+| Object source | Perception method | Scenario button |
 |---|---|---|
-| Preset scenario | — nothing is perceived | *Generate & plan* → the preset's deterministic objects |
-| Physical RGB camera | Planar RGB — Faster R-CNN | *Detect & plan* → a fresh webcam detection |
-| Physical RGB-D camera | RGB-D 6-DoF — FoundationPose | pick the CAD model and the ROI, then *Acquire & estimate* → a **new** D435 capture, segmentation and 6-DoF pose |
-| Simulated RGB-D camera | RGB-D 6-DoF — FoundationPose | *Acquire & estimate* → a D435-compatible frame rendered by Isaac, the same FoundationPose estimate, and the pose error against simulator ground truth |
+| Preset scenario | Not applicable — nothing is perceived | **Reset run & generate** → the preset's deterministic objects |
+| Physical RGB camera | Planar RGB — Faster R-CNN | **Reset run & detect** → a fresh webcam detection |
+| Physical RGB-D camera | RGB-D 6-DoF — FoundationPose | **Reset run & acquire** → a **new** D435 capture, segmentation and 6-DoF pose of the selected CAD model |
+| Simulated RGB-D camera | RGB-D 6-DoF — FoundationPose | **Reset run & acquire** → a D435-compatible frame rendered by Isaac, the same FoundationPose estimate, and the pose error against simulator ground truth |
 
-**Acquisition and perception method are separate selectors**, because they
-answer different questions: where the frame comes from, and how it is read.
-Where only one method can read the selected device the selector says so and
-moves with it — stated on screen, never silently. Switching either configures the
-next run and acquires nothing; only the button acquires.
+![The Object source selector expanded, showing all four sources with their real availability](images/generated/source-selector-light.png)
+
+*The selector, captured from a running dashboard. All four sources are always
+listed; one this deployment cannot run is offered **disabled with its reason** —
+here the planar webcam service is not answering — never hidden, so a build that
+lacks a capability cannot be mistaken for a camera that is merely unplugged. The
+control is shown expanded; a native dropdown's popup cannot be captured.*
+
+**Object source and perception method are separate selectors**, because they
+answer different questions: **where** the observations come from, and **how** a
+camera frame becomes observations. Each source offers only the method that can
+actually read it — the planar detector cannot use depth and FoundationPose
+cannot read a colour webcam — and a preset reads no frame at all, so its method
+is *Not applicable*. Switching either configures the next run and acquires
+nothing; only the button acquires.
 
 `./scripts/stage_e.sh --reuse` still exists as a **deterministic regression and
 unattended-demo helper** — it takes a cold machine to a dashboard showing one
@@ -529,7 +540,7 @@ Everything in this list was executed and verified on this machine.
 7. **The demo runs with nothing installed.** `./run_wisepack_demo.sh --core-only`
    needs only Python 3.
 8. **A real camera drives the real workflow.** With
-   the **Object source** set to **Physical camera**, a USB camera, a Faster R-CNN detector and
+   the **Object source** set to **Physical RGB camera**, a USB camera, a Faster R-CNN detector and
    an ArUco-calibrated plane produced two measured observations — x/y in
    millimetres and yaw in degrees — which became ordinary WISEPACK items, were
    packed by the same optimizer, validated by the same independent Digital Twin
@@ -709,20 +720,43 @@ is implied by another.
 | Axis | Values | What it decides | Chosen | Set with |
 |---|---|---|---|---|
 | **Dashboard / data source** | `sim` \| `ros` \| `fiware` | where the DASHBOARD reads state from | per process | the launcher argument: `./run_wisepack_dashboard.sh [sim\|ros\|fiware]` |
-| **Object / perception source** | `preset` \| `camera` | where each run's OBJECTS come from | **per run, at runtime** | the dashboard's **Object source** selector. `WISEPACK_PERCEPTION_SOURCE` only picks the INITIAL one |
+| **Object source** | Preset scenario \| Physical RGB camera \| Physical RGB-D camera \| Simulated RGB-D camera | where each run's OBJECTS come from | **per run, at runtime** | the dashboard's **Object source** selector. `WISEPACK_PERCEPTION_SOURCE` only picks the INITIAL one |
 | **Execution backend** | `simulated` \| `isaac` | what PERFORMS the pick-and-place the operator approved | per run | `WISEPACK_EXECUTION_BACKEND`, or the `isaac` launcher modes |
 
 ```
-   data source        sim ──── ros ──── fiware        where the dashboard reads
-   object source      preset ──── camera              where each run's objects come from
-   execution          simulated ──── isaac            what moves them
+   data source     sim ──── ros ──── fiware                  where the dashboard reads
+   object source   Preset ── Physical RGB ── Physical RGB-D ── Simulated RGB-D
+                                                             where each run's objects come from
+   execution       simulated ──── isaac                      what moves them
 ```
+
+Each source is read by exactly one perception method, and everything below the
+observation is the same code whichever produced it:
+
+```
+   Object source                     Perception method
+   ------------------------------------------------------------
+   Preset scenario                   Not applicable
+   Physical RGB camera               Planar RGB — Faster R-CNN
+   Physical RGB-D camera             RGB-D 6-DoF — FoundationPose
+   Simulated RGB-D camera            RGB-D 6-DoF — FoundationPose
+
+   -> ObservationBatch
+   -> packing
+   -> Digital Twin validation
+   -> approval
+   -> independent execution backend
+```
+
+Internally the source axis is still `preset` \| `camera` plus the acquisition
+device that names WHICH camera (`wisepack_core/acquisition.py`); the selector
+above is one control over both, and nothing downstream branches on it.
 
 **The object source is the one an operator changes mid-session.** One running
 WISEPACK can plan a generated `mixed_pipes_dense` batch, then detect two real
-bottles on a table, then generate another preset — no restart, and each run is
-stamped with the source it actually used (`preset/generated` or
-`camera/measured`).
+bottles on a table, then estimate a Cylinder5 with the D435, then generate
+another preset — no restart, and each run is stamped with the source it actually
+used.
 
 **A camera is not an execution backend. Isaac is not a perception source. FIWARE
 is not an execution backend.** Selecting a real camera does not touch the
@@ -827,7 +861,7 @@ discovers the planar RGB camera on this host and starts its detector, exposes an
 attached RealSense D435 through the FoundationPose worker, and offers the
 simulated RGB-D backend where Isaac Sim and the worker are both present. **No
 camera environment variables are required.** The session still opens on the
-ordinary preset workflow; the Scenario panel's *Acquisition* selector switches
+ordinary preset workflow; the Scenario panel's *Object source* selector switches
 to any of the three cameras whenever you like, applies to the NEXT run, and
 never touches the run on screen.
 
@@ -1078,7 +1112,7 @@ external NGSI-LD client uses.
 only thing that starts execution - and once it does, Approve/Reject grey out
 while Pause/Step become available.*
 
-1. Generate the dense pipe scenario (**Generate & plan**).
+1. Generate the dense pipe scenario (**Reset run & generate**).
 2. Baseline and optimized plans are produced from the same items.
 3. The Digital Twin validator independently checks the selected plan.
 4. The workflow stops at `WAIT_FOR_OPERATOR_APPROVAL`.
@@ -1642,7 +1676,7 @@ and Logistics status panels alongside the ROS topic and FIWARE mapping diagnosti
 | Anomaly source | simulator/adapter | architectural demo | mapped |
 | ROS 2 / DDS transport | Vulcanexus Fast DDS | **real** | - |
 | FIWARE event mapping | Orion-LD DDS bridge | **live** | - |
-| Physical 2-D camera | **live — selectable per run as Object source: Physical camera** | real | detected count |
+| Physical 2-D camera | **live — selectable per run as Object source: Physical RGB camera** | real | detected count |
 | Physical RGB-D camera (the proposal's depth pipeline) | **live — Intel RealSense D435 + FoundationPose, acquired from the dashboard** | **measured 6-DoF pose** in the camera frame; no external physical pose ground truth | detected count |
 | Simulated RGB-D camera (quantitative pose error) | **live — Isaac-rendered D435-compatible RGB-D + FoundationPose, acquired from the dashboard** | estimate is **real**; the frame is **simulated**. Pose error **measured against simulator ground truth**, read only after the estimate | no |
 | Camera→work-area extrinsic (physical) | future | not implemented — `workarea_pose_available` is false; packing uses CAD geometry, execution stays gated | no |
@@ -1704,7 +1738,7 @@ rate with zero attempts is **`not measured`**, never `0` - "no attempts yet" and
 "0% success" are different statements.
 
 **KPI1, and why a real detector does not produce it.** With
-the **Physical camera** object source a real Faster R-CNN runs on a real frame and
+the **Physical RGB camera** object source a real Faster R-CNN runs on a real frame and
 routinely reports confidences of **1.00**. That is the network's own certainty
 about the boxes it drew. It is **not** a detection rate, and WISEPACK never
 publishes it as one:
@@ -2165,7 +2199,7 @@ Isaac initializes object poses from its **existing scenario source** — the
 simulator spawned the items, so it knows where they are.
 
 This is not "WISEPACK has no perception". Camera perception is implemented and
-validated: selecting **Object source: Physical camera** runs a real detector,
+validated: selecting **Object source: Physical RGB camera** runs a real detector,
 produces measured observations, and those observations drive the packing, the
 validator, the Digital Twin and the approval gate (§15a). What is missing is
 only the last hop — building the Isaac scene from a physical `ObservationBatch`
@@ -2787,12 +2821,15 @@ dashboard/data source, object source and execution backend
 ([§5](#three-orthogonal-axes)) — and this section is about the second of them:
 
 ```text
-WISEPACK PERCEPTION        where the OBJECT OBSERVATIONS come from
-    sim
-    camera
-      +-- fasterrcnn_bottle      <- planar RGB, the default
-      +-- foundationpose_rgbd    <- RGB-D 6-DoF, physical D435 and simulated
-      +-- (future) yolo_obb, segmentation, ...
+OBJECT SOURCE                     PERCEPTION METHOD
+  where the observations            how a camera frame becomes observations
+  come from
+  ------------------------------------------------------------------------
+  Preset scenario                   Not applicable — no frame is read
+  Physical RGB camera               Planar RGB — Faster R-CNN
+  Physical RGB-D camera             RGB-D 6-DoF — FoundationPose
+  Simulated RGB-D camera            RGB-D 6-DoF — FoundationPose
+  (future) yolo_obb, segmentation, ...
           |
           v
 generic WISEPACK object observations   (PhysicalObservation / ObservationBatch)
@@ -2806,11 +2843,11 @@ EXECUTION BACKEND          who PERFORMS the approved placements
 ```
 
 **WISEPACK owns perception.** A *provider* is an implementation behind that
-boundary; the perception SOURCE answers only "where do observations come from",
+boundary; the object SOURCE answers only "where do observations come from",
 never "how the frame was read". That second question is the **perception
 method** — not a fourth system-level axis, but an **additional independent
-per-run selection within perception**, made only once the object source is
-`camera`:
+per-run selection within perception**, and it applies only once the source is a
+camera:
 
 ```
 PERCEPTION METHOD          HOW a physical frame becomes observations
@@ -2854,21 +2891,31 @@ are used only as physical proxies for cylindrical workpieces.
 > the selected execution backend — and independently of which provider produced
 > it.
 
-### Choosing the acquisition, per run
+### Choosing the object source and perception method
 
 **A camera is an additional input capability, not a replacement application
 mode.** All four sources are available in one running WISEPACK, and the Scenario
 panel offers the choice:
 
 ```text
-Acquisition:       [ Preset scenario        ▼ ]   -> [ Generate & plan ]
-                   [ Physical RGB camera    ▼ ]   -> [ Detect & plan ]
-                   [ Physical RGB-D camera  ▼ ]   -> [ Acquire & estimate ]
-                   [ Simulated RGB-D camera ▼ ]   -> [ Acquire & estimate ]
+Object source:     [ Preset scenario        ▼ ]  -> [ Reset run & generate ]
+                   [ Physical RGB camera    ▼ ]  -> [ Reset run & detect ]
+                   [ Physical RGB-D camera  ▼ ]  -> [ Reset run & acquire ]
+                   [ Simulated RGB-D camera ▼ ]  -> [ Reset run & acquire ]
 
-Perception method: [ Planar RGB — Faster R-CNN     ▼ ]   (hidden under a preset)
-                   [ RGB-D 6-DoF — FoundationPose  ▼ ]
+Perception method: follows the source, and offers only what can read it
+                   Preset scenario         -> Not applicable (disabled)
+                   Physical RGB camera     -> Planar RGB — Faster R-CNN
+                   Physical RGB-D camera   -> RGB-D 6-DoF — FoundationPose
+                   Simulated RGB-D camera  -> RGB-D 6-DoF — FoundationPose
 ```
+
+**Two questions, two controls.** The object source answers **where** the
+observations come from; the perception method answers **how** a camera frame
+becomes observations. They are not merged, and neither offers a combination that
+has no implementation: FoundationPose is never selectable for the planar webcam,
+the Faster R-CNN detector is never selectable for either RGB-D source, and a
+preset reads no frame so its method is *Not applicable*.
 
 **The two selectors are not merged, because they answer different questions:**
 *where the frame comes from* and *how it is read*. Only meaningful combinations
@@ -2898,6 +2945,31 @@ approval and its Digital Twin are exactly as they were; the choice applies when
 the operator starts the next acquisition. This is the same draft-versus-active
 rule the robot selector follows, and for the same reason.
 
+![The Scenario panel with a simulated RGB-D run current and a preset drafted for the next run](images/generated/source-draft-vs-current-light.png)
+
+*Captured from a running dashboard, and the whole draft rule in one picture:
+**Running now: Simulated RGB-D camera (simulated)** beside a NEXT-run selector
+reading **Preset scenario** and a method reading **Not applicable**. The Digital
+Twin still holds the simulated run's object; the button says
+**Reset run & generate**, which is what will replace it — when it is pressed,
+and not before.*
+
+Each source, with the method it forces and the result it produces:
+
+| Object source | Scenario panel | Result panel |
+|---|---|---|
+| Physical RGB-D camera | ![](images/generated/source-physical-rgbd-light.png) | ![](images/generated/source-physical-rgbd-result-light.png) |
+| Simulated RGB-D camera | ![](images/generated/source-simulated-rgbd-light.png) | ![](images/generated/source-simulated-rgbd-result-light.png) |
+
+*Both captured from real acquisitions on this bench. **Physical RGB-D**: a live
+D435 capture of the exact `cylinder5` CAD, pose in
+`camera_color_optical_frame`, `workarea_pose_available false`, repeatability
+reported and **no accuracy claimed** — no simulator ground truth appears, because
+none exists for a physical object. **Simulated RGB-D**: badged `SIMULATED RGB-D`
+and `d435_compatible_simulated`, the **real** FoundationPose estimator on a
+rendered frame, and the ground-truth comparison read **after** the estimate. Each
+panel shows only its own run: neither result appears in the other.*
+
 **Every acquisition is a new run.** Whichever source it came from, it creates a
 new scenario revision, revokes any outstanding approval, plans from exactly the
 new input, publishes a coherent `run_id`/`scenario_revision` set, and requires
@@ -2906,11 +2978,11 @@ approval again. **An approval never crosses a source or batch change.**
 A typical session, with no restart anywhere:
 
 ```text
-Preset scenario         ->  Generate & plan     ->  40 generated objects   -> approve?
-Physical RGB camera     ->  Detect & plan       ->   2 measured objects    -> approve?
-Physical RGB-D camera   ->  Acquire & estimate  ->   1 measured Cylinder5  -> approve?
-Simulated RGB-D camera  ->  Acquire & estimate  ->   1 estimated Cylinder5 -> approve?
-Preset scenario         ->  Generate & plan     ->  16 generated objects   -> approve?
+Preset scenario         ->  Reset run & generate ->  40 generated objects   -> approve?
+Physical RGB camera     ->  Reset run & detect   ->   2 measured objects    -> approve?
+Physical RGB-D camera   ->  Reset run & acquire  ->   1 measured Cylinder5  -> approve?
+Simulated RGB-D camera  ->  Reset run & acquire  ->   1 estimated Cylinder5 -> approve?
+Preset scenario         ->  Reset run & generate ->  16 generated objects   -> approve?
 ```
 
 The Digital Twin simply shows the current plan, so every switch is visible:
@@ -2930,9 +3002,9 @@ still reported; what is refused is letting it replace the run on screen.
 
 Preset generation **always** works. If no perception service is answering:
 
-* the Object source selector still lists **Physical camera**, disabled, with the
+* the Object source selector still lists **Physical RGB camera**, disabled, with the
   reason — "no perception service is answering at …";
-* `Detect & plan` is refused with that reason. **There is no silent fall back to
+* `Reset run & detect` is refused with that reason. **There is no silent fall back to
   a generated scenario**, in either direction;
 * everything else behaves exactly as it always has.
 
@@ -2948,8 +3020,8 @@ other:
 
 | Method | Control | What it sends | How the batch reaches the orchestrator |
 |---|---|---|---|
-| **Planar RGB — Faster R-CNN** | *Detect & plan* (Scenario panel) and *Detect physical objects* (Physical Perception panel) — **the same command from two entry points** | `detect_physical_objects` | the orchestrator **pulls** the batch from the perception service over HTTP and republishes it |
-| **Physical RGB-D — FoundationPose** | *Acquire & estimate* (Physical Perception panel), after picking the CAD model and the ROI | a new acquisition through the **shared physical pipeline** (`perception/physical_pipeline.py`), then `submit_observation_batch` in live ROS/DDS mode | the batch is **pushed** to the orchestrator, already measured, over the ordinary operator command path |
+| **Planar RGB — Faster R-CNN** | *Reset run & detect* (Scenario panel) and *Detect physical objects* (Perception panel) — **the same command from two entry points** | `detect_physical_objects` | the orchestrator **pulls** the batch from the perception service over HTTP and republishes it |
+| **Physical RGB-D — FoundationPose** | *Reset run & acquire* (Scenario panel) and *Acquire & estimate* (Perception panel), after picking the CAD model and the ROI | a new acquisition through the **shared physical pipeline** (`perception/physical_pipeline.py`), then `submit_observation_batch` in live ROS/DDS mode | the batch is **pushed** to the orchestrator, already measured, over the ordinary operator command path |
 
 Both commands are generic: they carry an `ObservationBatch` and nothing about a
 detector, a camera model or a part number. Which method produced a batch is
@@ -2964,7 +3036,7 @@ rule when it adopts a batch on a preset run.
 This is not a design sketch. The images below are captures of a running stack —
 `./run_wisepack_dashboard.sh` with `WISEPACK_PERCEPTION_CAMERA=0` and the camera
 selected as the object source (these were taken with
-`WISEPACK_PERCEPTION_SOURCE=camera`; selecting **Physical camera** in the
+`WISEPACK_PERCEPTION_SOURCE=camera`; selecting **Physical RGB camera** in the
 dashboard produces the same state) — and the generator that produces them
 (`scripts/generate_readme_gifs.py --attach <url> --camera-shots`) **refuses to
 capture anything** unless the attached dashboard reports a real camera source, a
@@ -3046,7 +3118,7 @@ objects that have since moved is never carried forward.
 ### Preset scenarios (the default object source)
 
 ```text
-Scenario panel  ->  Object source: Preset scenario  ->  [ Generate & plan ]
+Scenario panel  ->  Object source: Preset scenario  ->  [ Reset run & generate ]
 ```
 
 No camera, no image, no detector: the selected preset's deterministic generator
@@ -3062,7 +3134,7 @@ not remove it, and coming back to it is the same dropdown.
 ### Real camera perception
 
 ```text
-Scenario panel  ->  Object source: Physical camera  ->  [ Detect & plan ]
+Scenario panel  ->  Object source: Physical RGB camera  ->  [ Reset run & detect ]
 ```
 
 Objects on a calibrated table are detected by the configured perception
@@ -3122,15 +3194,15 @@ follows assumes `./scripts/setup_foundationpose.sh` has built the image and
 started the worker.
 
 **Once the worker is available, BOTH RGB-D paths are ordinary dashboard
-actions.** `./run_wisepack_dashboard.sh` offers each as an *Acquisition* choice,
+actions.** `./run_wisepack_dashboard.sh` offers each as an *Object source* choice,
 and either batch goes through the same packing, Digital Twin validation and
 approval gate every other run uses. There is no separate application mode and no
 shell command in between.
 
 | | How it is run | What it gives |
 |---|---|---|
-| **Physical** RGB-D, live D435 | *Acquisition: Physical RGB-D camera* → *Acquire & estimate*. `./scripts/physical_c5.sh` runs the same pipeline from a shell for diagnostics | a 6-DoF pose in the camera frame, straight into the workflow. **No external pose ground truth exists**, so no accuracy is claimed |
-| **Simulated** RGB-D | *Acquisition: Simulated RGB-D camera* → *Acquire & estimate*. `./scripts/stage_b.sh` / `./scripts/stage_c.sh` / `./scripts/stage_e.sh` drive the same library from a shell | the quantitative pose error, against Isaac ground truth read **after** the estimate |
+| **Physical** RGB-D, live D435 | *Object source: Physical RGB-D camera* → *Reset run & acquire*. `./scripts/physical_c5.sh` runs the same pipeline from a shell for diagnostics | a 6-DoF pose in the camera frame, straight into the workflow. **No external pose ground truth exists**, so no accuracy is claimed |
+| **Simulated** RGB-D | *Object source: Simulated RGB-D camera* → *Reset run & acquire*. `./scripts/stage_b.sh` / `./scripts/stage_c.sh` / `./scripts/stage_e.sh` drive the same library from a shell | the quantitative pose error, against Isaac ground truth read **after** the estimate |
 
 Both call `perception/simulated_rgbd_pipeline.py` and
 `perception/physical_pipeline.py` respectively — **one implementation each, two
@@ -3309,7 +3381,7 @@ inside the window. The ROI never establishes *what* the object is; that stays
 The printed ArUco sheet is a **calibration reference, not part of detection**.
 
 1. **Saved calibration exists** → it is loaded and used for x/y/yaw. **The sheet
-   is not required**, so "Detect & plan" works over a table covered in the
+   is not required**, so "Reset run & detect" works over a table covered in the
    objects being measured, and across restarts.
 2. **No saved calibration, markers visible** → the homography is computed and
    **saved**, then detection proceeds.
@@ -3512,7 +3584,7 @@ The launcher prints what it is doing and waits for the detector to be ready:
 ```text
 [perception] camera capability requested — the session starts on the
 [perception] preset workflow; switch the dashboard's Object source to
-[perception] Physical camera whenever you like.
+[perception] Physical RGB camera whenever you like.
 [perception] service URL       : http://127.0.0.1:22101
 [perception] detector service  : starting
 [perception] perception python : /path/to/wisepack/.venv-perception/bin/python (WISEPACK perception environment)
@@ -3579,7 +3651,7 @@ camera" — the launcher prints the reason and the tail of
 `6`. It never opens on a generated scenario behind a UI that claims a camera.
 With `WISEPACK_PERCEPTION_ENABLE=1` — "have the camera ready" — it is a warning:
 nothing has claimed a camera yet, preset runs are unaffected, and the dashboard
-shows **Physical camera** as unavailable with the reason until a service
+shows **Physical RGB camera** as unavailable with the reason until a service
 appears.
 
 `WISEPACK_PERCEPTION_CAMERA` accepts a device index (`2`), a device path
@@ -3733,7 +3805,7 @@ It names the **current run's** source rather than the draft, so a session that
 has selected the camera for the *next* run still reads honestly:
 
 ```text
-Current run source: Preset scenario   Detector: Faster R-CNN     Next run: Physical camera
+Current run source: Preset scenario   Detector: Faster R-CNN     Next run: Physical RGB camera
 Camera: connected                     Model: loaded
 Detected cylindrical objects: — (this run came from a preset)
 ```
@@ -3741,7 +3813,7 @@ Detected cylindrical objects: — (this run came from a preset)
 and on a camera-selected run it is the acquisition panel:
 
 ```text
-Current run source: Physical camera   Detector: Faster R-CNN
+Current run source: Physical RGB camera   Detector: Faster R-CNN
 Camera: connected                     Model: loaded              Calibration: VALID
 Detected cylindrical objects: N       Last detection: <timestamp>
 Frame: wisepack_workarea
@@ -3871,7 +3943,7 @@ is usable and, if not, why.
 | `ModuleNotFoundError: No module named 'uvicorn'` in the detector log | the service was run with the system `python3` instead of `.venv-perception/bin/python`. The launcher never does this; a hand-started service can. |
 | `unknown perception source 'harmony_camera'` | the value was renamed to `camera`. Update `config/local.env`. |
 | "I have to restart WISEPACK to use the camera" | you do not, and have not since the object source became a per-run selection. Set `WISEPACK_PERCEPTION_ENABLE=1`, then switch **Object source** in the Scenario panel. |
-| `Physical camera` is greyed out in the selector | no perception service is answering. The reason is on the option's tooltip and beside the selector; start one and the option becomes selectable **without a restart**. |
+| `Physical RGB camera` is greyed out in the selector | no perception service is answering. The reason is on the option's tooltip and beside the selector; start one and the option becomes selectable **without a restart**. |
 | `the physical camera is not available as an object source` | the same thing, reported when a detection was actually requested. Nothing was substituted — there is no fall back to a generated scenario. |
 | `WISEPACK_HARMONY_PATH` / `WISEPACK_PERCEPTION_PYTHON` appear to do nothing | correct — they were removed. Perception runs entirely from this repository; see *The perception environment*. |
 | "Vulcanexus is not installed on the host" in diagnostics | expected and correct. WISEPACK uses the **containerized** Vulcanexus runtime; the host needs no middleware for camera perception. |
@@ -3965,7 +4037,7 @@ Figures in `images/generated/` are produced by running the real pipeline -
 Stated plainly, because a demonstrator that hides its edges is not evidence.
 
 1. **Perception is real and optional, in two methods with different limits.**
-   Selecting a camera under **Acquisition** runs it through the selected
+   Selecting a camera under **Object source** runs it through the selected
    perception method, and the resulting observations are what the planner packs
    ([§15a](#15a-real-camera-perception)).
 
