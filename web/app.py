@@ -1838,11 +1838,12 @@ def api_perception_physical_acquire(payload: Optional[Dict[str, Any]] = None):
     from physical_pipeline import (PhysicalAcquisitionError,       # noqa: PLC0415
                                    run as run_physical)
     try:
-        document = run_physical(
+        result = run_physical(
             model_id=model_id, roi_px=roi,
             frames=int(body.get("frames", 5)),
             refine_iterations=int(body.get("refine_iterations", 5)),
             dataset=str(body.get("dataset", "")).strip())
+        document = result.document
     except PhysicalAcquisitionError as exc:
         # THE REFUSAL REACHES THE OPERATOR WITH ITS STAGE AND ITS REASON. A mask
         # that broke into six components and a camera that is unplugged are
@@ -1850,6 +1851,24 @@ def api_perception_physical_acquire(payload: Optional[Dict[str, Any]] = None):
         # previous pose, no simulation and no planar result is substituted.
         return {"ok": False, **exc.to_dict()}
     observation = document.get("observation") or {}
+
+    # THE OBJECTS WISEPACK PLANS FROM ARE NOW THESE OBJECTS.
+    #
+    # THE DIGITAL TWIN IS A PACKING TWIN, not the work-cell simulator. It asks
+    # how this object's GEOMETRY fits inside the container, and a model-backed
+    # observation carries that geometry from the registry — D25 x L342, bore 19
+    # for a cylinder5 — with no reference to where the object sat on the table.
+    # `to_waste_items()` reads those declared dimensions for a CAD-backed
+    # observation and never touches the pose, so the missing camera-to-work-area
+    # extrinsic does not and must not block container packing. Where the object
+    # IS in the cell is a different question, still unanswered, and still gating
+    # execution through `workarea_pose_available` — which stays False.
+    #
+    # REPLACEMENT, NOT ACCUMULATION, and that is `apply_observation_batch`'s own
+    # contract: two planar objects from the previous run do not survive a
+    # physical batch that found one tube.
+    planning = _apply_physical_batch(result.batch)
+
     return {
         "ok": True,
         "dataset": document.get("dataset", ""),
@@ -1858,6 +1877,153 @@ def api_perception_physical_acquire(payload: Optional[Dict[str, Any]] = None):
         "completed_at": document.get("completed_at", ""),
         "frame_id": observation.get("frame_id", ""),
         "pose_valid": (observation.get("pose") or {}).get("valid"),
+        # TWO SEPARATE FACTS, REPORTED SEPARATELY. The source pose is not
+        # placeable; the packing geometry is known.
+        "workarea_pose_available": False,
+        "source_frame_note": (
+            "Source pose is in camera coordinates. Container placement uses the "
+            "known CAD geometry and does not require the source work-area pose."),
+        "planning": planning,
+    }
+
+
+def _submit_physical_batch_over_dds(batch, timeout_s: float = 20.0
+                                    ) -> Dict[str, Any]:
+    """Publish the batch to the orchestrator and WAIT for it to take effect.
+
+    A PUBLISH IS NOT AN OUTCOME. The command path is fire-and-forget over DDS,
+    so reporting "planning applied" because the publish returned would claim a
+    re-plan that may never have happened — the same class of claim the whole
+    physical path is written to avoid. This watches the orchestrator's own
+    published state until the scenario reports the batch, and says plainly what
+    it saw if it does not.
+    """
+    from ros_observer import publish_operator_command                # noqa: PLC0415
+
+    def _observed(snap):
+        """(revision, items, containers) as the ORCHESTRATOR published them."""
+        scenario = getattr(snap, "scenario", None) or {}
+        selected = getattr(snap, "selected", None) or {}
+        return (getattr(snap, "scenario_revision", 0),
+                list(scenario.get("items") or []),
+                selected.get("containers_required"))
+
+    before, _items, _containers = _observed(_provider().snapshot())
+    ok, detail = publish_operator_command(
+        "submit_observation_batch", {"batch": batch.to_dict()})
+    if not ok:
+        return {"applied": False, "submitted": False,
+                "reason": f"the batch could not be published: {detail}"}
+
+    # ADOPTION IS ONE TICK AWAY, deliberately — the orchestrator applies batches
+    # on the thread that owns the engine, not in a DDS callback.
+    deadline = time.time() + timeout_s
+    while time.time() < deadline:
+        time.sleep(0.5)
+        revision, items, containers = _observed(_provider().snapshot())
+        # A NEW REVISION *AND* ITEMS. The revision alone would report success
+        # the instant the orchestrator bumped it, before the plan existed.
+        if revision != before and items:
+            return {
+                "applied": True, "submitted": True,
+                "path": "ros2 -> dds -> orchestrator",
+                "scenario_revision": revision,
+                "items": len(items),
+                "item_geometry": _item_geometry(items[0]),
+                "containers": containers,
+            }
+    return {
+        "applied": False, "submitted": True,
+        "path": "ros2 -> dds -> orchestrator",
+        # THE POSE STILL STANDS. The measurement happened; what did not happen
+        # is the re-plan, and the two are reported as the separate facts they
+        # are rather than collapsing into one failure.
+        "reason": (f"the batch was published but the orchestrator did not "
+                   f"report a new scenario within {timeout_s:g}s. The physical "
+                   "result above is unaffected; the packing plan was not "
+                   "regenerated."),
+    }
+
+
+def _item_geometry(item) -> Optional[Dict[str, Any]]:
+    """The packing geometry of one item, however it reached us.
+
+    Reads a domain object or a serialised one: the local path holds `WasteItem`s
+    and the live path holds whatever the orchestrator published.
+    """
+    if item is None:
+        return None
+    if isinstance(item, dict):
+        observation = item.get("observation") or {}
+        return {"object_model_id": observation.get("object_model_id", ""),
+                "outer_diameter_mm": item.get("outer_diameter_mm"),
+                "length_mm": item.get("length_mm"),
+                "inner_diameter_mm": item.get("inner_diameter_mm"),
+                "geometry_source": observation.get("geometry_source", "")}
+    observation = getattr(item, "observation", None)
+    return {
+        "object_model_id": getattr(observation, "object_model_id", "")
+        if observation else "",
+        "outer_diameter_mm": getattr(item, "outer_diameter_mm", None),
+        "length_mm": getattr(item, "length_mm", None),
+        "inner_diameter_mm": getattr(item, "inner_diameter_mm", None),
+        "geometry_source": getattr(observation, "geometry_source", "")
+        if observation else "",
+    }
+
+
+def _apply_physical_batch(batch) -> Dict[str, Any]:
+    """Hand one physical batch to the ordinary workflow and re-plan.
+
+    THE SAME FOUR CALLS `detect_physical_objects` MAKES, in the same order, for
+    the same reason: a new batch is a new scenario revision, so the plan is
+    rebuilt, the twin re-validates it and the approval gate is re-entered. There
+    is no physical-specific planner, and nothing here knows what a camera is.
+    """
+    with STATE.lock:
+        engine = STATE.engine
+    if SOURCE != "sim" or engine is None:
+        # LIVE MODE: THE ORCHESTRATOR OWNS THE WORKFLOW, so the batch goes to it
+        # over the documented operator command path — the same seam an external
+        # NGSI-LD client would use. Applying it in-process here would demo a
+        # control path that does not exist and would leave the orchestrator's
+        # scenario untouched, which is precisely the split that made a physical
+        # acquisition change nothing in live mode.
+        return _submit_physical_batch_over_dds(batch)
+    try:
+        # A CAMERA RUN, if the run on screen came from a preset: grafting a
+        # camera batch onto a generated scenario would leave a plan whose items
+        # nobody observed. The old approval goes with the old engine.
+        if not engine.config.perception_source.is_physical:
+            with STATE.lock:
+                STATE.settings["object_source"] = PerceptionSource.CAMERA.value
+                STATE.settings_touched = True
+                settings = dict(STATE.settings)
+            engine = start_run(settings, acquire=False)
+            with STATE.lock:
+                STATE.engine = engine
+                STATE.events.clear()
+                for event in engine.log.events():
+                    STATE.events.append(event.to_dict())
+        engine.apply_observation_batch(batch)
+        engine.generate_plans()
+        engine.digital_twin_validate()
+        engine.request_approval()
+    except Exception as exc:                                     # noqa: BLE001
+        # THE PERCEPTION RESULT STANDS EVEN IF PLANNING DOES NOT. The pose was
+        # measured; a planner that could not use it is a separate failure and is
+        # reported as one rather than discarding the measurement.
+        return {"applied": False, "reason": f"{type(exc).__name__}: {exc}"}
+    items = list(getattr(engine.scenario, "items", []) or [])
+    return {
+        "applied": True,
+        "submitted": False,
+        "path": "in-process workflow engine",
+        "scenario_revision": engine.scenario_revision,
+        "items": len(items),
+        "item_geometry": _item_geometry(items[0] if items else None),
+        "containers": (engine.selected.containers_required
+                       if engine.selected else None),
     }
 
 

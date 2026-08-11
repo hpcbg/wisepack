@@ -196,10 +196,12 @@ def main() -> int:
         return 0
 
     try:
+        # The CLI plans nothing, so it takes the document and leaves the
+        # batch — the dashboard is the caller that hands it to the workflow.
         document = run(model_id=args.model, roi_px=roi, frames=args.frames,
                        refine_iterations=args.refine_iterations,
                        dataset=args.dataset, segmentation_options=options,
-                       log=say)
+                       log=say).document
     except PhysicalAcquisitionError as exc:
         say(f"{exc.stage}: {exc.reason}")
         if exc.detail.get("segmentation"):

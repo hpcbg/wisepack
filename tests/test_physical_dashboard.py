@@ -421,8 +421,10 @@ def test_acquisition_requires_an_explicit_model():
     body = _function(app, "def api_perception_physical_acquire")
     assert "`model_id` is required" in body
     assert "never inferred" in body
-    # And no model is hard-coded into the generic endpoint.
-    assert "cylinder5" not in body
+    # And no model is hard-coded into the generic endpoint — CODE ONLY, since
+    # the comments name cylinder5 as the worked example when explaining that the
+    # CAD geometry, not the pose, is what packing uses.
+    assert "cylinder5" not in _code_only(body)
 
 
 def test_the_model_list_comes_from_the_registry():

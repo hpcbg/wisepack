@@ -121,7 +121,12 @@ class GenerateOrLoadScenario(_EngineBehaviour):
 
 class ScanAndDetect(_EngineBehaviour):
     def update(self):
-        if self.engine.detected:
+        # OBJECTS OBSERVED, not "observations that carried a confidence" — see
+        # `WorkflowEngine.objects_detected`. A FoundationPose batch has no
+        # confidence by design, and reading its absence as "nothing detected"
+        # parked the workflow at DETECT_ITEMS with the object already in the
+        # scenario.
+        if self.engine.objects_detected:
             return py_trees.common.Status.SUCCESS
         try:
             self.engine.scan_and_detect()
@@ -904,7 +909,7 @@ class HitLOrchestrator(Node):
         """
         if self._pending_observation is None:
             return
-        if self.engine.scenario is None or not self.engine.detected:
+        if self.engine.scenario is None or not self.engine.objects_detected:
             return                      # ScanAndDetect will consume it on tick
         try:
             self.engine.apply_observation_batch(
@@ -1382,6 +1387,58 @@ class HitLOrchestrator(Node):
             # command path non-blocking: an inference pass takes seconds, and
             # holding the orchestrator's callback for it would stall the
             # heartbeat.
+            self.auto_step = False
+
+        elif command == "submit_observation_batch":
+            # A BATCH MEASURED SOMEWHERE ELSE, adopted through exactly the path
+            # a pulled one takes.
+            #
+            # WHY PUSH AT ALL. `detect_physical_objects` has this node pull from
+            # the perception service, which works because that service is one
+            # HTTP call away and owns its camera. The RGB-D path cannot work
+            # that way: its estimator, its depth camera and its CAD meshes live
+            # in the FoundationPose worker and the dashboard's own process, and
+            # duplicating that here would be a second inference implementation —
+            # the thing the shared pipeline exists to prevent. So the measurement
+            # arrives already made, and this node stays the single DDS authority
+            # that adopts it.
+            #
+            # THE ORCHESTRATOR LEARNS NOTHING ABOUT THE DETECTOR. It reads an
+            # ObservationBatch; which method produced it is provenance carried
+            # inside, exactly as it is for a pulled batch.
+            document = args.get("batch")
+            if not isinstance(document, dict):
+                raise ValueError(
+                    "`batch` is required: a serialised ObservationBatch. The "
+                    "orchestrator does not acquire this one — it adopts what "
+                    "was measured.")
+            batch = ObservationBatch.from_dict(document)
+            if not batch.ok:
+                # RECORDED AS A FAILURE, NOT DROPPED. `apply_observation_batch`
+                # is what renders a failed scan to the operator, and refusing it
+                # here would hide the reason the objects did not change.
+                self._pending_observation = batch
+                self.publish_observation_batch(batch)
+                raise ValueError(f"the submitted batch failed: {batch.error}")
+            if not batch.observations:
+                raise ValueError(
+                    "the submitted batch contains no observations; an empty "
+                    "batch would clear the scenario without measuring anything")
+            if not self.engine.config.perception_source.is_physical:
+                # THE SAME NEW-RUN RULE the pulled path follows: the objects are
+                # about to come from somewhere else entirely, so a preset run's
+                # generated items, plan and approval go with its engine rather
+                # than being grafted onto a camera batch.
+                self._reset_run({**{k: v for k, v in args.items()
+                                    if k != "batch"},
+                                 "object_source": PerceptionSource.CAMERA.value,
+                                 "detect": False})
+            # PARKED, NOT APPLIED HERE. Adoption mutates the engine and re-plans,
+            # which belongs on the thread that owns it — `adopt_pending_observation`
+            # on the next tick, with the revision and approval-gate handling that
+            # every other batch gets.
+            self._pending_observation = batch
+            self.publish_observation_batch(batch)
             self.auto_step = False
 
         elif command == "acknowledge_anomaly":

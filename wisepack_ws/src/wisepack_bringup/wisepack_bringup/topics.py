@@ -277,6 +277,17 @@ OPERATOR_COMMANDS = (
     # back to the other one.
     "set_object_source",        # choose preset|camera for the NEXT run (draft)
     "detect_physical_objects",  # acquire a batch from the camera -> new run/revision
+    # SUBMIT A BATCH SOMEBODY ELSE ACQUIRED. `detect_physical_objects` asks the
+    # orchestrator to PULL from the perception service; this one PUSHES a batch
+    # that has already been measured — the RGB-D path runs its estimator where
+    # the camera and the CAD meshes are, and the orchestrator has neither.
+    #
+    # GENERIC ON PURPOSE. The payload is a serialised ObservationBatch and
+    # nothing more: no method, model or geometry is named in the command. The
+    # orchestrator adopts it exactly as it adopts a pulled one, so a future
+    # detector needs no new command and this one carries no knowledge of which
+    # detector produced what.
+    "submit_observation_batch",  # adopt an externally measured batch -> revision
     # -- cut-aware HITL controls (brief §6) --
     "compare_cut_aware",        # generate the no-cut vs cut-aware comparison
     "select_cut_alternative",   # choose a specific cut alternative

@@ -59,6 +59,25 @@ ARTIFACTS = (("rgb", "rgb.jpg"), ("depth", "depth_aligned.jpg"),
              ("mask", "mask.jpg"), ("segmentation", "mask_overlay.jpg"))
 
 
+class PhysicalResult:
+    """What one physical acquisition produced, for both of its callers.
+
+    THE BATCH IS RETURNED, NOT REBUILT. The provider already constructed an
+    `ObservationBatch` on the way to writing this document; handing the caller
+    the document alone would force the dashboard to reconstruct one from JSON,
+    and a second construction is a second place for the CAD geometry, the frame
+    or the provenance to be assembled differently.
+
+    `document` is the JSON-serialisable artefact the panel renders. `batch` is
+    the live domain object the workflow plans from. They describe one
+    acquisition and are never produced separately.
+    """
+
+    def __init__(self, document: Dict[str, Any], batch: Any) -> None:
+        self.document = document
+        self.batch = batch
+
+
 class PhysicalAcquisitionError(RuntimeError):
     """A refusal, naming the STAGE that refused and why.
 
@@ -425,7 +444,7 @@ def eligible_models(repo_root: str = REPO) -> List[Dict[str, Any]]:
 def run(model_id: str, roi_px: Optional[List[int]] = None, frames: int = 5,
         refine_iterations: int = 5, dataset: str = "",
         segmentation_options: Optional[Dict[str, Any]] = None,
-        log: Callable[[str], None] = _noop) -> Dict[str, Any]:
+        log: Callable[[str], None] = _noop) -> "PhysicalResult":
     """Acquire, segment, refuse or estimate — and write the artefact.
 
     RAISES `PhysicalAcquisitionError` at the stage that refused. Returns the
@@ -525,10 +544,14 @@ def run(model_id: str, roi_px: Optional[List[int]] = None, frames: int = 5,
     }
     with open(os.path.join(OUT, "physical_c5.json"), "w", encoding="utf-8") as h:
         json.dump(document, h, indent=2, default=str)
-    return document
+    # THE BATCH RIDES ALONG. `first` is the batch the provider built from the
+    # worker's response, with the CAD geometry the registry declares already on
+    # its observation — which is exactly what the packing layer needs and what
+    # a JSON round-trip would make somebody reassemble by hand.
+    return PhysicalResult(document, first)
 
 
-__all__ = ["PhysicalAcquisitionError", "run", "eligible_models", "OUT",
+__all__ = ["PhysicalAcquisitionError", "PhysicalResult", "run", "eligible_models", "OUT",
            "WIDTH", "HEIGHT", "FPS", "DEPTH_SCALE_MM", "ARTIFACTS",
            "require_camera", "capture", "segment", "estimate", "succeeded",
            "observation_of", "pose_of", "repeatability", "plausibility",

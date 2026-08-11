@@ -320,6 +320,29 @@ class WorkflowEngine:
     # Stage 2/3 — simulated perception
     # ------------------------------------------------------------------ #
 
+    @property
+    def objects_detected(self) -> bool:
+        """Have the objects to plan from been observed?
+
+        NOT `bool(self.detected)`, AND THE DIFFERENCE IS A REAL DEFECT THIS
+        REPLACED. `detected` maps item id -> CONFIDENCE, and it is filled only
+        for observations that carry one. A FoundationPose observation carries
+        none on purpose — the estimator's score ranks pose hypotheses against
+        each other and is never rendered as a probability — so a perfectly good
+        RGB-D batch of one Cylinder5 left `detected` empty. The behaviour tree
+        read that as "nothing detected", re-entered ScanAndDetect and parked the
+        workflow at DETECT_ITEMS forever, with the item sitting in the scenario.
+
+        The question the tree is really asking is whether objects were observed.
+        Whether each came with a confidence is a different question, and one
+        detector legitimately answers it "no".
+        """
+        if self.detected:
+            return True
+        batch = self.observation_batch
+        return bool(batch is not None and batch.ok
+                    and self.scenario is not None and self.scenario.items)
+
     def scan_and_detect(self) -> Dict[str, float]:
         """Acquire the object observations this run will plan from.
 
