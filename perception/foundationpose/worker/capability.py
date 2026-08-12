@@ -58,11 +58,20 @@ ISAAC_DATASETS_DIR = os.environ.get("WISEPACK_FP_ISAAC_DATASETS_DIR",
 #: everything under it. `resolve_dataset()` still confines a caller-supplied
 #: name to the root, so being writable does not widen what a request can name.
 CAPTURES_DIR = os.environ.get("WISEPACK_FP_CAPTURES_DIR", "/captures")
+#: A FOURTH root: LEARNED REPRESENTATIONS, for model-free estimation. It holds
+#: meshes exported from Neural Object Fields, and it is separate from the CAD
+#: tree for the reason the whole model-free separation exists — a representation
+#: is not engineering geometry, and the two must not be reachable through one
+#: another. Read-only: representations are built by an explicit offline step and
+#: this worker never writes one.
+REPRESENTATIONS_DIR = os.environ.get("WISEPACK_FP_REPRESENTATIONS_DIR",
+                                     "/representations")
 
 
 def dataset_roots():
-    """Every root a dataset may live under, in search order."""
-    return [d for d in (DATASETS_DIR, ISAAC_DATASETS_DIR, CAPTURES_DIR)
+    """Every root a dataset or mesh may live under, in search order."""
+    return [d for d in (DATASETS_DIR, ISAAC_DATASETS_DIR, CAPTURES_DIR,
+                        REPRESENTATIONS_DIR)
             if os.path.isdir(d)]
 
 #: The two checkpoint directories FoundationPose requires, exactly as upstream
@@ -355,5 +364,5 @@ class Capabilities:
 
 
 __all__ = ["Capabilities", "Probe", "WEIGHTS_DIR", "DATASETS_DIR",
-           "ISAAC_DATASETS_DIR", "dataset_roots",
+           "ISAAC_DATASETS_DIR", "REPRESENTATIONS_DIR", "dataset_roots",
            "REFINER_DIR", "SCORER_DIR", "CHECKPOINT_FILE"]

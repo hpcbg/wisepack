@@ -139,8 +139,15 @@ def _provider(tmp_path, client=None, **registry_kw):
 def test_the_method_names_describe_capabilities_not_implementations():
     """`fasterrcnn_bottle` names a module. The public axis names what the method
     DOES, so a provider can be replaced without renaming the operator's world."""
-    assert set(KNOWN_PERCEPTION_METHODS) == {"planar_fasterrcnn",
-                                             "foundationpose_rgbd"}
+    assert set(KNOWN_PERCEPTION_METHODS) == {
+        "planar_fasterrcnn",
+        "foundationpose_rgbd",
+        # NAMED FOR WHAT IT DOES, like the others: it estimates 6-DoF pose
+        # without being given a model of the object. `model_free` is NVIDIA's
+        # term for the capability, not a WISEPACK module name — the provider
+        # behind it is the same `foundationpose_rgbd` one.
+        "foundationpose_rgbd_model_free",
+    }
 
 
 def test_planar_is_the_default_and_foundationpose_is_not():

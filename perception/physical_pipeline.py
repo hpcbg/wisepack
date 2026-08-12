@@ -38,6 +38,8 @@ for _path in (os.path.join(REPO, "perception"),
     if _path not in sys.path:                                 # pragma: no cover
         sys.path.insert(0, _path)
 
+from wisepack_core.perception import PerceptionMethod          # noqa: E402
+
 WORKER = f"http://127.0.0.1:{os.environ.get('WISEPACK_FP_PORT', '22201')}"
 
 #: Where the result and its images live. One directory, so the dashboard panel
@@ -53,6 +55,11 @@ WIDTH, HEIGHT, FPS = 1280, 720, 30
 
 #: A uint16 millimetre depth PNG, which is what `capture_dataset` writes.
 DEPTH_SCALE_MM = 1.0
+
+#: The DEFAULT method. Both FoundationPose methods read the same physical
+#: capture through the same worker and the same shared mask; which geometry the
+#: estimator is given travels as `method` rather than being fixed here.
+METHOD = PerceptionMethod.FOUNDATIONPOSE_RGBD.value
 
 #: The images the panel and the CLI both show.
 ARTIFACTS = (("rgb", "rgb.jpg"), ("depth", "depth_aligned.jpg"),
@@ -229,8 +236,8 @@ def segment(dataset: str, frame: int, options: Dict[str, Any]
 
 
 def estimate(dataset: str, model_id: str, frames: int, options: Dict[str, Any],
-             refine_iterations: int, log: Callable[[str], None] = _noop
-             ) -> List[Any]:
+             refine_iterations: int, log: Callable[[str], None] = _noop,
+             method: str = METHOD) -> List[Any]:
     """One batch per frame, through the SAME provider the Isaac path uses."""
     from providers.foundationpose_rgbd import FoundationPoseProvider
 
@@ -243,7 +250,8 @@ def estimate(dataset: str, model_id: str, frames: int, options: Dict[str, Any],
             depth_scale_mm=DEPTH_SCALE_MM, frame=index,
             refine_iterations=refine_iterations,
             batch_id=f"physical-{model_id}-{index + 1}",
-            mask_source="depth_plane_foreground", segmentation=options)
+            mask_source="depth_plane_foreground", segmentation=options,
+            method=method)
         elapsed = (time.monotonic() - started) * 1000.0
         if str(getattr(batch.status, "value", batch.status)) != "ok":
             log(f"frame {index}: estimation FAILED — {batch.error}")
@@ -453,6 +461,7 @@ def eligible_models(repo_root: str = REPO) -> List[Dict[str, Any]]:
 def run(model_id: str, roi_px: Optional[List[int]] = None, frames: int = 5,
         refine_iterations: int = 5, dataset: str = "",
         segmentation_options: Optional[Dict[str, Any]] = None,
+        method: str = METHOD,
         log: Callable[[str], None] = _noop) -> "PhysicalResult":
     """Acquire, segment, refuse or estimate — and write the artefact.
 
@@ -503,7 +512,8 @@ def run(model_id: str, roi_px: Optional[List[int]] = None, frames: int = 5,
             {"segmentation": segmentation, "dataset": dataset,
              "images": [k for k, _ in ARTIFACTS]})
 
-    batches = estimate(dataset, model_id, frames, options, refine_iterations, log)
+    batches = estimate(dataset, model_id, frames, options, refine_iterations,
+                       log, method=method)
     ok = succeeded(batches)
     if not ok:
         raise PhysicalAcquisitionError(
@@ -523,6 +533,14 @@ def run(model_id: str, roi_px: Optional[List[int]] = None, frames: int = 5,
         "device": device,
         "dataset": dataset,
         "model_id": model_id,
+        # THE RUN'S OWN RECORD of which method ran and what geometry the
+        # estimator was given. Written here so the dashboard reports THIS run's
+        # provenance rather than whatever the registry says later.
+        "perception_method": first.perception_method,
+        "estimator_geometry": (first.detector_status or {}).get(
+            "estimator_geometry", ""),
+        "representation": (first.detector_status or {}).get(
+            "representation", {}),
         "selected_profile": {"width": WIDTH, "height": HEIGHT, "fps": FPS},
         "acquisition_backend": "realsense",
         "provenance": "measured",

@@ -44,6 +44,12 @@ ACQUISITION_SOURCES = (ACQUISITION_PLANAR, ACQUISITION_REALSENSE,
 METHOD_ACQUISITIONS = {
     "planar_fasterrcnn": (ACQUISITION_PLANAR,),
     "foundationpose_rgbd": (ACQUISITION_REALSENSE, ACQUISITION_ISAAC),
+    # THE SAME TWO DEVICES. Model-free changes which geometry the estimator is
+    # given, not what it reads: it needs colour and aligned depth exactly as the
+    # CAD method does. Listing both here is also what makes the selector keep an
+    # operator's chosen RGB-D method when they switch physical <-> simulated,
+    # since the method remains compatible across that change.
+    "foundationpose_rgbd_model_free": (ACQUISITION_REALSENSE, ACQUISITION_ISAAC),
 }
 
 _LABELS = {

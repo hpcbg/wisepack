@@ -57,6 +57,12 @@ for _path in (os.path.join(REPO, "perception"),
 
 from wisepack_core.acquisition import (                          # noqa: E402
     ACQUISITION_ISAAC, acquisition_provenance)
+from wisepack_core.perception import PerceptionMethod             # noqa: E402
+
+#: The DEFAULT method for this pipeline. Both FoundationPose methods read this
+#: same rendered frame; which geometry the estimator gets is the caller's choice
+#: and travels as `method` rather than being decided here.
+METHOD = PerceptionMethod.FOUNDATIONPOSE_RGBD.value
 
 WORKER = f"http://127.0.0.1:{os.environ.get('WISEPACK_FP_PORT', '22201')}"
 
@@ -326,7 +332,8 @@ def frame_provenance(scene: Dict[str, Any]) -> Dict[str, Any]:
 
 def estimate(model_id: str, refine_iterations: int = 5,
              batch_id: str = "simulated-rgbd-1",
-             provider: Optional[Any] = None) -> Any:
+             provider: Optional[Any] = None,
+             method: str = METHOD) -> Any:
     """FoundationPose on the rendered frame, in the CAMERA optical frame.
 
     THE SIGNATURE IS THE GUARD. This function is not given the scene, so it
@@ -340,7 +347,8 @@ def estimate(model_id: str, refine_iterations: int = 5,
         provider = FoundationPoseProvider()
     batch = provider.acquire_simulated(
         dataset=DATASET, model_id=model_id, depth_scale_mm=DEPTH_SCALE_MM,
-        frame=0, refine_iterations=refine_iterations, batch_id=batch_id)
+        frame=0, refine_iterations=refine_iterations, batch_id=batch_id,
+        method=method)
     if not batch.ok or not batch.observations:
         raise SimulatedAcquisitionError(
             "estimation",
@@ -562,6 +570,7 @@ def evaluate_workarea(observation: Any, scene: Dict[str, Any], model,
 
 def run(model_id: str = "", refine_iterations: int = 5, acquire: bool = True,
         batch_id: str = "simulated-rgbd-1",
+        method: str = METHOD,
         log: Callable[[str], None] = _noop) -> "SimulatedResult":
     """Render (optionally), estimate, transform, evaluate — and write artefacts.
 
@@ -596,7 +605,8 @@ def run(model_id: str = "", refine_iterations: int = 5, acquire: bool = True,
                      + (", ".join(sorted(registry.models)) or "(none)"))
 
     log(f"estimating {model_id} with FoundationPose")
-    camera_batch = estimate(model_id, refine_iterations, batch_id)
+    camera_batch = estimate(model_id, refine_iterations, batch_id,
+                            method=method)
     camera_observation = camera_batch.observations[0]
 
     os.makedirs(STAGE_B_OUT, exist_ok=True)
@@ -647,6 +657,14 @@ def run(model_id: str = "", refine_iterations: int = 5, acquire: bool = True,
     document = {
         "model_id": model_id,
         "perception_method": camera_observation.perception_method,
+        # WHAT THE ESTIMATOR WAS GIVEN, recorded in the RUN'S OWN ARTEFACT so
+        # the panel reads this run's provenance rather than looking up what the
+        # registry happens to say now. A representation rebuilt after this run
+        # would change the registry and must not change what this run reports.
+        "estimator_geometry": (camera_batch.detector_status or {}).get(
+            "estimator_geometry", ""),
+        "representation": (camera_batch.detector_status or {}).get(
+            "representation", {}),
         "acquisition": frame_provenance(scene),
         # ACQUIRED AND REUSED ARE DIFFERENT CLAIMS, and both are simulated. A
         # reused frame is not evidence that the renderer ran just now.

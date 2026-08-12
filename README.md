@@ -207,8 +207,21 @@ perform:
 |---|---|---|
 | Preset scenario | Not applicable — nothing is perceived | **Reset run & generate** → the preset's deterministic objects |
 | Physical RGB camera | Planar RGB — Faster R-CNN | **Reset run & detect** → a fresh webcam detection |
-| Physical RGB-D camera | RGB-D 6-DoF — FoundationPose | **Reset run & acquire** → a **new** D435 capture, segmentation and 6-DoF pose of the selected CAD model |
-| Simulated RGB-D camera | RGB-D 6-DoF — FoundationPose | **Reset run & acquire** → a D435-compatible frame rendered by Isaac, the same FoundationPose estimate, and the pose error against simulator ground truth |
+| Physical RGB-D camera | RGB-D 6-DoF — FoundationPose (CAD)<br>RGB-D 6-DoF — FoundationPose (model-free) | **Reset run & acquire** → a **new** D435 capture, segmentation and 6-DoF pose |
+| Simulated RGB-D camera | RGB-D 6-DoF — FoundationPose (CAD)<br>RGB-D 6-DoF — FoundationPose (model-free) | **Reset run & acquire** → a D435-compatible frame rendered by Isaac, the same FoundationPose estimate, and the pose error against simulator ground truth |
+
+Both RGB-D devices offer **two FoundationPose methods**, which differ in one
+thing — the geometry the estimator is given:
+
+| Method | What the estimator receives |
+|---|---|
+| **FoundationPose (CAD)** | the object's known CAD mesh |
+| **FoundationPose (model-free)** | a representation **learned from reference views**; **no CAD mesh is supplied to the estimator** |
+
+Both produce the same generic `ObservationBatch` and continue through the same
+packing, Digital Twin and approval workflow. **This removes CAD from pose
+estimation, not from WISEPACK** — packing continues to use exact engineering
+geometry (see [§8](#model-free-is-not-cad-free-packing) below).
 
 ![The Object source selector expanded, showing all four sources with their real availability](images/generated/source-selector-light.png)
 
@@ -223,7 +236,9 @@ answer different questions: **where** the observations come from, and **how** a
 camera frame becomes observations. Each source offers only the method that can
 actually read it — the planar detector cannot use depth and FoundationPose
 cannot read a colour webcam — and a preset reads no frame at all, so its method
-is *Not applicable*. Switching either configures the next run and acquires
+is *Not applicable*. Both RGB-D devices accept **either** FoundationPose method,
+so switching between physical and simulated RGB-D keeps the method already
+selected. Switching either configures the next run and acquires
 nothing; only the button acquires.
 
 `./scripts/stage_e.sh --reuse` still exists as a **deterministic regression and
@@ -738,8 +753,10 @@ observation is the same code whichever produced it:
    ------------------------------------------------------------
    Preset scenario                   Not applicable
    Physical RGB camera               Planar RGB — Faster R-CNN
-   Physical RGB-D camera             RGB-D 6-DoF — FoundationPose
-   Simulated RGB-D camera            RGB-D 6-DoF — FoundationPose
+   Physical RGB-D camera             RGB-D 6-DoF — FoundationPose (CAD)
+                                     RGB-D 6-DoF — FoundationPose (model-free)
+   Simulated RGB-D camera            RGB-D 6-DoF — FoundationPose (CAD)
+                                     RGB-D 6-DoF — FoundationPose (model-free)
 
    -> ObservationBatch
    -> packing
@@ -3181,11 +3198,90 @@ pre-port implementation produced from the same frame and the same weights —
 2 objects at (86.782, 83.553) mm / −115.112° and (41.008, 59.853) mm / 24.302°,
 to 0.01 mm and 0.01°.
 
-#### RGB-D 6-DoF perception: `foundationpose_rgbd`
+#### RGB-D 6-DoF perception: `foundationpose_rgbd` and `foundationpose_rgbd_model_free`
 
-The second perception method estimates a **full 6-DoF pose** of a *known* object
-by matching its CAD mesh against an RGB-D frame, using
-[NVLabs FoundationPose](https://github.com/NVlabs/FoundationPose).
+Two perception methods estimate a **full 6-DoF pose** from an RGB-D frame using
+[NVLabs FoundationPose](https://github.com/NVlabs/FoundationPose). They share
+one worker, one provider and one `ObservationBatch`, and differ in exactly one
+input:
+
+| Method | Estimator input |
+|---|---|
+| `foundationpose_rgbd` — **CAD** | the object's known CAD mesh |
+| `foundationpose_rgbd_model_free` — **model-free** | a representation **learned from reference views**. **No CAD mesh reaches the estimator** |
+
+<a id="model-free-evidence"></a>
+##### What the model-free method has actually been shown to do
+
+**Simulated benchmark**, 10 object poses and camera viewpoints, scored against
+simulator ground truth:
+
+| Method | Mean position error | Mean tube-axis-line error |
+|---|---|---|
+| CAD | 2.599 mm | 0.528° |
+| model-free | 6.650 mm | 0.676° |
+
+**Physical D435, sim-to-real transfer.** A representation built **only from 15
+rendered Isaac reference views** — it has never seen a photograph, and was not
+retrained — registered the real Cylinder5 on **12 of 12 stationary frames**.
+
+| Quantity | CAD | model-free |
+|---|---|---|
+| centre repeatability, mean spread | 1.004 mm | 2.077 mm |
+| tube-axis-line repeatability, mean spread | 0.093° | 0.124° |
+| inference, mean | 0.905 s | 0.882 s |
+
+CAD ↔ model-free agreement on the same frames: **7.142 mm** mean centre,
+**0.273°** mean axis.
+
+**These are repeatability and agreement, NOT accuracy.** No independently
+measured physical pose for this object exists, so no physical position or
+orientation *error* is computed anywhere, and none may be quoted. Repeatability
+says how tightly a method agrees with *itself*; agreement says how closely the
+two methods agree with *each other*. A method can be repeatable and wrong, and
+two estimators sharing a camera, a frame and a mask can be wrong together.
+
+**Multi-pose physical validation is pending.** Everything physical above comes
+from **one** stationary object pose, so it is not yet established that the
+behaviour — or the roughly systematic ~6.7 mm CAD/model-free offset, which is
+not compensated — is independent of pose. The dashboard therefore describes the
+method as *sim + physical transfer demonstrated* and nothing stronger.
+
+![The Scenario panel with Simulated RGB-D camera and FoundationPose (model-free) selected, showing the Reference representation rows: object Cylinder5, source simulated Isaac views, 15 reference views, status READY](images/generated/modelfree-scenario-panel.png)
+
+*The Scenario panel, captured from a running dashboard with the model-free
+method selected. The estimator's input is named for whichever method is chosen —
+a **CAD model** for one, a **reference representation** for the other — with its
+readiness stated **before** the button is pressed. The representation
+identifier and digest are detail, not the headline.*
+
+![The physical D435 result panel for a model-free run: the Cylinder5 CAD mesh reprojected at the estimated pose, landing on the real tube in the photograph](images/generated/modelfree-physical-result.png)
+
+*A **physical D435** acquisition through the ordinary dashboard button, with
+model-free selected. The pose was estimated from the **simulated-reference
+representation with no CAD supplied to the estimator**; the CAD mesh is drawn
+only so the result can be seen. The panel reports **repeatability** and states
+that it is **not accuracy**, because no physical ground truth exists.*
+
+<a id="model-free-is-not-cad-free-packing"></a>
+##### Model-free is not CAD-free packing
+
+The reconstructed representation is used **for pose estimation only**. Its
+principal length is about 341.5 mm and its transverse diameter about 26.7 mm,
+**the bore is not represented and the ends are effectively capped** — so its
+volume is not the part's volume. WISEPACK continues to pack against the **exact
+CAD geometry** from `config/perception_objects.yaml`, and every observation is
+stamped `geometry_source="cad_model"` for both methods.
+
+The correct claim is **model-free pose estimation without supplying CAD to the
+estimator**, not a CAD-free WISEPACK workflow.
+
+Representations are registered in `config/object_representations.yaml` — the
+identifier, reference digest, source, view count, validation status and the
+explicit `usable_for_packing_geometry: false`. They are **built offline** by
+`./scripts/model_free_build.sh`; the dashboard only ever loads a cached one, and
+if none is ready it reports the method **unavailable with the reason** rather
+than rebuilding it or falling back to CAD.
 
 **It is an optional capability, and its worker is built separately.** Nothing in
 `./run_wisepack_dashboard.sh` builds it, preset scenarios and the planar method

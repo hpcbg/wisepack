@@ -1,0 +1,96 @@
+# Learned object representations for model-free 6-DoF pose estimation.
+#
+# WHAT A REPRESENTATION IS. FoundationPose model-free does not take a CAD model.
+# It takes a representation LEARNED FROM REFERENCE VIEWS of the object — a
+# Neural Object Field, exported as a mesh the estimator registers against. This
+# file is the registry of those representations, so the dashboard can say which
+# ones exist, where they came from and whether they are ready, without any of
+# that being hard-coded into UI logic.
+#
+# THIS IS NOT ENGINEERING GEOMETRY, and the distinction is load-bearing rather
+# than pedantic. A representation is a perception artefact: it is good enough to
+# tell the estimator where the object is, and it is NOT a measurement of the
+# part. The Cylinder5 representation below has no bore and effectively capped
+# ends, so its volume is wrong for packing. WISEPACK's packing geometry comes
+# from the object registry (`config/perception_objects.yaml`) where exact CAD is
+# available, and `geometry_source` on every item records which it was.
+#
+# VALIDATION STATUS IS DATA, NOT UI COPY. What has and has not been demonstrated
+# changes as validation proceeds, and a status spelled out in JavaScript
+# literals is one that goes stale silently. It lives here so that finishing a
+# validation step is a change to this file.
+
+#: Which representation each object model uses when the model-free method runs.
+#: One entry per object; a model with no entry cannot be estimated model-free,
+#: and the dashboard says so rather than falling back to CAD.
+representations:
+  - id: cylinder5-simref-15v
+    model_id: cylinder5
+    method: foundationpose_rgbd_model_free
+    #: What an operator is shown. The id and the digest identify the artefact;
+    #: neither is something an evaluator should have to read to know which
+    #: object is being estimated.
+    display_name: Cylinder5
+
+    # THE IDENTITY OF THE THING ITSELF. The digest is over the reference views
+    # the representation was built from — RGB, depth, masks, per-view poses and
+    # intrinsics — so a representation built from different views is a
+    # different representation and cannot silently masquerade as this one.
+    reference_digest: 9e59f85169e2d07f
+    reference_source: simulated Isaac views
+    reference_view_count: 15
+    #: The upstream revision that built it. Carried because a Neural Object
+    #: Field is the output of a specific implementation, not a portable format.
+    foundationpose_revision: a1b694b83e633c2cb6115b9063d940a687759392
+
+    #: Where the exported mesh lives, relative to the representation store root.
+    #: Resolved against the store, never against the CAD asset tree — the two
+    #: must not be reachable from one another.
+    mesh: cylinder5/reference/ob_0000001/model/model.obj
+    #: The mesh is exported in metres, unlike the millimetre STLs.
+    mesh_scale_to_mm: 1000.0
+
+    # WHAT HAS ACTUALLY BEEN SHOWN, stated so the dashboard can qualify the
+    # method honestly instead of implying more than the evidence supports.
+    validation_status: experimental
+    #: THE OPERATOR-FACING LINE. One short factual clause, because the normal
+    #: workflow is not the place to qualify a method at length — an evaluator
+    #: watching a demonstration needs to know what was shown, not to read the
+    #: limitations of the evidence. The full qualification is `validation_note`
+    #: below and the README, which is where a reader has come to look for it.
+    validation_summary: sim + physical transfer demonstrated
+    validation_note: >-
+      Sim-to-real pose transfer demonstrated at one physical pose; multi-pose
+      physical validation pending.
+    validation_evidence:
+      - >-
+        Simulated benchmark over 10 object poses and viewpoints — mean position
+        error 6.650 mm and mean tube-axis-line error 0.676 deg, against CAD at
+        2.599 mm and 0.528 deg.
+      - >-
+        Physical D435, one stationary pose, 12/12 frames registered.
+        Repeatability 2.077 mm mean centre spread and 0.124 deg mean axis
+        spread. Agreement with CAD 7.142 mm mean centre and 0.273 deg mean
+        axis. REPEATABILITY AND AGREEMENT, NOT ACCURACY — no independently
+        measured physical pose for this object exists.
+    #: NOT ACCURACY. No independently measured physical pose exists for this
+    #: object, so nothing above is a physical error and none of it may be
+    #: presented as one.
+    physical_ground_truth_available: false
+    #: What would lift the experimental qualification. Named so the gate is a
+    #: recorded condition rather than a remembered intention.
+    validation_gate: >-
+      A second, clearly different physical pose, captured and compared the same
+      way, showing that registration and the CAD/model-free offset are not
+      specific to a single physical pose.
+
+    # PERCEPTION ONLY. Stated on the representation itself so nothing has to
+    # infer it: this geometry is not authoritative for packing, and the
+    # reconstruction's known departures from the real part are recorded rather
+    # than left for someone to rediscover.
+    usable_for_packing_geometry: false
+    geometry_note: >-
+      Reconstructed for pose estimation only. Principal length approximately
+      341.5 mm and transverse diameter approximately 26.7 mm; the bore is not
+      represented and the ends are effectively capped, so its volume is not the
+      part's volume. WISEPACK packing continues to use the exact CAD geometry.

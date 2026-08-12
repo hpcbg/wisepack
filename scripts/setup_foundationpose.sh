@@ -51,6 +51,7 @@ DATASETS_DIR="${WISEPACK_FP_DATASETS_DIR:-$(cd "$REPO/.." 2>/dev/null && pwd)/re
 CAPTURES_DIR="${WISEPACK_FP_CAPTURES_DIR:-$REPO/.cache-perception/rgbd-captures}"
 #: Deterministic reference cases rendered in Isaac Sim, with ground-truth poses.
 ISAAC_REFERENCE_DIR="${WISEPACK_FP_ISAAC_DIR:-$REPO/.cache-perception/isaac-reference}"
+REPRESENTATIONS_DIR="${WISEPACK_FP_REPRESENTATIONS_DIR:-$REPO/.cache-perception/model-free}"
 
 DO_BUILD=1
 DO_WEIGHTS=0
@@ -277,6 +278,14 @@ if [ "$DO_RUN" = "1" ]; then
     # inside a read-only mount, and the worker searches both roots.
     [ -d "$ISAAC_REFERENCE_DIR" ] \
         && MOUNTS+=(-v "$ISAAC_REFERENCE_DIR:/isaac-reference:ro")
+    # LEARNED REPRESENTATIONS for model-free estimation. A SEPARATE MOUNT from
+    # the CAD tree, deliberately: a representation is a perception artefact and
+    # not engineering geometry, and the two must not be reachable through one
+    # another. Read-only — representations are built by an explicit offline
+    # step (`./scripts/model_free_build.sh`) and the worker never writes one,
+    # so no dashboard request can cause a rebuild.
+    [ -d "$REPRESENTATIONS_DIR" ] \
+        && MOUNTS+=(-v "$REPRESENTATIONS_DIR:/representations:ro")
 
     USB_ARGS=()
     if host_sees_realsense; then

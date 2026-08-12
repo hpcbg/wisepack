@@ -73,7 +73,8 @@ from wisepack_core.acquisition import (                            # noqa: E402
 from wisepack_core.perception import (                             # noqa: E402
     ObservationBatch, ObjectSourceState, PerceptionMethod, PerceptionMethodState,
     PerceptionSource, ProxyGeometry, WorkAreaFrame,
-    DEFAULT_PERCEPTION_METHOD, resolve_object_source,
+    DEFAULT_PERCEPTION_METHOD, KNOWN_PERCEPTION_METHODS,
+    PERCEPTION_METHOD_ALIASES, resolve_object_source,
     resolve_perception_method, resolve_perception_method_selection,
     resolve_perception_source,
 )
@@ -750,6 +751,166 @@ def foundationpose_capability(force: bool = False) -> Dict[str, Any]:
     return answer
 
 
+#: The learned-representation registry, loaded once and reused. Cheap — it is a
+#: small YAML file — but re-reading it on every poll would make the panel's
+#: responsiveness depend on disk. READINESS IS STILL LIVE: `readiness()` stats
+#: the mesh each time it is asked, so building a representation is noticed
+#: without restarting the dashboard.
+_REPRESENTATIONS = None
+
+
+def representation_registry():
+    global _REPRESENTATIONS
+    if _REPRESENTATIONS is None:
+        from wisepack_core.representation import (               # noqa: PLC0415
+            load_representation_registry)
+        _REPRESENTATIONS = load_representation_registry(repo_root=REPO)
+    return _REPRESENTATIONS
+
+
+def representation_state(method: str = "") -> Dict[str, Any]:
+    """What the panel needs to describe the learned representations, or {}.
+
+    EMPTY FOR CAD, and that is the point: a CAD run has no representation, and
+    returning a stale one is how a panel ends up showing a reconstruction
+    beside a pose that was estimated from a mesh.
+
+    KEYED BY OBJECT, because which representation applies depends on which
+    object the RGB-D run will estimate — a choice the operator makes in a
+    different control. Sending the whole map lets the panel look up the one
+    that matches WITHOUT any object name appearing in the frontend, and a
+    second registered object would appear there without a line of JavaScript
+    changing.
+    """
+    from wisepack_core.perception import PerceptionMethod as _PM  # noqa: PLC0415
+    if not method:
+        return {}
+    try:
+        chosen = _PM(method)
+    except ValueError:
+        return {}
+    if not chosen.requires_representation:
+        return {}
+    registry = representation_registry()
+    by_model = {
+        representation.model_id: representation.to_dict(registry.store_root)
+        for representation in registry.representations.values()
+        if representation.method == method
+    }
+    return {
+        "method": method,
+        "by_model": by_model,
+        "any_ready": registry.any_ready(method),
+        # WHY NOT, when nothing is ready. Carried so the panel can say it
+        # before the operator presses a button rather than after.
+        "reason": ("" if registry.any_ready(method)
+                   else registry.unavailable_reason(method)),
+    }
+
+
+def _resolve_requested_method(method: str,
+                              model_id: str = "") -> Tuple[str, Dict[str, Any]]:
+    """The method an acquisition will actually run, or a refusal saying why not.
+
+    Returns `(method, {})` or `("", refusal)`.
+
+    THREE REFUSALS, NO SUBSTITUTIONS. An unknown method, a method this
+    deployment cannot run, and a model-free method whose representation is not
+    built are all reported with their reason. None of them falls back to
+    another method: silently running CAD because a representation was missing
+    would put a CAD pose on screen under a model-free label, which is the one
+    outcome the whole separation exists to prevent.
+    """
+    from wisepack_core.perception import PerceptionMethod as _PM  # noqa: PLC0415
+    state = perception_method_state()
+    requested = str(method or "").strip().lower() or state.selected
+    requested = PERCEPTION_METHOD_ALIASES.get(requested, requested)
+    if requested not in KNOWN_PERCEPTION_METHODS:
+        return "", {"stage": "method",
+                    "reason": f"unknown perception method {requested!r}"}
+    if requested not in state.available:
+        return "", {"stage": "method",
+                    "reason": (f"{_PM(requested).selector_label} is not "
+                               "available: "
+                               + (state.unavailable_reasons.get(requested)
+                                  or "no reason reported"))}
+    if _PM(requested).requires_representation and model_id:
+        # THE OBJECT THE RUN WILL ESTIMATE decides which representation is
+        # needed, so it is checked against the model the caller actually asked
+        # for. READINESS IS CHECKED BEFORE THE SLOW PART — an evaluator should
+        # be told the representation is missing now, not after a minute of
+        # rendering.
+        #
+        # SKIPPED WHEN NO MODEL WAS NAMED, because the simulated pipeline then
+        # takes the model from the exported scene and refusing here would be
+        # refusing a run that could have succeeded. NOTHING IS WEAKENED BY
+        # THAT: the provider still calls `RepresentationRegistry.require`,
+        # which refuses with the same reason and never reaches for CAD. This
+        # check buys an earlier, cheaper refusal, not the guarantee itself.
+        readiness = representation_registry().ready_for(model_id, requested)
+        if not readiness.ready:
+            return "", {"stage": "representation", "reason": readiness.reason}
+    return requested, {}
+
+
+def _perception_method_payload() -> Dict[str, Any]:
+    """The method axis, plus the representation each side of it refers to.
+
+    TWO REPRESENTATIONS, NOT ONE, and keeping them apart is what stops a panel
+    showing a reconstruction beside a CAD run:
+
+        representation          what the NEXT run would use — a draft, and
+                                empty unless the DRAFT method is model-free.
+        current_representation  what the run ON SCREEN actually used — read off
+                                the batch's own provenance, and empty unless
+                                that run was model-free.
+
+    Changing the draft therefore cannot alter what the current run displays,
+    which is the same rule the rest of this panel follows.
+    """
+    state = perception_method_state()
+    document = state.to_dict()
+    document["representation"] = representation_state(state.selected)
+    document["current_representation"] = _current_run_representation(
+        state.current)
+    return document
+
+
+def _current_run_representation(current_method: str) -> Dict[str, Any]:
+    """The representation the RUNNING batch was estimated against, or {}.
+
+    TAKEN FROM THE BATCH, never from the draft or from configuration. The
+    registry says what a representation IS today; only the run itself can say
+    which one produced the pose on screen, and after a rebuild those could
+    differ. If the batch did not record one, the answer is empty rather than
+    the registry's current entry.
+    """
+    if not current_method:
+        return {}
+    from wisepack_core.perception import PerceptionMethod as _PM  # noqa: PLC0415
+    try:
+        if not _PM(current_method).requires_representation:
+            return {}
+    except ValueError:
+        return {}
+    # READ FROM THE RUN'S OWN ARTEFACT, which is the only record that survives
+    # the trip to this process. In live mode the batch is the orchestrator's and
+    # reaches the dashboard over DDS, which carries the method but not the
+    # estimator's full detector_status — so the acquisition document, written by
+    # the pipeline that ran, is the authority. It also has the property that
+    # matters: rebuilding a representation later changes the registry, and must
+    # not change what an already-completed run reports.
+    for document in (_simulated_rgbd_document(), _physical_c5_document()):
+        if not document:
+            continue
+        if document.get("perception_method") != current_method:
+            continue
+        recorded = document.get("representation") or {}
+        if isinstance(recorded, dict) and recorded:
+            return dict(recorded)
+    return {}
+
+
 def available_perception_methods(capability: Optional[Dict[str, Any]] = None
                                  ) -> List[str]:
     """Methods this deployment can run RIGHT NOW.
@@ -765,6 +926,18 @@ def available_perception_methods(capability: Optional[Dict[str, Any]] = None
     # whole chain: worker, GPU, weights and a CAD model. Not "Docker exists".
     if document.get("runtime_ready") and document.get("models"):
         methods.append(PerceptionMethod.FOUNDATIONPOSE_RGBD.value)
+        # MODEL-FREE NEEDS ONE MORE LINK: a representation LEARNED offline and
+        # already built on this machine. It is listed only when one is ready,
+        # and when it is not the method stays visible and disabled WITH THE
+        # REASON — never quietly absent, and never silently answered by CAD.
+        #
+        # NOTHING HERE BUILDS ANYTHING. Readiness is a file check; training a
+        # Neural Object Field is minutes of GPU work and belongs in an explicit
+        # offline step, never in a dashboard poll.
+        if representation_registry().any_ready(
+                PerceptionMethod.FOUNDATIONPOSE_RGBD_MODEL_FREE.value):
+            methods.append(
+                PerceptionMethod.FOUNDATIONPOSE_RGBD_MODEL_FREE.value)
     return methods
 
 
@@ -799,11 +972,23 @@ def perception_method_state(capability: Optional[Dict[str, Any]] = None
         current = str(published.get("run_perception_method") or "")
 
     reasons: Dict[str, str] = {}
+    blocked = document.get("blocked_by") or []
+    worker_reason = ("; ".join(str(b) for b in blocked)
+                     or "the FoundationPose worker is not available")
     if PerceptionMethod.FOUNDATIONPOSE_RGBD.value not in available:
-        blocked = document.get("blocked_by") or []
-        reasons[PerceptionMethod.FOUNDATIONPOSE_RGBD.value] = (
-            "; ".join(str(b) for b in blocked)
-            or "the FoundationPose worker is not available")
+        reasons[PerceptionMethod.FOUNDATIONPOSE_RGBD.value] = worker_reason
+    model_free = PerceptionMethod.FOUNDATIONPOSE_RGBD_MODEL_FREE.value
+    if model_free not in available:
+        # THE REASON DISTINGUISHES THE TWO WAYS THIS FAILS. "The worker is
+        # down" and "the representation has not been built here" send an
+        # operator to different places, and only the second is specific to
+        # this method.
+        if PerceptionMethod.FOUNDATIONPOSE_RGBD.value not in available:
+            reasons[model_free] = worker_reason
+        else:
+            reasons[model_free] = (
+                representation_registry().unavailable_reason(model_free)
+                or "no learned representation is ready on this machine")
     return PerceptionMethodState(current=current, selected=selected,
                                  available=available,
                                  unavailable_reasons=reasons)
@@ -1376,7 +1561,7 @@ def api_state():
         # HOW the next physical batch is read. A THIRD axis: independent of the
         # source above, independent of the execution backend, and — like the
         # source — a per-run draft that never touches the run on screen.
-        "perception_method": perception_method_state().to_dict(),
+        "perception_method": _perception_method_payload(),
         # THE ACQUISITION AXIS travels with the state too, so the Scenario
         # controls can name the device the running run actually used instead of
         # the coarser object source.
@@ -1619,7 +1804,10 @@ def _perception_payload() -> Dict[str, Any]:
         # THE METHOD IS A THIRD AXIS and travels with the panel in every mode,
         # including preset mode: an operator deciding whether to switch to the
         # camera needs to see which methods that camera could be read with.
-        "perception_method": method_state.to_dict(),
+        # THE SAME PAYLOAD THE STATE ROUTE SENDS, so the perception panel and
+        # the Scenario panel cannot disagree about which representation the
+        # run on screen used.
+        "perception_method": _perception_method_payload(),
         "foundationpose": fp_capability,
         # THE SIMULATED RGB-D RUN, when one is on screen. Everything here comes
         # from the SAME artifact the workflow consumed, so the images, the
@@ -2001,6 +2189,10 @@ def api_perception_physical():
         "run_label": document.get("run_label", ""),
         "run_note": document.get("run_note", ""),
         "perception_method": observation.get("perception_method", ""),
+        # WHAT THE ESTIMATOR WAS GIVEN, carried so the panel's overlay caption
+        # can say that a model-free pose was estimated WITHOUT the CAD it draws.
+        "estimator_geometry": document.get("estimator_geometry", ""),
+        "representation": document.get("representation", {}),
         "object_model_id": observation.get("object_model_id",
                                            document.get("model_id", "")),
         "device": {k: device.get(k) for k in
@@ -2079,6 +2271,13 @@ def api_perception_physical_acquire(payload: Optional[Dict[str, Any]] = None):
     _ensure_perception_path()
     from physical_pipeline import (PhysicalAcquisitionError,       # noqa: PLC0415
                                    run as run_physical)
+    # THE METHOD THE OPERATOR CAN SEE, refused rather than substituted if it
+    # cannot run. Model-free with no built representation stops here; it never
+    # becomes a CAD run wearing a model-free label.
+    chosen, refusal = _resolve_requested_method(
+        str(body.get("perception_method", "")).strip(), model_id)
+    if refusal:
+        return {"ok": False, **refusal}
     # WHICH RUN THIS ACQUISITION IS FOR, captured BEFORE the slow part. A
     # capture plus five inference passes takes tens of seconds, and the operator
     # can start a different run in that time.
@@ -2088,7 +2287,8 @@ def api_perception_physical_acquire(payload: Optional[Dict[str, Any]] = None):
             model_id=model_id, roi_px=roi,
             frames=int(body.get("frames", 5)),
             refine_iterations=int(body.get("refine_iterations", 5)),
-            dataset=str(body.get("dataset", "")).strip())
+            dataset=str(body.get("dataset", "")).strip(),
+            method=chosen)
         document = result.document
     except PhysicalAcquisitionError as exc:
         # THE REFUSAL REACHES THE OPERATOR WITH ITS STAGE AND ITS REASON. A mask
@@ -2134,7 +2334,8 @@ def api_perception_physical_acquire(payload: Optional[Dict[str, Any]] = None):
 
 
 def _acquire_simulated_rgbd(model_id: str = "", acquire: bool = False,
-                            refine_iterations: int = 5) -> Dict[str, Any]:
+                            refine_iterations: int = 5,
+                            method: str = "") -> Dict[str, Any]:
     """A simulated RGB-D acquisition, through the shared pipeline.
 
     ONE IMPLEMENTATION, CALLED FROM TWO PLACES — exactly like the physical path
@@ -2154,13 +2355,21 @@ def _acquire_simulated_rgbd(model_id: str = "", acquire: bool = False,
     _ensure_perception_path()
     from simulated_rgbd_pipeline import (SimulatedAcquisitionError,  # noqa: PLC0415
                                          run as run_simulated)
+    # THE METHOD THE OPERATOR CAN SEE. It arrives from the caller — the button
+    # sends what its selector displays — and falls back to the stored draft only
+    # when the caller named none. A run must never be dispatched from a value
+    # the operator could not have read off the panel.
+    chosen, refusal = _resolve_requested_method(method, model_id)
+    if refusal:
+        return {"ok": False, **refusal}
     # THE RUN THIS IS FOR, captured BEFORE the slow part. An Isaac render plus
     # inference is a minute of wall clock, which is plenty of time for the
     # operator to start something else.
     token = run_token()
     try:
         result = run_simulated(model_id=model_id, acquire=acquire,
-                               refine_iterations=refine_iterations)
+                               refine_iterations=refine_iterations,
+                               method=chosen)
     except SimulatedAcquisitionError as exc:
         # THE REFUSAL REACHES THE OPERATOR WITH ITS STAGE AND ITS REASON. A
         # renderer that never started and an estimator that found no pose are
@@ -2219,7 +2428,9 @@ def api_perception_simulated_acquire(payload: Optional[Dict[str, Any]] = None):
     return _acquire_simulated_rgbd(
         model_id=str(body.get("model_id", "")).strip(),
         acquire=bool(body.get("acquire", False)),
-        refine_iterations=int(body.get("refine_iterations", 5)))
+        refine_iterations=int(body.get("refine_iterations", 5)),
+        # SENT BY THE BUTTON, from the selector the operator can see.
+        method=str(body.get("perception_method", "")).strip())
 
 
 @app.get("/api/perception/simulated/capability")
@@ -2998,7 +3209,8 @@ def _apply_command_locked(engine: WorkflowEngine, command: str,
         result = _acquire_simulated_rgbd(
             model_id=str(args.get("model_id", "")),
             acquire=bool(args.get("acquire", False)),
-            refine_iterations=int(args.get("refine_iterations", 5)))
+            refine_iterations=int(args.get("refine_iterations", 5)),
+            method=str(args.get("perception_method", "")))
         if not result.get("ok"):
             raise ValueError(result.get("reason") or "the acquisition failed")
         return result

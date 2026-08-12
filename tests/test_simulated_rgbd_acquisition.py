@@ -119,9 +119,15 @@ def test_the_estimator_is_never_given_the_scene():
     because it never receives one — this is a signature, not a convention."""
     import inspect
     parameters = set(inspect.signature(PIPE.estimate).parameters)
+    # AN ALLOW-LIST, still exhaustive. `method` selects WHICH GEOMETRY the
+    # estimator is handed — CAD or a learned representation — and carries
+    # nothing about where the object is. The guard is that this set stays
+    # closed: a scene, a pose or a transform must never become a parameter,
+    # and adding one fails here rather than being noticed later.
     assert parameters == {"model_id", "refine_iterations", "batch_id",
-                          "provider"}, parameters
-    for forbidden in ("scene", "truth", "ground_truth", "settled"):
+                          "provider", "method"}, parameters
+    for forbidden in ("scene", "truth", "ground_truth", "settled", "pose",
+                      "transform"):
         assert forbidden not in parameters
 
 

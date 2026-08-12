@@ -440,6 +440,17 @@
             <option value="" disabled selected>Not applicable</option>
           </select>
           <div class="note" id="s-method-note" style="margin-top:4px"></div></label>
+        <!-- THE ESTIMATOR'S INPUT, and it is a DIFFERENT QUESTION for the two
+             FoundationPose methods: one is given a CAD model of the part, the
+             other a representation learned from reference views. This row shows
+             whichever applies and is hidden entirely when neither does, so a
+             planar or preset run is not asked about geometry it never uses.
+             Filled from the backend's representation registry — no object name
+             or digest is written in this file. -->
+        <div class="f" id="s-representation-field" style="grid-column:span 2;display:none">
+          <span id="s-representation-title">Reference representation</span>
+          <div class="note" id="s-representation" style="margin-top:4px"></div>
+        </div>
         <label class="f" id="s-preset-field">Preset<select id="s-preset"></select><div class="note" id="s-lock-note" style="margin-top:4px"></div></label>
         <!-- ROBOT. The options are EMPTY here on purpose and are filled from
              GET /api/config/robots. A hard-coded <option> list would be a second
@@ -1833,6 +1844,17 @@ function applyAcquisitionNote(s) {
   note.textContent = bits.join(" · ");
 }
 
+// THE METHOD THE OPERATOR CAN SEE, which is the only one an action may use.
+// Reading the draft out of the last poll instead would dispatch a run the panel
+// never displayed — the exact confusion the current-run / next-run split exists
+// to prevent. Empty when the row does not apply, and the backend then falls
+// back to the stored draft and refuses if that cannot run.
+function visibleMethod() {
+  const sel = $("#s-method");
+  if (!sel || sel.disabled) return "";
+  return sel.value || "";
+}
+
 // The perception-method selector. Identical rules to the object source above:
 // filled from the backend, unavailable options disabled WITH THEIR REASON
 // rather than hidden, and never reverted mid-edit by a poll.
@@ -1957,6 +1979,105 @@ function applyPerceptionMethodVisibility(s) {
     }
   }
   note.textContent = bits.join(" · ");
+  applyRepresentationRow(s);
+}
+
+// WHAT THE ESTIMATOR WILL BE GIVEN, for whichever method is selected. Two
+// methods ask two different questions — a CAD model, or a representation
+// learned from reference views — and one row answers whichever applies.
+//
+// NOTHING ABOUT ANY OBJECT IS WRITTEN HERE. The label, the source, the view
+// count and the readiness all come from the backend's representation registry;
+// this function would show a second registered object without being edited.
+//
+// THE DIGEST IS NOT THE HEADLINE. An evaluator should read "Cylinder5,
+// simulated Isaac reference views, READY" — the digest identifies the artefact
+// and belongs in the detail line, not in the operator's way.
+// A description line, then labelled rows. Shared so the CAD and model-free
+// answers to "what is the estimator given?" are laid out identically and can be
+// compared at a glance during a demonstration.
+function renderRepresentationRows(body, description, rows) {
+  body.textContent = "";
+  body.append(el("div", { style: "margin-bottom:4px" }, description));
+  for (const [label, value] of rows) {
+    const line = el("div", { style: "display:flex;gap:8px;margin-top:2px" });
+    line.append(el("span", { style: "min-width:120px;opacity:.7" }, label),
+                el("span", {}, String(value)));
+    body.append(line);
+  }
+}
+
+function applyRepresentationRow(s) {
+  const field = $("#s-representation-field");
+  const title = $("#s-representation-title");
+  const body = $("#s-representation");
+  if (!field || !body || !title) return;
+  const pm = (s && s.perception_method) || {};
+  const method = $("#s-method");
+  const applies = Boolean(method) && !method.disabled && method.value;
+  const chosen = (pm.options || []).find(o => o.value === (method && method.value));
+  if (!applies || !chosen) { field.style.display = "none"; return; }
+
+  if (chosen.requires_representation) {
+    // WHICH REPRESENTATION APPLIES depends on which object the RGB-D run will
+    // estimate, and that is chosen in a different control. The backend sends
+    // every registered representation keyed by object; this looks up the one
+    // that matches, so no object name is written in this file. With exactly
+    // one registered and nothing selected yet, that one is shown — there is
+    // nothing to be ambiguous between.
+    const store = pm.representation || {};
+    const byModel = store.by_model || {};
+    const wanted = (($("#sim-model") && $("#sim-model").value)
+                    || ($("#phys-model") && $("#phys-model").value) || "");
+    const keys = Object.keys(byModel);
+    const rep = byModel[wanted] || (keys.length === 1 ? byModel[keys[0]] : {});
+    title.textContent = "Reference representation";
+    // LABELLED ROWS, NOT A RUN-ON SENTENCE. An evaluator reads this while the
+    // demonstration is happening; four short rows can be taken in at a glance,
+    // and a paragraph cannot.
+    const rows = [
+      ["Object", rep.label || rep.model_id || "—"],
+      ["Source", rep.reference_source || "—"],
+      ["Reference views", rep.reference_view_count || "—"],
+      // READY OR NOT READY WITH THE REASON. A demo that is about to fail
+      // should say so before the button is pressed, not after acquisition.
+      ["Status", rep.ready ? "READY" : "NOT READY"],
+    ];
+    const why = rep.reason || store.reason || "";
+    if (!rep.ready && why) rows.push(["Reason", acqShorten(why)]);
+    if (rep.validation_summary) rows.push(["Validation", rep.validation_summary]);
+    // THE DIGEST IS DETAIL, not the headline: it identifies the artefact and
+    // an evaluator should never have to read a hexadecimal string to follow
+    // what is being demonstrated.
+    if (rep.reference_digest_short) {
+      rows.push(["Representation",
+                 `${rep.id || ""} · ${rep.reference_digest_short}`]);
+    }
+    renderRepresentationRows(
+      body, "Learned from reference views; no CAD supplied to the estimator",
+      rows);
+    field.style.display = "";
+    return;
+  }
+  if (chosen.requires_object_model) {
+    // THE CAD SIDE OF THE SAME QUESTION, so switching methods swaps the answer
+    // rather than leaving a representation on screen beside a CAD run.
+    const om = (s && s.object_model) || {};
+    // THE SAME OBJECT THE RUN WILL ESTIMATE, taken from the control that
+    // chooses it, so both methods name the object the same way. The scenario's
+    // own model is the fallback for a payload that carries one.
+    const chosenObject = (($("#sim-model") && $("#sim-model").value)
+                          || ($("#phys-model") && $("#phys-model").value)
+                          || om.model_id || (om.model_ids || []).join(", ")
+                          || "—");
+    title.textContent = "CAD model";
+    renderRepresentationRows(
+      body, "Known 3D model supplied to the pose estimator",
+      [["Object", chosenObject]]);
+    field.style.display = "";
+    return;
+  }
+  field.style.display = "none";
 }
 
 // Grey out and disable the fields that describe a GENERATED batch while the
@@ -2499,7 +2620,11 @@ async function acquireSimulated() {
   try {
     const res = await fetch("/api/perception/simulated/acquire", {
       method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ model_id: model, acquire: render }),
+      // DISPATCHED FROM THE VISIBLE SELECTOR, never from polled state. What
+      // the operator can read off the panel is what runs; a poll that landed
+      // mid-edit must not decide which estimator is used.
+      body: JSON.stringify({ model_id: model, acquire: render,
+                             perception_method: visibleMethod() }),
     });
     const doc = await res.json();
     if (!res.ok) {
@@ -2627,7 +2752,11 @@ async function refreshPhysicalD435() {
   $("#phys-provenance").textContent = [
     `Acquisition: ${doc.acquisition}`,
     `Provenance: ${doc.provenance} / physical`,
-    `Perception: FoundationPose RGB-D`,
+    // NAMES THE METHOD THAT RAN, not the family. Two FoundationPose methods
+    // exist and they were given different geometry; "FoundationPose RGB-D"
+    // beside a model-free result is true but hides the only thing that differs.
+    `Perception: ${doc.estimator_geometry === "learned_representation"
+        ? "FoundationPose RGB-D (model-free)" : "FoundationPose RGB-D (CAD)"}`,
     // PAST TENSE, AND IDENTIFIED. A cached result with no capture name and no
     // timestamp cannot be told from a fresh one by looking at it.
     doc.acquired_how,
@@ -2723,7 +2852,17 @@ function showPhysicalImage(kind) {
   const caption = $("#phys-caption");
   if (caption) {
     const model = (PHYS_LAST && PHYS_LAST.model_id) || "selected";
-    caption.textContent = (PHYS_CAPTIONS[kind] || "").replace("{model}", model);
+    let text = (PHYS_CAPTIONS[kind] || "").replace("{model}", model);
+    // THE OVERLAY DRAWS CAD EVEN WHEN THE ESTIMATE DID NOT USE IT. Reprojecting
+    // the CAD mesh is what makes the result legible, but beside a model-free
+    // run the unqualified caption reads as though CAD had been given to the
+    // estimator. It was not, and the difference is the whole claim.
+    if (kind === "overlay"
+        && (PHYS_LAST || {}).estimator_geometry === "learned_representation") {
+      text += " The pose was estimated WITHOUT CAD, from the learned "
+            + "representation; the CAD mesh is drawn only to show the result.";
+    }
+    caption.textContent = text;
   }
   for (const b of document.querySelectorAll("#phys-views button"))
     b.setAttribute("aria-pressed", String(b.dataset.v === kind));
@@ -2795,7 +2934,9 @@ async function acquirePhysical() {
   try {
     const res = await fetch("/api/perception/physical/acquire", {
       method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ model_id: model, roi_px: roi, frames: 5 }),
+      // THE SAME RULE AS THE SIMULATED BUTTON: the run uses what is on screen.
+      body: JSON.stringify({ model_id: model, roi_px: roi, frames: 5,
+                             perception_method: visibleMethod() }),
     });
     const doc = await res.json();
     if (!res.ok) {
@@ -3150,16 +3291,34 @@ async function refreshPerception() {
   const acqNow = doc.acquisition || {};
   const sourceLabel = acqNow.current_label
     || os.current_label || doc.perception_source_label || "";
-  const methodNow = (doc.perception_method || {}).current_label || "";
-  $("#percep-source").textContent =
-    `Running now: ${sourceLabel}` +
-    (methodNow ? ` · ${methodNow}` : (detector ? ` · Detector: ${detector}` : ""));
+  const pmDoc = doc.perception_method || {};
+  const methodNow = pmDoc.current_label || "";
+  // WHICH GEOMETRY PRODUCED THE RUN ON SCREEN. Read off the batch's OWN
+  // provenance — `current_representation` is empty unless THIS run was
+  // model-free — so a CAD run never shows a representation and a model-free run
+  // never shows a stale CAD model left by the run before it.
+  const repNow = pmDoc.current_representation || {};
+  const geomNow = pmDoc.current_estimator_geometry || "";
+  let provenanceBits = `Running now: ${sourceLabel}`;
+  if (methodNow) provenanceBits += ` · ${methodNow}`;
+  else if (detector) provenanceBits += ` · Detector: ${detector}`;
+  if (geomNow === "learned_representation") {
+    provenanceBits += ` · Representation: `
+      + `${repNow.label || repNow.model_id || "learned reference views"}`;
+    if (repNow.reference_source) provenanceBits += ` (${repNow.reference_source})`;
+  } else if (geomNow === "cad" && doc.object_model && doc.object_model.model_id) {
+    provenanceBits += ` · CAD model: ${doc.object_model.model_id}`;
+  }
+  $("#percep-source").textContent = provenanceBits;
   const title = $("#percep-title");
   if (title) {
     // NEUTRAL BY DEFAULT, specific when the run says so. "Physical Perception"
-    // is a planar-era name and is wrong for a simulated acquisition.
-    const method = (doc.perception_method || {}).current || "";
-    title.textContent = method === "foundationpose_rgbd"
+    // is a planar-era name and is wrong for a simulated acquisition. BOTH
+    // FoundationPose methods are RGB-D, so this keys on what the method needs
+    // rather than on one method's name.
+    const method = pmDoc.current || "";
+    title.textContent = (method === "foundationpose_rgbd"
+                         || method === "foundationpose_rgbd_model_free")
       ? "RGB-D Perception"
       : (doc.physical ? "Physical Perception" : "Perception");
   }

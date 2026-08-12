@@ -70,10 +70,17 @@ from wisepack_core.perception import (                         # noqa: E402
 from wisepack_core.pose import (                               # noqa: E402
     CAMERA_OPTICAL_FRAME, Orientation, PoseError, canonicalize)
 from wisepack_core.rgbd import ObjectModelRegistry, load_object_registry  # noqa: E402
+from wisepack_core.representation import (                     # noqa: E402
+    RepresentationError, load_representation_registry)
 
 #: This provider's identity, in the registry's vocabulary.
 PROVIDER_NAME = "foundationpose_rgbd"
+#: The DEFAULT method. This provider implements both FoundationPose methods —
+#: they read the same frames through the same worker and differ only in which
+#: geometry the estimator is handed — and every entry point takes `method` so
+#: the caller's choice, not a module constant, decides.
 METHOD = PerceptionMethod.FOUNDATIONPOSE_RGBD.value
+METHOD_MODEL_FREE = PerceptionMethod.FOUNDATIONPOSE_RGBD_MODEL_FREE.value
 
 #: What produced the numbers, for `PhysicalObservation.detector`. Names the
 #: METHOD and the upstream project, never a WISEPACK internal path.
@@ -175,9 +182,11 @@ class FoundationPoseProvider:
     """Turns worker responses into domain observations. Owns no camera."""
 
     def __init__(self, client: Optional[FoundationPoseClient] = None,
-                 registry: Optional[ObjectModelRegistry] = None) -> None:
+                 registry: Optional[ObjectModelRegistry] = None,
+                 representations=None) -> None:
         self.client = client or FoundationPoseClient()
         self._registry = registry
+        self._representations = representations
 
     # -- capability --------------------------------------------------------- #
 
@@ -186,6 +195,20 @@ class FoundationPoseProvider:
         if self._registry is None:
             self._registry = load_object_registry()
         return self._registry
+
+    @property
+    def representations(self):
+        """The LEARNED representations, a registry entirely separate from CAD.
+
+        Two registries, deliberately: one describes the part (exact geometry,
+        used for packing), the other describes what has been learned about its
+        appearance (used for pose, and authoritative for nothing else). A single
+        registry holding both is how a reconstruction ends up in the packing
+        arithmetic without anyone deciding that it should.
+        """
+        if self._representations is None:
+            self._representations = load_representation_registry()
+        return self._representations
 
     def models(self) -> List[Dict[str, Any]]:
         """Object models this METHOD can use — those that declare it and have a
@@ -325,8 +348,8 @@ class FoundationPoseProvider:
                          refine_iterations: int = 5,
                          batch_id: str = "fp-physical-1",
                          mask_source: str = "depth_plane_foreground",
-                         segmentation: Optional[Dict[str, Any]] = None
-                         ) -> ObservationBatch:
+                         segmentation: Optional[Dict[str, Any]] = None,
+                         method: str = METHOD) -> ObservationBatch:
         """A dataset CAPTURED FROM THE PHYSICAL D435, estimated the same way.
 
         THE SAME `_estimate` AS THE REFERENCE AND ISAAC PATHS. Nothing about a
@@ -348,12 +371,13 @@ class FoundationPoseProvider:
             dataset=dataset, model_id=model_id, depth_scale_mm=depth_scale_mm,
             frame=frame, refine_iterations=refine_iterations,
             batch_id=batch_id, acquisition=ACQUISITION_REALSENSE,
-            mask_source=mask_source, segmentation=segmentation)
+            mask_source=mask_source, segmentation=segmentation, method=method)
 
     def acquire_simulated(self, dataset: str, model_id: str,
                           depth_scale_mm: float, frame: int = 0,
                           refine_iterations: int = 5,
-                          batch_id: str = "fp-simulated-1") -> ObservationBatch:
+                          batch_id: str = "fp-simulated-1",
+                          method: str = METHOD) -> ObservationBatch:
         """A dataset RENDERED BY ISAAC, estimated by the same real estimator.
 
         WHY THIS IS NOT `acquire_reference`. The Isaac path used to borrow the
@@ -380,21 +404,22 @@ class FoundationPoseProvider:
         return self._estimate(
             dataset=dataset, model_id=model_id, depth_scale_mm=depth_scale_mm,
             frame=frame, refine_iterations=refine_iterations,
-            batch_id=batch_id, acquisition=ACQUISITION_ISAAC)
+            batch_id=batch_id, acquisition=ACQUISITION_ISAAC, method=method)
 
     def _estimate(self, dataset: str, model_id: str, depth_scale_mm: float,
                   frame: int, refine_iterations: int, batch_id: str,
                   acquisition: str, mask_source: str = "dataset",
-                  segmentation: Optional[Dict[str, Any]] = None
-                  ) -> ObservationBatch:
+                  segmentation: Optional[Dict[str, Any]] = None,
+                  method: str = METHOD) -> ObservationBatch:
         requested_at = _utc_now()
+        chosen = PerceptionMethod(method)
 
         def failed(reason: str) -> ObservationBatch:
             return ObservationBatch.failed(
                 batch_id=batch_id, source=PerceptionSource.CAMERA.value,
                 error=reason, frame_id=CAMERA_OPTICAL_FRAME,
                 requested_at=requested_at, detector=ESTIMATOR_ID,
-                perception_method=METHOD, acquisition=acquisition,
+                perception_method=method, acquisition=acquisition,
                 model_id=model_id)
 
         model = self.registry.models.get(model_id)
@@ -405,23 +430,48 @@ class FoundationPoseProvider:
                 + (", ".join(sorted(self.registry.models)) or "(registry empty)"))
         if not model.supports(METHOD):
             return failed(f"{model_id} does not declare the {METHOD} method")
-        mesh_path = model.resolved_path(self.registry.root)
-        if not model.mesh_exists(self.registry.root):
-            return failed(
-                f"{model_id} has no mesh file at {mesh_path or '(unset)'}")
 
-        # The registry root and the worker's read-only mount are THE SAME
-        # DIRECTORY, so a registry-relative mesh path is already meaningful
-        # inside the container and no translation is needed. A request never
-        # carries a host path.
+        # ------------------------------------------------------------------ #
+        # WHICH GEOMETRY THE ESTIMATOR IS GIVEN. The one branch in this file,
+        # and the only difference between the two methods.
+        #
+        # THE CAD BRANCH IS UNREACHABLE FOR MODEL-FREE. `model.resolved_path`
+        # is not called on that side at all — the CAD mesh path is never
+        # computed, never put in the request, and there is no code path that
+        # could fall back to it. A model-free run whose representation is
+        # missing FAILS; it does not quietly become a CAD run wearing a
+        # model-free label.
+        # ------------------------------------------------------------------ #
+        representation = None
+        if chosen.requires_representation:
+            try:
+                representation = self.representations.require(model_id, method)
+            except RepresentationError as exc:
+                return failed(str(exc))
+            mesh_root = self.representations.store_root
+            mesh_path = representation.mesh_path(mesh_root)
+            mesh_scale_to_mm = representation.mesh_scale_to_mm
+        else:
+            mesh_root = self.registry.root
+            mesh_path = model.resolved_path(mesh_root)
+            if not model.mesh_exists(mesh_root):
+                return failed(
+                    f"{model_id} has no mesh file at {mesh_path or '(unset)'}")
+            mesh_scale_to_mm = model.mesh_scale_to_mm
+
+        # Each root and the worker's matching read-only mount are THE SAME
+        # DIRECTORY, so a root-relative mesh path is already meaningful inside
+        # the container and no translation is needed. A request never carries a
+        # host path.
         request = {
             "dataset": dataset,
-            "mesh_path": os.path.relpath(mesh_path, self.registry.root),
+            "mesh_path": os.path.relpath(mesh_path, mesh_root),
             # UNITS ARE PASSED EXPLICITLY, both of them, because neither can be
-            # read from the file. The mesh unit comes from the registry, where
-            # it is declared; the depth scale comes from the caller, who knows
-            # the sensor. The worker has no default for either.
-            "mesh_scale_to_metres": model.mesh_scale_to_mm / 1000.0,
+            # read from the file. The mesh unit comes from whichever registry
+            # declared it — the CAD STLs are millimetres, an exported
+            # representation is metres — and the depth scale comes from the
+            # caller, who knows the sensor. The worker has no default for either.
+            "mesh_scale_to_metres": mesh_scale_to_mm / 1000.0,
             "depth_scale_mm": float(depth_scale_mm),
             "frame": int(frame),
             "refine_iterations": int(refine_iterations),
@@ -446,7 +496,8 @@ class FoundationPoseProvider:
 
         observation = self.observation_from(
             validated, model=model, acquisition=acquisition,
-            observation_id=f"{batch_id}-obj-1")
+            observation_id=f"{batch_id}-obj-1", method=method,
+            representation=representation)
 
         return ObservationBatch(
             batch_id=batch_id,
@@ -460,7 +511,7 @@ class FoundationPoseProvider:
             captured_at=validated["captured_at"] or requested_at,
             requested_at=requested_at,
             detector=ESTIMATOR_ID,
-            perception_method=METHOD,
+            perception_method=method,
             acquisition=acquisition,
             model_id=model.model_id,
             # A 6-DoF camera-frame pose has no ArUco plane behind it. Saying
@@ -475,6 +526,12 @@ class FoundationPoseProvider:
                 "pose_of": validated["pose_of"],
                 "intrinsics": validated["intrinsics"],
                 "acquisition": acquisition,
+                # WHAT THE ESTIMATOR WAS GIVEN, recorded on every batch so a
+                # run's provenance answers "CAD or learned representation?"
+                # without anyone inferring it from a method name.
+                "estimator_geometry": chosen.estimator_geometry,
+                **({"representation": representation.to_dict(mesh_root)}
+                   if representation is not None else {}),
                 "note": (REFERENCE_NOTE
                          if acquisition == ACQUISITION_REFERENCE else ""),
                 "frame_note": NO_EXTRINSIC_NOTE,
@@ -487,8 +544,9 @@ class FoundationPoseProvider:
             })
 
     def observation_from(self, validated: Dict[str, Any], model,
-                         acquisition: str,
-                         observation_id: str) -> PhysicalObservation:
+                         acquisition: str, observation_id: str,
+                         method: str = METHOD,
+                         representation=None) -> PhysicalObservation:
         """One validated worker response -> one domain observation.
 
         SYMMETRY IS APPLIED HERE, from the registry's MEASURED declaration, and
@@ -496,6 +554,15 @@ class FoundationPoseProvider:
         place and discarding the raw value would destroy the evidence needed to
         tell "the estimator was wrong" from "this rotation was never
         observable".
+
+        THE DIMENSIONS BELOW COME FROM CAD FOR BOTH METHODS, and that is not an
+        oversight — it is the separation this system depends on. Model-free
+        changes what the ESTIMATOR is given; it does not change where WISEPACK's
+        engineering geometry comes from. The reconstruction has no bore and
+        capped ends, so its diameter and volume are not the part's, and
+        `geometry_source` stays `cad_model` because that is where these numbers
+        actually came from. What the estimator used is recorded separately, on
+        the batch.
         """
         raw = validated["orientation"]
         canonical = canonicalize(raw, model.symmetry)
@@ -560,7 +627,7 @@ class FoundationPoseProvider:
             # record of what symmetry removed.
             orientation_raw=raw if changed else None,
             symmetry=model.symmetry,
-            perception_method=METHOD,
+            perception_method=method,
             object_model_id=model.model_id,
             # THE ESTIMATE IS VALID. It is a real, reproducible 6-DoF pose in
             # the frame it declares, and reporting otherwise would call a good

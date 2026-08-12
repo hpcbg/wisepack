@@ -250,17 +250,42 @@ class PerceptionMethod(str, Enum):
     #: a CAD model for the object in view, and any of those being absent must be
     #: visible rather than silently worked around.
     FOUNDATIONPOSE_RGBD = "foundationpose_rgbd"
+    #: FoundationPose again, and deliberately the SAME estimator — what differs
+    #: is the geometry it is given. Instead of the object's CAD mesh it receives
+    #: a representation LEARNED from reference views of the object, so no CAD
+    #: model reaches the estimator at all.
+    #:
+    #: A METHOD, NOT A SOURCE OR A BACKEND. It reads the same RGB-D frames from
+    #: the same two devices and produces the same ObservationBatch; nothing
+    #: downstream branches on it. Making it an object source would have implied
+    #: the objects come from somewhere else, which they do not.
+    #:
+    #: NOT CAD-FREE PACKING. It removes CAD from POSE ESTIMATION only. WISEPACK
+    #: continues to pack against exact engineering geometry where it exists —
+    #: see `wisepack_core.representation`, where the reconstruction records that
+    #: it is not authoritative for packing.
+    FOUNDATIONPOSE_RGBD_MODEL_FREE = "foundationpose_rgbd_model_free"
 
     @property
     def provider_module(self) -> str:
-        """The module under `perception/providers/` that implements this."""
+        """The module under `perception/providers/` that implements this.
+
+        BOTH FOUNDATIONPOSE METHODS SHARE ONE PROVIDER. They differ in which
+        geometry the estimator is handed, not in how a frame is read, and a
+        second module would be the same code twice with one substitution.
+        """
         return {"planar_fasterrcnn": "fasterrcnn_bottle",
-                "foundationpose_rgbd": "foundationpose_rgbd"}[self.value]
+                "foundationpose_rgbd": "foundationpose_rgbd",
+                "foundationpose_rgbd_model_free": "foundationpose_rgbd",
+                }[self.value]
 
     @property
     def selector_label(self) -> str:
         return {"planar_fasterrcnn": "Planar RGB — Faster R-CNN",
-                "foundationpose_rgbd": "RGB-D 6-DoF — FoundationPose"}[self.value]
+                "foundationpose_rgbd": "RGB-D 6-DoF — FoundationPose (CAD)",
+                "foundationpose_rgbd_model_free":
+                    "RGB-D 6-DoF — FoundationPose (model-free)",
+                }[self.value]
 
     @property
     def selector_detail(self) -> str:
@@ -275,6 +300,13 @@ class PerceptionMethod(str, Enum):
             "foundationpose_rgbd": (
                 "a full 6-DoF pose is estimated from RGB-D against the "
                 "object's CAD model, in the camera frame"),
+            "foundationpose_rgbd_model_free": (
+                # SAYS WHAT IS AND IS NOT SUPPLIED, because that is the whole
+                # difference between the two, and "model-free" alone is easy to
+                # read as "needs nothing" or as "CAD-free packing".
+                "a full 6-DoF pose is estimated from RGB-D against a learned "
+                "representation built from reference views; no CAD mesh is "
+                "supplied to the estimator"),
         }[self.value]
 
     @property
@@ -286,16 +318,52 @@ class PerceptionMethod(str, Enum):
         measured a full orientation.
         """
         return {"planar_fasterrcnn": ("x", "y", "yaw"),
-                "foundationpose_rgbd": ("x", "y", "z", "orientation")}[self.value]
+                "foundationpose_rgbd": ("x", "y", "z", "orientation"),
+                "foundationpose_rgbd_model_free":
+                    ("x", "y", "z", "orientation"),
+                }[self.value]
+
+    @property
+    def is_foundationpose(self) -> bool:
+        """Both FoundationPose methods, whichever geometry they are given."""
+        return self in (PerceptionMethod.FOUNDATIONPOSE_RGBD,
+                        PerceptionMethod.FOUNDATIONPOSE_RGBD_MODEL_FREE)
 
     @property
     def requires_depth(self) -> bool:
-        return self is PerceptionMethod.FOUNDATIONPOSE_RGBD
+        return self.is_foundationpose
 
     @property
     def requires_object_model(self) -> bool:
-        """Model-BASED means exactly that: no mesh, no estimate."""
+        """Model-BASED means exactly that: no mesh, no estimate.
+
+        FALSE FOR MODEL-FREE, and this is the property the whole separation
+        turns on: it is what tells every caller not to look up a CAD mesh. The
+        estimator is given a learned representation instead, and handing it CAD
+        would make the selected method a lie.
+        """
         return self is PerceptionMethod.FOUNDATIONPOSE_RGBD
+
+    @property
+    def requires_representation(self) -> bool:
+        """Needs a representation LEARNED from reference views, prepared offline.
+
+        Its absence is a refusal, never a fall back to CAD — see
+        `wisepack_core.representation.RepresentationRegistry.require`.
+        """
+        return self is PerceptionMethod.FOUNDATIONPOSE_RGBD_MODEL_FREE
+
+    @property
+    def estimator_geometry(self) -> str:
+        """WHAT THE ESTIMATOR IS GIVEN, in one word, for provenance and the UI.
+
+        Carried here so no panel has to infer "is this the CAD one?" from a
+        method name, and so a run's record states which geometry produced it.
+        """
+        return {"planar_fasterrcnn": "",
+                "foundationpose_rgbd": "cad",
+                "foundationpose_rgbd_model_free": "learned_representation",
+                }[self.value]
 
 
 #: The public setting. Supersedes `WISEPACK_PERCEPTION_DETECTOR`, which is still
@@ -313,7 +381,15 @@ KNOWN_PERCEPTION_METHODS = tuple(m.value for m in PerceptionMethod)
 PERCEPTION_METHOD_ALIASES = {
     "fasterrcnn_bottle": PerceptionMethod.PLANAR_FASTERRCNN.value,
     "planar": PerceptionMethod.PLANAR_FASTERRCNN.value,
+    # BARE `foundationpose` STAYS THE CAD METHOD. It named the only
+    # FoundationPose method that existed when the alias was written, and
+    # repointing it at model-free would silently change what an existing
+    # deployment's configuration means.
     "foundationpose": PerceptionMethod.FOUNDATIONPOSE_RGBD.value,
+    "foundationpose_cad": PerceptionMethod.FOUNDATIONPOSE_RGBD.value,
+    "foundationpose_model_free":
+        PerceptionMethod.FOUNDATIONPOSE_RGBD_MODEL_FREE.value,
+    "model_free": PerceptionMethod.FOUNDATIONPOSE_RGBD_MODEL_FREE.value,
 }
 
 
@@ -1133,9 +1209,32 @@ class PerceptionMethodState:
                 "measures": list(method.measures),
                 "requires_depth": method.requires_depth,
                 "requires_object_model": method.requires_object_model,
+                # WHICH GEOMETRY THE ESTIMATOR GETS, so the panel can show a
+                # CAD model for one and a representation for the other without
+                # matching on method names in JavaScript.
+                "requires_representation": method.requires_representation,
+                "estimator_geometry": method.estimator_geometry,
                 "available": method.value in self.available,
                 "reason": self.unavailable_reasons.get(method.value, ""),
             })
+        selected_method = PerceptionMethod(self.selected)
+        document["selected_requires_object_model"] = \
+            selected_method.requires_object_model
+        document["selected_requires_representation"] = \
+            selected_method.requires_representation
+        document["selected_estimator_geometry"] = \
+            selected_method.estimator_geometry
+        if self.current:
+            current_method = PerceptionMethod(self.current)
+            document["current_estimator_geometry"] = \
+                current_method.estimator_geometry
+            document["current_requires_representation"] = \
+                current_method.requires_representation
+        else:
+            # EMPTY, NOT DEFAULTED — the same rule as `current` itself. A run
+            # that measured nothing was not a CAD run.
+            document["current_estimator_geometry"] = ""
+            document["current_requires_representation"] = False
         return document
 
 
