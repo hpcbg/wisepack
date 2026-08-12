@@ -631,8 +631,13 @@
              `model_id` is WHAT is expected and the ROI is WHERE to look; the
              two are separate inputs and neither is derived from the other. -->
         <div id="phys-acquire" style="display:none;margin-bottom:8px">
-          <label class="f" style="margin-bottom:4px">Object model (CAD)
+          <!-- THE PART IS NAMED BY THE OPERATOR for both methods; what the
+               ESTIMATOR is given differs, and is stated in
+               `#phys-representation` below rather than in this label. -->
+          <label class="f" style="margin-bottom:4px"><span id="phys-model-label">Object model (CAD)</span>
             <select id="phys-model"></select></label>
+          <div id="phys-representation" class="note"
+               style="display:none;margin-bottom:6px"></div>
           <label class="f" style="margin-bottom:4px">ROI x0,y0,x1,y1 — where to look
             <input id="phys-roi" type="text" placeholder="255,70,445,719"
                    style="width:100%"/></label>
@@ -1844,6 +1849,65 @@ function applyAcquisitionNote(s) {
   note.textContent = bits.join(" · ");
 }
 
+// IS THIS AN RGB-D METHOD? Answered from the backend's `requires_depth` flag,
+// not by naming methods here. Every place that used to compare against
+// `"foundationpose_rgbd"` was wrong the moment a second RGB-D method existed,
+// and a third would break them again; this asks the property that actually
+// matters.
+function isRgbdMethod(doc, value) {
+  if (!value) return false;
+  const options = ((doc || {}).perception_method || {}).options || [];
+  const found = options.find(o => o.value === value);
+  return Boolean(found && found.requires_depth);
+}
+
+// WHAT THE ESTIMATOR IS GIVEN, in the lower physical panel. The object selector
+// states WHICH PART is on the table — operator-stated identity, needed by both
+// methods and never inferred — but "Object model (CAD)" describes the CAD
+// method's ESTIMATOR INPUT, and beside a model-free run it named something the
+// estimator never received.
+//
+// SO THE IDENTITY AND THE ESTIMATOR INPUT ARE SEPARATED: the selector keeps
+// naming the part, and the estimator's actual input is stated beneath it.
+function applyPhysicalEstimatorInput(doc, method) {
+  const label = $("#phys-model-label");
+  const rep = $("#phys-representation");
+  if (!label || !rep) return;
+  const options = ((doc || {}).perception_method || {}).options || [];
+  const chosen = options.find(o => o.value === method) || {};
+  if (chosen.requires_representation) {
+    // NOT "Object model (CAD)". The part is still named — the estimator just
+    // is not given its CAD.
+    label.textContent = "Object";
+    const pmDoc = (doc || {}).perception_method || {};
+    const store = (pmDoc.representations || {})[method] || pmDoc.representation
+                  || {};
+    const byModel = store.by_model || {};
+    const wanted = ($("#phys-model") && $("#phys-model").value) || "";
+    const keys = Object.keys(byModel);
+    const entry = byModel[wanted] || (keys.length === 1 ? byModel[keys[0]] : {});
+    const rows = [
+      ["Object", entry.label || entry.model_id || "—"],
+      ["Source", entry.reference_source || "—"],
+      ["Reference views", entry.reference_view_count || "—"],
+      ["Status", entry.ready ? "READY" : "NOT READY"],
+    ];
+    const why = entry.reason || store.reason || "";
+    if (!entry.ready && why) rows.push(["Reason", acqShorten(why)]);
+    rep.textContent = "";
+    rep.append(el("div", { style: "font-weight:600;margin-bottom:2px" },
+                  "Reference representation"));
+    renderRepresentationRows(
+      rep, "Learned from reference views; no CAD supplied to the estimator",
+      rows);
+    rep.style.display = "";
+    return;
+  }
+  label.textContent = "Object model (CAD)";
+  rep.textContent = "";
+  rep.style.display = "none";
+}
+
 // THE METHOD THE OPERATOR CAN SEE, which is the only one an action may use.
 // Reading the draft out of the last poll instead would dispatch a run the panel
 // never displayed — the exact confusion the current-run / next-run split exists
@@ -2025,7 +2089,8 @@ function applyRepresentationRow(s) {
     // that matches, so no object name is written in this file. With exactly
     // one registered and nothing selected yet, that one is shown — there is
     // nothing to be ambiguous between.
-    const store = pm.representation || {};
+    const store = (pm.representations || {})[method.value] || pm.representation
+                  || {};
     const byModel = store.by_model || {};
     const wanted = (($("#sim-model") && $("#sim-model").value)
                     || ($("#phys-model") && $("#phys-model").value) || "");
@@ -2128,7 +2193,7 @@ function syncScenarioControls(s) {
     // model-based RGB-D. The method's own note already says what it measures,
     // so the coarser sentence is dropped rather than contradicting it.
     const methodSel = ((s.perception_method || {}).selected) || "";
-    if (objsrc.selected_detail && methodSel !== "foundationpose_rgbd") {
+    if (objsrc.selected_detail && !isRgbdMethod(s, methodSel)) {
       bits.push(objsrc.selected_detail);
     }
     if (!objsrc.camera_available && objsrc.camera_unavailable_reason) {
@@ -2815,12 +2880,33 @@ async function refreshPhysicalD435() {
   // when the NEXT run is configured for the physical RGB-D method — which is a
   // statement of intent — and showing them always would offer a camera capture
   // beside a planar run that is not using the camera that way.
+  // THE CONTROLS FOLLOW THE DEVICE, NOT ONE METHOD. This read
+  // `method === "foundationpose_rgbd"`, so selecting model-free hid the entire
+  // block — the object selector, the ROI and the Acquire button — along with
+  // the busy note and the success message written into it. The acquisition
+  // still ran and still succeeded; the operator simply could not see any of
+  // it, which is indistinguishable from a button that does nothing.
+  //
+  // Physical RGB-D acquisition is a property of the DEVICE. Every method
+  // offered for `realsense_d435` reads colour and depth from it — that is what
+  // `METHOD_ACQUISITIONS` guarantees — so the device is the honest condition
+  // and a third RGB-D method would not need this line changed again.
   const method = $("#s-method") ? $("#s-method").value : "";
-  const wantsPhysical = method === "foundationpose_rgbd";
+  const wantsPhysical = ($("#s-acq") && $("#s-acq").value) === "realsense_d435";
   const acquire = $("#phys-acquire");
   if (acquire) {
     acquire.style.display = wantsPhysical ? "" : "none";
-    if (wantsPhysical) fillPhysicalModels();
+    // FILLED WHENEVER THE BLOCK IS SHOWN. Populating it only for one method
+    // left `#phys-model` empty when model-free was chosen from a fresh page,
+    // and the acquisition then posted an empty `model_id` and was refused.
+    if (wantsPhysical) {
+      fillPhysicalModels();
+      // FROM `STATE`, NOT FROM THIS PANEL'S OWN DOCUMENT. `/api/perception/
+      // physical` carries `perception_method` as a plain string; the method
+      // OPTIONS and the representation registry live on `/api/state`, which is
+      // what `STATE` holds.
+      applyPhysicalEstimatorInput(STATE, method);
+    }
   }
 
   const scope = $("#log-scope");
@@ -2956,10 +3042,24 @@ async function acquirePhysical() {
     // The panel re-reads the artefact either way, so a refusal cannot leave a
     // new result on screen and success cannot leave an old one.
     await refreshPhysicalD435();
+    // AND THE RUN'S OWN PROVENANCE IS RE-READ, because a successful
+    // acquisition applies its batch to the workflow. Refreshing only this
+    // panel left the CURRENT RUN line still naming the PREVIOUS method for as
+    // long as the slower poll took — so straight after a model-free
+    // acquisition the header could still read "(CAD)". The Scenario button
+    // never showed this because it ends with a full refresh; this entry point
+    // now does the same.
+    await refreshPerception();
+    await refreshState();
   }
 }
 
 if ($("#c-phys-acquire")) $("#c-phys-acquire").onclick = acquirePhysical;
+// WHICH REPRESENTATION APPLIES depends on which part is selected, so the
+// estimator-input block follows this control too. It acquires nothing.
+if ($("#phys-model")) $("#phys-model").addEventListener("change", () => {
+  refreshPhysicalD435();
+});
 
 // The FoundationPose block. EVERY PREREQUISITE IS ITS OWN LINE, because each
 // fails independently and each has a different fix: collapsing them into one
@@ -3079,9 +3179,26 @@ async function refreshState() {
       // method can read the chosen device; the selector is re-synced from the
       // backend so the operator SEES the change rather than discovering it when
       // the run does something else.
+      // ONLY WHEN THE METHOD ACTUALLY HAD TO MOVE. This assignment ran
+      // unconditionally, and because the handler is async it applied a
+      // `STATE` captured before its own network calls finished — so an
+      // operator who changed the device and then the method within that
+      // window had their newer choice overwritten by the older one, and the
+      // run dispatched the method they had just moved away from.
+      //
+      // Two RGB-D methods made that visible: both are compatible with both
+      // RGB-D devices, so switching device never needs to move the method,
+      // and every assignment here was a clobber. The condition is now the one
+      // the comment above always described — snap the selector only when what
+      // it displays cannot read the chosen device.
       const method = $("#s-method");
       const settledMethod = ((STATE || {}).perception_method || {}).selected;
-      if (method && settledMethod
+      const compatible = (((STATE || {}).acquisition_choice || {})
+                          .selected_methods) || [];
+      const displayed = method ? method.value : "";
+      const mustMove = Boolean(displayed) && compatible.length
+                       && !compatible.includes(displayed);
+      if (method && settledMethod && (mustMove || !displayed)
           && [...method.options].some(o => o.value === settledMethod)) {
         method.value = settledMethod;
       }
@@ -3317,8 +3434,7 @@ async function refreshPerception() {
     // FoundationPose methods are RGB-D, so this keys on what the method needs
     // rather than on one method's name.
     const method = pmDoc.current || "";
-    title.textContent = (method === "foundationpose_rgbd"
-                         || method === "foundationpose_rgbd_model_free")
+    title.textContent = isRgbdMethod(doc, method)
       ? "RGB-D Perception"
       : (doc.physical ? "Physical Perception" : "Perception");
   }
@@ -3345,9 +3461,12 @@ async function refreshPerception() {
   // OFFLINE" and an unreachable-service error, in red, about a webcam that run
   // never used and does not need. The two methods fail independently, and the
   // panel must report the one that actually produced the batch.
+  // BOTH RGB-D METHODS COUNT. Keyed on the CAD method alone, a model-free run
+  // was not recognised as RGB-D and the panel fell through to the planar
+  // branch — reporting "DETECTOR OFFLINE" about a webcam the run never used.
+  const currentMethod = (doc.perception_method || {}).current || "";
   const rgbdRun = simRun || (acqState.current === "realsense_d435"
-                             && (doc.perception_method || {}).current
-                                === "foundationpose_rgbd");
+                             && isRgbdMethod(doc, currentMethod));
   if (rgbdRun) {
     const err = $("#percep-error");
     if (err) err.style.display = "none";

@@ -871,6 +871,16 @@ def _perception_method_payload() -> Dict[str, Any]:
     state = perception_method_state()
     document = state.to_dict()
     document["representation"] = representation_state(state.selected)
+    # KEYED BY METHOD, so a panel can describe the representation for whatever
+    # the OPERATOR currently has selected without waiting for that selection to
+    # reach the server and come back. `representation` above follows the stored
+    # draft and therefore lags the visible selector by a poll; this does not,
+    # which is what the estimator-input row needs to render immediately.
+    from wisepack_core.perception import PerceptionMethod as _PM  # noqa: PLC0415
+    document["representations"] = {
+        method.value: representation_state(method.value)
+        for method in _PM if method.requires_representation
+    }
     document["current_representation"] = _current_run_representation(
         state.current)
     return document
