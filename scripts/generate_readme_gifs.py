@@ -494,8 +494,16 @@ def _capture_camera_screenshots(browser, dash, theme: str) -> List[str]:
     count = (payload.get("batch") or {}).get("count")
     written: List[str] = []
 
-    ctx = browser.new_context(viewport=VIEWPORT, device_scale_factor=1,
-                              color_scheme=theme)
+    # THE SELECTOR FIGURE IS CAPTURED AT 2x, like the other perception figures,
+    # so its text is crisp at README width. The per-source shots below keep the
+    # original context because they are compared side by side in a table and
+    # their scale must not change under them.
+    ctx = browser.new_context(
+        viewport={"width": 1560, "height": 1000} if selector_only else VIEWPORT,
+        # 3x for the selector: it crops to one control, so a 2x render came
+        # out narrower than the surrounding figures. This is a true
+        # higher-DPI render, never an upscale of a small capture.
+        device_scale_factor=3 if selector_only else 1, color_scheme=theme)
     page = ctx.new_page()
     errors: List[str] = []
     page.on("pageerror", lambda e: errors.append(str(e)))
@@ -570,6 +578,9 @@ def _capture_camera_screenshots(browser, dash, theme: str) -> List[str]:
 #: dashboard derives from `METHOD_ACQUISITIONS` — restated here only as the
 #: caption text, never as a second source of truth: every value in the captured
 #: image comes from the running deployment.
+#: The perception method whose figures need a prepared representation.
+MODEL_FREE_METHOD = "foundationpose_rgbd_model_free"
+
 SOURCE_SHOTS = (
     ("preset", "source-preset-light.png", "Preset scenario"),
     ("planar_webcam", "source-physical-rgb-light.png", "Physical RGB camera"),
@@ -586,7 +597,152 @@ def _source_state(dash) -> Dict:
         return json.load(handle).get("acquisition_choice") or {}
 
 
-def _capture_source_screenshots(browser, dash, theme: str) -> List[str]:
+#: The model-free perception figures, and the exact element each one crops to.
+#: ELEMENT SHOTS, NOT VIEWPORT SHOTS — a full-window capture puts the controls
+#: an evaluator is meant to read into a small corner of a very large image.
+MODEL_FREE_SHOTS = (
+    ("modelfree-scenario-panel.png", "#scenario-panel"),
+    ("modelfree-physical-input.png", "#phys-acquire"),
+    ("modelfree-physical-result.png", "#phys-block"),
+)
+
+
+def _capture_model_free_screenshots(browser, dash, theme: str) -> List[str]:
+    """The model-free perception UI and a REAL physical model-free result.
+
+    WHAT THIS REFUSES TO DO. It does not stage availability, and it does not
+    reuse an old artefact because it photographs better: the physical shot is
+    taken after an acquisition performed HERE, through the ordinary dashboard
+    button, and if that acquisition fails the run stops with the reason instead
+    of keeping whatever the panel happened to be showing.
+
+    LIGHT THEME, like the rest of the README's media, and asserted rather than
+    assumed — `set_light_theme` fails instead of producing a dark capture.
+    """
+    import urllib.request                                        # noqa: PLC0415
+
+    def post(path: str, payload: Dict):
+        request = urllib.request.Request(
+            dash.url + path, data=json.dumps(payload).encode("utf-8"),
+            headers={"Content-Type": "application/json"}, method="POST")
+        with urllib.request.urlopen(request, timeout=1800) as handle:
+            return json.load(handle)
+
+    with urllib.request.urlopen(dash.url + "/api/state", timeout=30) as handle:
+        state = json.load(handle)
+    methods = (state.get("perception_method") or {})
+    available = set(methods.get("available") or [])
+    if MODEL_FREE_METHOD not in available:
+        reason = (methods.get("unavailable_reasons") or {}).get(
+            MODEL_FREE_METHOD, "no reason reported")
+        raise SystemExit(
+            "--model-free-shots needs the model-free method to be RUNNABLE on "
+            f"the attached deployment; it is not: {reason}")
+    sources = set((state.get("acquisition_choice") or {}).get("available") or [])
+    if "realsense_d435" not in sources:
+        raise SystemExit(
+            "--model-free-shots needs the physical D435 available; the "
+            "attached deployment does not report it. Nothing is staged.")
+
+    written: List[str] = []
+    # THE VIEWPORT IS CHOSEN FOR THE PANEL'S OWN LAYOUT. The Scenario panel is
+    # a responsive grid: too narrow and it becomes a very tall single column
+    # whose lower half is scenario knobs unrelated to perception; too wide and
+    # the controls sit in a small corner of a large image. This width keeps the
+    # figures readable at README scale. Nothing is edited — only the window
+    # size, exactly as resizing a browser would do.
+    ctx = browser.new_context(viewport={"width": 1560, "height": 1000},
+                              device_scale_factor=2, color_scheme=theme)
+    page = ctx.new_page()
+    errors: List[str] = []
+    page.on("pageerror", lambda e: errors.append(str(e)))
+    page.goto(dash.url + "/", wait_until="networkidle")
+    page.wait_for_timeout(2500)
+    if theme == "light":
+        set_light_theme(page)
+    page.wait_for_timeout(800)
+
+    def save(name: str, selector: str, without: str = "") -> None:
+        node = page.locator(selector)
+        if not node.is_visible():
+            raise SystemExit(f"{name}: {selector} is not on screen — refusing "
+                             "to capture a figure that does not show it")
+        page.evaluate("() => { const h = document.querySelector('header');"
+                      " if (h) h.style.visibility = 'hidden'; }")
+        # `without` REMOVES A SIBLING FIGURE'S SUBJECT FROM THIS ONE, and only
+        # that. The result block physically contains the acquisition controls,
+        # which are the previous figure; leaving them in makes this image
+        # twice as tall and shows the same controls twice. Nothing reported —
+        # no pose, no provenance, no number — is touched, and the element is
+        # restored immediately after the shutter. This is the same treatment
+        # the sticky page header already gets above.
+        if without:
+            page.evaluate("(sel) => { const n = document.querySelector(sel);"
+                          " if (n) n.style.display = 'none'; }", without)
+        node.scroll_into_view_if_needed()
+        page.wait_for_timeout(250)
+        node.screenshot(path=os.path.join(OUT_DIR, name))
+        if without:
+            page.evaluate("(sel) => { const n = document.querySelector(sel);"
+                          " if (n) n.style.display = ''; }", without)
+        page.evaluate("() => { const h = document.querySelector('header');"
+                      " if (h) h.style.visibility = ''; }")
+        if errors:
+            raise SystemExit(f"{name}: page errors {errors}")
+        written.append(os.path.join(OUT_DIR, name))
+        print(f"[model-free] {name} "
+              f"({os.path.getsize(os.path.join(OUT_DIR, name))/1e3:.0f} kB)")
+
+    # -- A. the Scenario panel, simulated RGB-D + model-free ---------------- #
+    page.select_option("#s-acq", "isaac_simulated")
+    page.wait_for_timeout(1500)
+    page.select_option("#s-method", MODEL_FREE_METHOD)
+    page.wait_for_timeout(2500)
+    if page.eval_on_selector("#s-method", "e => e.value") != MODEL_FREE_METHOD:
+        raise SystemExit("the model-free method did not stay selected")
+    if "READY" not in page.eval_on_selector("#s-representation", "e => e.innerText"):
+        raise SystemExit("the representation is not READY on this deployment; "
+                         "refusing to capture a figure claiming that it is")
+    save(*MODEL_FREE_SHOTS[0])
+
+    # -- B. the physical acquisition controls, model-free ------------------- #
+    page.select_option("#s-acq", "realsense_d435")
+    page.wait_for_timeout(1500)
+    page.select_option("#s-method", MODEL_FREE_METHOD)
+    page.wait_for_timeout(2500)
+    label = page.eval_on_selector("#phys-model-label", "e => e.innerText")
+    if "CAD" in label:
+        raise SystemExit("the physical panel still offers a CAD estimator "
+                         f"input while model-free is selected ({label!r})")
+    save(*MODEL_FREE_SHOTS[1])
+
+    # -- C. a REAL physical model-free result, acquired now ----------------- #
+    model = page.eval_on_selector("#phys-model", "e => e.value")
+    roi = page.eval_on_selector("#phys-roi", "e => e.value")
+    result = post("/api/perception/physical/acquire", {
+        "model_id": model,
+        "roi_px": [int(v) for v in roi.split(",")] if roi else None,
+        "frames": 3, "perception_method": MODEL_FREE_METHOD})
+    if not result.get("ok"):
+        raise SystemExit(
+            "the physical model-free acquisition failed at "
+            f"{result.get('stage')}: {result.get('reason')}. No previous "
+            "result is photographed in its place.")
+    page.reload(wait_until="networkidle")
+    page.wait_for_timeout(3000)
+    if theme == "light":
+        set_light_theme(page)
+    page.wait_for_timeout(1200)
+    running = page.eval_on_selector("#percep-source", "e => e.innerText")
+    if "model-free" not in running:
+        raise SystemExit(f"the run on screen is not model-free: {running!r}")
+    save(*MODEL_FREE_SHOTS[2], without="#phys-acquire")
+    ctx.close()
+    return written
+
+
+def _capture_source_screenshots(browser, dash, theme: str,
+                                selector_only: bool = False) -> List[str]:
     """The Object source / Perception method UI, from a real deployment.
 
     WHAT THESE ARE FOR. The architecture changed shape: one selector now names
@@ -609,8 +765,16 @@ def _capture_source_screenshots(browser, dash, theme: str) -> List[str]:
     written: List[str] = []
     skipped: List[str] = []
 
-    ctx = browser.new_context(viewport=VIEWPORT, device_scale_factor=1,
-                              color_scheme=theme)
+    # THE SELECTOR FIGURE IS CAPTURED AT 2x, like the other perception figures,
+    # so its text is crisp at README width. The per-source shots below keep the
+    # original context because they are compared side by side in a table and
+    # their scale must not change under them.
+    ctx = browser.new_context(
+        viewport={"width": 1560, "height": 1000} if selector_only else VIEWPORT,
+        # 3x for the selector: it crops to one control, so a 2x render came
+        # out narrower than the surrounding figures. This is a true
+        # higher-DPI render, never an upscale of a small capture.
+        device_scale_factor=3 if selector_only else 1, color_scheme=theme)
     page = ctx.new_page()
     errors: List[str] = []
     page.on("pageerror", lambda e: errors.append(str(e)))
@@ -652,10 +816,13 @@ def _capture_source_screenshots(browser, dash, theme: str) -> List[str]:
     page.evaluate("() => { const s = document.querySelector('#s-acq');"
                   " s.dataset.shotSize = s.size; s.size = s.options.length; }")
     page.wait_for_timeout(400)
-    save("source-selector-light.png", panel)
+    save("source-selector-light.png", page.locator("#s-acq-field"))
     page.evaluate("() => { const s = document.querySelector('#s-acq');"
                   " s.size = Number(s.dataset.shotSize || 0); }")
     page.wait_for_timeout(300)
+    if selector_only:
+        ctx.close()
+        return written
 
     # -- B/C/D. each source, with the method it forces ---------------------- #
     for value, name, label in SOURCE_SHOTS:
@@ -864,6 +1031,17 @@ def main() -> int:
                               "evidence. Refuses unless the attached stack is "
                               "running a real camera with a valid calibration "
                               "and a successful detection on screen."))
+    parser.add_argument("--selector-shot", action="store_true",
+                        help=("with --attach: regenerate ONLY the Object "
+                              "source selector figure, leaving the per-source "
+                              "table images untouched."))
+    parser.add_argument("--model-free-shots", action="store_true",
+                        help=("with --attach: capture the MODEL-FREE perception "
+                              "figures in light theme, cropped to the panels. "
+                              "Refuses unless the model-free method is runnable "
+                              "and the physical D435 is available, and performs "
+                              "a real acquisition rather than photographing an "
+                              "older result."))
     args = parser.parse_args()
 
     try:
@@ -890,6 +1068,21 @@ def main() -> int:
                 browser.close()
                 dash.close()
                 print(f"\nwrote {len(written)} source screenshot(s).")
+                return 0
+            if args.selector_shot:
+                written = _capture_source_screenshots(browser, dash,
+                                                      args.theme,
+                                                      selector_only=True)
+                browser.close()
+                dash.close()
+                print(f"\nwrote {len(written)} selector screenshot(s).")
+                return 0
+            if args.model_free_shots:
+                written = _capture_model_free_screenshots(browser, dash,
+                                                          args.theme)
+                browser.close()
+                dash.close()
+                print(f"\nwrote {len(written)} model-free screenshot(s).")
                 return 0
             if args.camera_shots:
                 written = _capture_camera_screenshots(browser, dash, args.theme)

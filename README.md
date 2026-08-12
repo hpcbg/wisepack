@@ -31,6 +31,17 @@ FoundationPose path the simulated runs use:
 This is a **real physical-object run, not simulation**. The images below are the
 actual frames the estimate was computed from.
 
+**And the pose estimator does not need the CAD model.** A FoundationPose
+*model-free* representation built **only from simulated Isaac reference views**
+registered the **real** Cylinder5 through the physical D435, **without supplying
+CAD to the pose estimator** — a synthetic reference transferring to a real
+sensor. Both methods are selectable from the dashboard and feed the identical
+downstream workflow; the evidence and its limits are in
+[§15a](#model-free-evidence).
+
+> WISEPACK still **packs against exact CAD engineering geometry**. Model-free
+> removes CAD from *pose estimation*, not from WISEPACK.
+
 | | |
 |---|---|
 | ![Real colour frame from the physical Intel RealSense D435 at 1280x720](images/generated/physical-c5-rgb.jpg) | ![Depth from the physical D435, aligned to the colour frame by librealsense and verified against the colour intrinsics](images/generated/physical-c5-depth-aligned.jpg) |
@@ -223,18 +234,18 @@ packing, Digital Twin and approval workflow. **This removes CAD from pose
 estimation, not from WISEPACK** — packing continues to use exact engineering
 geometry (see [§8](#model-free-is-not-cad-free-packing) below).
 
-![The Object source selector expanded, showing all four sources with their real availability](images/generated/source-selector-light.png)
+![The Object source selector expanded on the running dashboard, listing Preset scenario, Physical RGB camera, Physical RGB-D camera and Simulated RGB-D camera, all available](images/generated/source-selector-light.png)
 
-*The selector, captured from a running dashboard. All four sources are always
-listed; one this deployment cannot run is offered **disabled with its reason** —
-here the planar webcam service is not answering — never hidden, so a build that
-lacks a capability cannot be mistaken for a camera that is merely unplugged. The
-control is shown expanded; a native dropdown's popup cannot be captured.*
+*The Object source selector on the running dashboard. **All four implemented
+sources are available in this deployment.** Availability is checked live; a
+source this deployment cannot run stays **visible but disabled with its
+reason** rather than being hidden. The control is shown expanded — a native
+dropdown's popup cannot be captured.*
 
 **Object source and perception method are separate selectors**, because they
 answer different questions: **where** the observations come from, and **how** a
-camera frame becomes observations. Each source offers only the method that can
-actually read it — the planar detector cannot use depth and FoundationPose
+camera frame becomes observations. Each source offers only the **methods** that
+can actually read it — the planar detector cannot use depth and FoundationPose
 cannot read a colour webcam — and a preset reads no frame at all, so its method
 is *Not applicable*. Both RGB-D devices accept **either** FoundationPose method,
 so switching between physical and simulated RGB-D keeps the method already
@@ -603,7 +614,7 @@ so the table below says which level produced it.
 | DDS to FIWARE latency | **MEASURED** | When the benchmark has been run; `not measured` otherwise | production network conditions |
 | Perception, `sim` (default) | **SIMULATED** | Ground-truth scenario poses stand in for detection | camera, RGB-D, detector, pose estimation |
 | Perception, `camera` — **physical planar RGB** | **MEASURED — planar pose** | A real USB camera through the `planar_fasterrcnn` method. Object x/y/yaw are **real, measured** on an ArUco-calibrated plane and become the objects WISEPACK plans from. Object dimensions are **configured proxy geometry**, declared not measured | depth, 6-DoF pose, measured object dimensions, and any measured detection RATE — see §14 |
-| Perception, `camera` — **physical RGB-D** | **MEASURED — 6-DoF pose, camera frame** | A **real Intel RealSense D435**: measured RGB-D with depth aligned to colour, `depth_plane_foreground` segmentation inside an operator ROI, and a **FoundationPose 6-DoF pose in `camera_color_optical_frame`**. Packing geometry is the **exact selected CAD model**, not a proxy | **no external physical pose ground truth** — repeatability and plausibility are reported, accuracy is not; and no camera→work-area extrinsic, so `workarea_pose_available` is false |
+| Perception, `camera` — **physical RGB-D** | **MEASURED — 6-DoF pose, camera frame** | A **real Intel RealSense D435**: measured RGB-D with depth aligned to colour, `depth_plane_foreground` segmentation inside an operator ROI, and a **FoundationPose 6-DoF pose in `camera_color_optical_frame`** — from **either** the object's CAD mesh **or** a learned reference representation with **no CAD given to the estimator**. Packing geometry is the **exact selected CAD model** for both, never a proxy and never the reconstruction | **no external physical pose ground truth** — repeatability and inter-method agreement are reported, accuracy is not; and no camera→work-area extrinsic, so `workarea_pose_available` is false. Model-free is demonstrated at **one** physical pose; multi-pose validation pending |
 | Perception, **simulated RGB-D** | **SIMULATED ACQUISITION, real estimator** | Simulated **D435-compatible** RGB-D from Isaac with an exact synthetic instance mask, through the **same FoundationPose worker and provider** as the physical path. This is where the quantitative pose error comes from | nothing about a real sensor: no lens, no depth noise, no ambient IR. **Simulator ground truth is used only for evaluation** — never given to FoundationPose, never reaching the planner |
 | Robot, default backend | **SIMULATED - LOGICAL** | Deterministic workflow advance, geometric placement per the accepted plan, seeded grasp failures and workflow events | mass, inertia, gravity, kinematics, contacts, friction, collision response, settling |
 | Robot, Isaac backend | **PHYSICS-BASED SIMULATION** | A selected articulated manipulator — UFACTORY xArm 7 or Franka Emika Panda — with rigid bodies, mass, gravity, collision geometry, contacts, friction and settling in PhysX. Cylinders are carried and released, never teleported, and the measured settled pose is reported back | real hardware, safety functions, calibration, perception |
@@ -706,14 +717,17 @@ Mission-Task-Skill, in the four layers the proposal describes.
  PERCEPTION      Task generator ......... deterministic, seeded
                  Perception simulator ... SIMULATED, the default
                                           (WISEPACK_PERCEPTION_SOURCE=sim)
-                 Camera providers ....... OPTIONAL, REAL. Two methods:
+                 Camera providers ....... OPTIONAL, REAL. Three methods:
                                           planar_fasterrcnn: USB camera ->
                                           Faster R-CNN -> ArUco-calibrated
                                           planar x/y/yaw;
-                                          foundationpose_rgbd: RealSense D435 ->
-                                          aligned RGB-D -> depth-plane mask ->
-                                          FoundationPose -> 6-DoF, camera frame
-                                          (see §15a)
+                                          foundationpose_rgbd: RGB-D + CAD mesh
+                                          -> FoundationPose -> 6-DoF, camera
+                                          frame;
+                                          foundationpose_rgbd_model_free: RGB-D
+                                          + learned reference representation
+                                          (no CAD to the estimator) ->
+                                          FoundationPose -> 6-DoF (see §15a)
  OPTIMIZATION    Packing optimizer ...... geometry_aware_ep_bfd, 3 strategies
  + DIGITAL TWIN  Digital Twin validator . independent process, 9 hard constraints
  HITL            py_trees orchestrator .. the approval gate
@@ -745,7 +759,8 @@ is implied by another.
    execution       simulated ──── isaac                      what moves them
 ```
 
-Each source is read by exactly one perception method, and everything below the
+Each source exposes only the perception methods that can actually read it, and
+both RGB-D sources support the two FoundationPose methods. Everything below the
 observation is the same code whichever produced it:
 
 ```
@@ -1819,11 +1834,25 @@ WISEPACK demonstrations.
 
 The platform also **opens a path toward** synthetic data generation, domain
 randomization and reinforcement-learning experiments. Those are opportunities
-this integration makes reachable. **None of them is implemented here**, no
-synthetic perception training has been performed, and no simulation-to-real
-transfer has been validated. Simulation also does **not** remove the need for
-validation in a real cell; it reduces how much you discover there for the first
-time.
+this integration makes reachable, and **none of them is implemented here**:
+there is no general detector training, no domain-randomized perception
+training, no reinforcement learning and no robot-policy training.
+
+**One thing IS built from synthetic imagery, and it did transfer.** The
+FoundationPose *model-free* method uses a learned object representation — a
+Neural Object Field — built from **15 rendered Isaac reference views**, and that
+representation registered the **real** Cylinder5 through a **physical Intel
+RealSense D435** on 12 of 12 stationary frames, with no CAD supplied to the
+estimator. So the accurate statement is narrower than either extreme:
+
+| | Status |
+|---|---|
+| **Perception**, model-free representation | built from synthetic Isaac views; **sim-to-real transfer demonstrated** at one stationary physical pose. Multi-pose physical validation **pending**; no physical accuracy is claimed ([§15a](#model-free-evidence)) |
+| **Robot / control** | **no Isaac-to-real-robot transfer has been validated** — nothing here says anything about real motion, grasping or control |
+
+A perception representation transferring is **not** evidence that motion or
+grasping would. Simulation also does **not** remove the need for validation in a
+real cell; it reduces how much you discover there for the first time.
 
 ### From Isaac Sim to a real robot
 
@@ -2844,8 +2873,10 @@ OBJECT SOURCE                     PERCEPTION METHOD
   ------------------------------------------------------------------------
   Preset scenario                   Not applicable — no frame is read
   Physical RGB camera               Planar RGB — Faster R-CNN
-  Physical RGB-D camera             RGB-D 6-DoF — FoundationPose
-  Simulated RGB-D camera            RGB-D 6-DoF — FoundationPose
+  Physical RGB-D camera             RGB-D 6-DoF — FoundationPose (CAD)
+                                    RGB-D 6-DoF — FoundationPose (model-free)
+  Simulated RGB-D camera            RGB-D 6-DoF — FoundationPose (CAD)
+                                    RGB-D 6-DoF — FoundationPose (model-free)
   (future) yolo_obb, segmentation, ...
           |
           v
@@ -2867,10 +2898,16 @@ per-run selection within perception**, and it applies only once the source is a
 camera:
 
 ```
-PERCEPTION METHOD          HOW a physical frame becomes observations
-    planar_fasterrcnn      colour frame -> calibrated plane -> x, y, yaw
-    foundationpose_rgbd    RGB-D + CAD mesh -> full 6-DoF pose, camera frame
+PERCEPTION METHOD                 HOW a physical frame becomes observations
+    planar_fasterrcnn             colour frame -> calibrated plane -> x, y, yaw
+    foundationpose_rgbd           RGB-D + CAD mesh -> full 6-DoF, camera frame
+    foundationpose_rgbd_model_free
+                                  RGB-D + learned reference representation,
+                                  NO CAD to the estimator -> full 6-DoF
 ```
+
+The two FoundationPose methods differ in **one input** — the geometry the
+estimator is given — and in nothing else. Both RGB-D sources offer both.
 
 Selected with `WISEPACK_PERCEPTION_METHOD`, and switchable **per run from the
 dashboard with no restart**, exactly like the object source. The older
@@ -2923,8 +2960,10 @@ Object source:     [ Preset scenario        ▼ ]  -> [ Reset run & generate ]
 Perception method: follows the source, and offers only what can read it
                    Preset scenario         -> Not applicable (disabled)
                    Physical RGB camera     -> Planar RGB — Faster R-CNN
-                   Physical RGB-D camera   -> RGB-D 6-DoF — FoundationPose
-                   Simulated RGB-D camera  -> RGB-D 6-DoF — FoundationPose
+                   Physical RGB-D camera   -> RGB-D 6-DoF — FoundationPose (CAD)
+                                              RGB-D 6-DoF — FoundationPose (model-free)
+                   Simulated RGB-D camera  -> RGB-D 6-DoF — FoundationPose (CAD)
+                                              RGB-D 6-DoF — FoundationPose (model-free)
 ```
 
 **Two questions, two controls.** The object source answers **where** the
@@ -2971,7 +3010,8 @@ Twin still holds the simulated run's object; the button says
 **Reset run & generate**, which is what will replace it — when it is pressed,
 and not before.*
 
-Each source, with the method it forces and the result it produces:
+Each RGB-D source, with the result it produces. Both offer the two
+FoundationPose methods; these captures were taken with the CAD method:
 
 | Object source | Scenario panel | Result panel |
 |---|---|---|
@@ -3031,14 +3071,20 @@ from the launcher, or by hand in another terminal — makes the camera selectabl
 
 #### Two actions, one meaning each
 
-The physical camera has **two perception methods**, and they do not share a
-command. Each control means exactly one thing, and neither is a variant of the
-other:
+There are **two physical camera SOURCE TYPES**, not two methods of one camera —
+a colour webcam and an Intel RealSense D435 are different devices with different
+availability — and they do not share a command. Each control means exactly one
+thing, and neither is a variant of the other:
 
-| Method | Control | What it sends | How the batch reaches the orchestrator |
-|---|---|---|---|
-| **Planar RGB — Faster R-CNN** | *Reset run & detect* (Scenario panel) and *Detect physical objects* (Perception panel) — **the same command from two entry points** | `detect_physical_objects` | the orchestrator **pulls** the batch from the perception service over HTTP and republishes it |
-| **Physical RGB-D — FoundationPose** | *Reset run & acquire* (Scenario panel) and *Acquire & estimate* (Perception panel), after picking the CAD model and the ROI | a new acquisition through the **shared physical pipeline** (`perception/physical_pipeline.py`), then `submit_observation_batch` in live ROS/DDS mode | the batch is **pushed** to the orchestrator, already measured, over the ordinary operator command path |
+| Object source | Perception method | Control | What it sends | How the batch reaches the orchestrator |
+|---|---|---|---|---|
+| **Physical RGB camera** | Planar RGB — Faster R-CNN | *Reset run & detect* (Scenario panel) and *Detect physical objects* (Perception panel) — **the same command from two entry points** | `detect_physical_objects` | the orchestrator **pulls** the batch from the perception service over HTTP and republishes it |
+| **Physical RGB-D camera** | RGB-D 6-DoF — FoundationPose **(CAD)** or **(model-free)** | *Reset run & acquire* (Scenario panel) and *Acquire & estimate* (Perception panel), after picking the object and the ROI | a new acquisition through the **shared physical pipeline** (`perception/physical_pipeline.py`), then `submit_observation_batch` in live ROS/DDS mode | the batch is **pushed** to the orchestrator, already measured, over the ordinary operator command path |
+
+**Both FoundationPose methods use that one RGB-D control.** Which of them runs is
+the *Perception method* selector, and it changes only the geometry the estimator
+is given — the capture, the segmentation, the command and everything downstream
+are identical.
 
 Both commands are generic: they carry an `ObservationBatch` and nothing about a
 detector, a camera model or a part number. Which method produced a batch is
@@ -3249,19 +3295,24 @@ method as *sim + physical transfer demonstrated* and nothing stronger.
 
 ![The Scenario panel with Simulated RGB-D camera and FoundationPose (model-free) selected, showing the Reference representation rows: object Cylinder5, source simulated Isaac views, 15 reference views, status READY](images/generated/modelfree-scenario-panel.png)
 
-*The Scenario panel, captured from a running dashboard with the model-free
-method selected. The estimator's input is named for whichever method is chosen —
-a **CAD model** for one, a **reference representation** for the other — with its
-readiness stated **before** the button is pressed. The representation
-identifier and digest are detail, not the headline.*
+*Model-free selected on the running dashboard. The estimator's input is named
+for whichever method is chosen — a **CAD model** for one, a **reference
+representation** for the other — and its readiness is stated **before** the
+button is pressed.*
+
+![The physical RGB-D acquisition controls with model-free selected: an Object selector, then a Reference representation block reading Cylinder5, simulated Isaac views, 15 reference views, READY, then the ROI field and the Acquire and estimate button](images/generated/modelfree-physical-input.png)
+
+*The physical acquisition controls. The **object identity** is stated by the
+operator; what the **estimator** is given is stated separately beneath it —
+here a reference representation learned from 15 simulated views, **READY**, and
+no CAD.*
 
 ![The physical D435 result panel for a model-free run: the Cylinder5 CAD mesh reprojected at the estimated pose, landing on the real tube in the photograph](images/generated/modelfree-physical-result.png)
 
-*A **physical D435** acquisition through the ordinary dashboard button, with
-model-free selected. The pose was estimated from the **simulated-reference
-representation with no CAD supplied to the estimator**; the CAD mesh is drawn
-only so the result can be seen. The panel reports **repeatability** and states
-that it is **not accuracy**, because no physical ground truth exists.*
+*A **real physical D435** acquisition, model-free. The pose came from the
+**simulated-reference representation, with no CAD supplied to the estimator**;
+the CAD mesh is drawn **only to visualise** the estimate. The panel reports
+repeatability and states plainly that it is **not accuracy**.*
 
 <a id="model-free-is-not-cad-free-packing"></a>
 ##### Model-free is not CAD-free packing
