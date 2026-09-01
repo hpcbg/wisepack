@@ -2677,10 +2677,9 @@ async function acquireSimulated() {
       : "estimating from the last rendered frame — the estimate is fresh, "
         + "the frame is not")
       + " · Faster than the physical button because the frame is rendered, not "
-      + "captured: no device to open or warm up, an exact mask the renderer "
-      + "already knows instead of a depth segmentation, and one inference pass "
-      + "instead of five frames for repeatability. Same worker, same CAD, same "
-      + "estimator.";
+      + "captured: no device to open or warm up, and an exact mask the renderer "
+      + "already knows instead of a depth segmentation. BOTH run ONE inference "
+      + "pass. Same worker, same CAD, same estimator.";
   }
   try {
     const res = await fetch("/api/perception/simulated/acquire", {
@@ -2835,6 +2834,16 @@ async function refreshPhysicalD435() {
     device.firmware_version ? `firmware ${device.firmware_version}` : "",
     doc.selected_profile && doc.selected_profile.width
       ? `${doc.selected_profile.width}x${doc.selected_profile.height}@${doc.selected_profile.fps}` : "",
+    // HOW MANY ESTIMATES THIS RESULT COST, and how long the estimator itself
+    // took. One pass is the ordinary case and several is a repeatability run;
+    // both are legitimate, and which one produced the pose on screen is not
+    // something an operator should have to infer from the wait.
+    (doc.timing_ms || {}).inference_passes
+      ? `${doc.timing_ms.inference_passes} FoundationPose `
+        + `pass${doc.timing_ms.inference_passes === 1 ? "" : "es"}`
+        + (doc.timing_ms.inference_total_ms !== undefined
+           ? ` in ${Math.round(doc.timing_ms.inference_total_ms)} ms` : "")
+      : "",
   ].filter(Boolean).join(" · ");
 
   // THE CAMERA FRAME, NAMED. Three numbers without a frame are not a pose, and
@@ -2860,14 +2869,30 @@ async function refreshPhysicalD435() {
   ].filter(Boolean).join(" · ");
 
   // REPEATABILITY IS NOT ACCURACY, and the label says so every time it renders.
-  const rep = (doc.repeatability || {}).object_centre || {};
-  const axisRep = (doc.repeatability || {}).tube_axis_line_deg || {};
+  //
+  // AND "NOT MEASURED" IS NOT "ZERO". An ordinary acquisition estimates one
+  // frame, so there is no spread to report — and a blank line, or worse a
+  // 0.0 mm spread, reads as a perfect instrument. The panel says which question
+  // was not asked and what would answer it.
+  const repDoc = doc.repeatability || {};
+  const rep = repDoc.object_centre || {};
+  const axisRep = repDoc.tube_axis_line_deg || {};
   const repeat = $("#phys-repeat");
   if (repeat) {
-    repeat.textContent = (rep.radial_mm === undefined) ? "" :
-      `Stationary repeatability (NOT accuracy — no ground truth exists for a `
-      + `physical object): centre spread max ${rep.radial_mm.max} mm, `
-      + `tube-axis-line spread max ${axisRep.max}°`;
+    if (rep.radial_mm !== undefined) {
+      repeat.textContent =
+        `Stationary repeatability over ${repDoc.frames} frames (NOT accuracy — `
+        + `no ground truth exists for a physical object): centre spread max `
+        + `${rep.radial_mm.max} mm, tube-axis-line spread max ${axisRep.max}°`;
+    } else if (repDoc.measured === false) {
+      repeat.textContent =
+        "Stationary repeatability: NOT MEASURED for this acquisition, and not "
+        + "zero. One measurement frame has no spread; measuring it needs "
+        + "several independent frames of the same stationary scene "
+        + "(./scripts/physical_c5.sh --frames 5).";
+    } else {
+      repeat.textContent = "";
+    }
   }
 
   const blocked = $("#phys-blocked");
@@ -3015,13 +3040,22 @@ async function acquirePhysical() {
     }
   }
   if (btn) { btn.disabled = true; btn.textContent = "Acquiring…"; }
-  if (note) note.textContent = "capturing from the physical D435, segmenting, "
-    + "then estimating — this takes a few seconds per frame";
+  if (note) note.textContent = "warming the D435, capturing one aligned RGB-D "
+    + "frame, segmenting it, then ONE FoundationPose pass";
   try {
     const res = await fetch("/api/perception/physical/acquire", {
       method: "POST", headers: { "Content-Type": "application/json" },
       // THE SAME RULE AS THE SIMULATED BUTTON: the run uses what is on screen.
-      body: JSON.stringify({ model_id: model, roi_px: roi, frames: 5,
+      //
+      // ONE MEASUREMENT FRAME, SO ONE FoundationPose PASS. This asked for five
+      // and got five inference passes, because five frames of a stationary
+      // scene is what MEASURING REPEATABILITY needs — and the button is not
+      // asking that question. It asks where the part is now, which one warmed,
+      // aligned, segmented frame answers. The camera is still warmed: the
+      // settling frames are discarded inside the capture and are never
+      // estimated, so "warmed" costs no inference. Repeatability is measured by
+      // the validation tools, which pass `--frames 5` deliberately.
+      body: JSON.stringify({ model_id: model, roi_px: roi, frames: 1,
                              perception_method: visibleMethod() }),
     });
     const doc = await res.json();
@@ -3032,8 +3066,18 @@ async function acquirePhysical() {
       // panel above keeps whatever it held — clearly labelled as recorded.
       if (note) note.textContent = `REFUSED at ${doc.stage}: ${doc.reason}`;
     } else if (note) {
+      // THE COST, BROKEN DOWN, because "it took a while" is not something an
+      // operator can act on and the number of inference passes is the thing
+      // this button was changed to control.
+      const t = doc.timing_ms || {};
+      const passes = t.inference_passes;
+      const timing = (t.total_ms === undefined) ? "" :
+        ` · capture ${Math.round(t.capture_ms)} ms, segmentation `
+        + `${Math.round(t.segmentation_ms)} ms, ${passes} FoundationPose `
+        + `pass${passes === 1 ? "" : "es"} ${Math.round(t.inference_total_ms)} `
+        + `ms, total ${Math.round(t.total_ms)} ms`;
       note.textContent = `Acquired ${doc.dataset} — ${doc.model_id}, `
-        + `pose_valid ${doc.pose_valid}, frame ${doc.frame_id}`;
+        + `pose_valid ${doc.pose_valid}, frame ${doc.frame_id}` + timing;
     }
   } catch (e) {
     if (note) note.textContent = "Failed — " + e;

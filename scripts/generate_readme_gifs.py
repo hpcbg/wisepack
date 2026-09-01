@@ -722,7 +722,10 @@ def _capture_model_free_screenshots(browser, dash, theme: str) -> List[str]:
     result = post("/api/perception/physical/acquire", {
         "model_id": model,
         "roi_px": [int(v) for v in roi.split(",")] if roi else None,
-        "frames": 3, "perception_method": MODEL_FREE_METHOD})
+        # ONE MEASUREMENT FRAME, ONE INFERENCE PASS — what the button in the
+        # photograph does. A screenshot taken from a run that cost more passes
+        # than the documented behaviour would illustrate a different behaviour.
+        "frames": 1, "perception_method": MODEL_FREE_METHOD})
     if not result.get("ok"):
         raise SystemExit(
             "the physical model-free acquisition failed at "
@@ -844,9 +847,11 @@ def _capture_source_screenshots(browser, dash, theme: str,
         # source that never ran would be the one thing these images exist to
         # rule out.
         if value == "realsense_d435":
+            # THE ORDINARY ACQUISITION: one measurement frame, one
+            # FoundationPose pass, exactly as the dashboard button asks for it.
             _acquire(page, "/api/perception/physical/acquire",
                      {"model_id": "cylinder5", "roi_px": [255, 70, 445, 719],
-                      "frames": 5})
+                      "frames": 1})
         elif value == "isaac_simulated":
             _acquire(page, "/api/perception/simulated/acquire",
                      {"model_id": "cylinder5", "acquire": False})

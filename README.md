@@ -139,7 +139,10 @@ accuracy.
 
 ### Stationary repeatability
 
-Five frames of the same stationary physical scene, estimated independently:
+Five frames of the same stationary physical scene, estimated independently —
+a **validation run**, `--frames 5`, not what the dashboard button does. Ordinary
+dashboard acquisition estimates **one** frame; measuring a spread is a separate
+question and is asked explicitly.
 
 | | |
 |---|---:|
@@ -268,12 +271,18 @@ demonstration without the hardware:
 ./scripts/physical_c5_dashboard.sh --dataset cylinder5-20260810-133408
 
 # The camera on the desk instead
-./scripts/physical_c5.sh --model cylinder5 --roi 255,70,445,719
+./scripts/physical_c5.sh --model cylinder5 --roi 255,70,445,719 --frames 1
 ./scripts/physical_c5.sh --models          # the eligible CAD models
 ```
 
 `scripts/physical_c5.py` and the dashboard endpoint call the same
 `perception/physical_pipeline.py`, so both produce a pose the same way.
+
+`--frames` counts **measurement** frames and each one costs exactly one
+FoundationPose pass, so `--frames 1` is what the dashboard button does. This CLI
+is also the repeatability tool and therefore defaults to 5; sensor warm-up is
+separate from both and is discarded inside the capture, so it never costs an
+estimate.
 
 </details>
 
@@ -284,14 +293,20 @@ perception](#rgb-d-6-dof-perception-foundationpose_rgbd).
 
 ---
 
-## Full WISEPACK demonstration video
+## Full WISEPACK demonstration videos
 
-> **Video coming soon.** This walkthrough will demonstrate all four execution and
+> **Videos coming soon.** This walkthrough will demonstrate all four execution and
 > data modes, operator decisions, anomaly recovery, physics-based execution in
 > Isaac Sim, safe
 > scene reset, FIWARE traceability and diagnostics.
 
-<!-- Replace this placeholder with the final public demonstration video link. -->
+Pose estimation simulation and real cameras:
+
+[![Pose estimation simulation and real cameras](https://img.youtube.com/vi/VYGWqHvtQeQ/1.jpg)](https://youtu.be/VYGWqHvtQeQ)
+
+Isaac-Sim execution backend supporting different robots:
+
+[![Isaac-Sim execution backend supporting different robots](https://img.youtube.com/vi/jdubFzbs9uM/1.jpg)](https://youtu.be/jdubFzbs9uM)
 
 It will cover `sim`, `fiware`, `isaac` and `isaac-fiware` modes, Human-in-the-Loop
 approval, anomaly response, scene reset, Container Inventory, Diagnostics and
@@ -3049,8 +3064,8 @@ perceived one does not inherit the tube, and a perceived batch after a preset
 does not accumulate onto forty generated items.
 
 **A slow acquisition cannot overwrite a newer run.** An Isaac render plus
-inference is about a minute; a physical capture plus five inference passes is
-tens of seconds. Each acquisition captures the `run_id` and `scenario_revision`
+inference is about a minute; a physical capture plus its single inference pass is
+several seconds. Each acquisition captures the `run_id` and `scenario_revision`
 it was started for, and a result that lands after the operator has started a
 different run is refused with both named. The measurement still stands and is
 still reported; what is refused is letting it replace the run on screen.
@@ -3079,7 +3094,7 @@ thing, and neither is a variant of the other:
 | Object source | Perception method | Control | What it sends | How the batch reaches the orchestrator |
 |---|---|---|---|---|
 | **Physical RGB camera** | Planar RGB — Faster R-CNN | *Reset run & detect* (Scenario panel) and *Detect physical objects* (Perception panel) — **the same command from two entry points** | `detect_physical_objects` | the orchestrator **pulls** the batch from the perception service over HTTP and republishes it |
-| **Physical RGB-D camera** | RGB-D 6-DoF — FoundationPose **(CAD)** or **(model-free)** | *Reset run & acquire* (Scenario panel) and *Acquire & estimate* (Perception panel), after picking the object and the ROI | a new acquisition through the **shared physical pipeline** (`perception/physical_pipeline.py`), then `submit_observation_batch` in live ROS/DDS mode | the batch is **pushed** to the orchestrator, already measured, over the ordinary operator command path |
+| **Physical RGB-D camera** | RGB-D 6-DoF — FoundationPose **(CAD)** or **(model-free)** | *Reset run & acquire* (Scenario panel) and *Acquire & estimate* (Perception panel), after picking the object and the ROI | a new acquisition through the **shared physical pipeline** (`perception/physical_pipeline.py`) — one warmed, aligned RGB-D frame and **exactly one FoundationPose pass** — then `submit_observation_batch` in live ROS/DDS mode | the batch is **pushed** to the orchestrator, already measured, over the ordinary operator command path |
 
 **Both FoundationPose methods use that one RGB-D control.** Which of them runs is
 the *Perception method* selector, and it changes only the geometry the estimator
@@ -3348,7 +3363,7 @@ shell command in between.
 
 | | How it is run | What it gives |
 |---|---|---|
-| **Physical** RGB-D, live D435 | *Object source: Physical RGB-D camera* → *Reset run & acquire*. `./scripts/physical_c5.sh` runs the same pipeline from a shell for diagnostics | a 6-DoF pose in the camera frame, straight into the workflow. **No external pose ground truth exists**, so no accuracy is claimed |
+| **Physical** RGB-D, live D435 | *Object source: Physical RGB-D camera* → *Reset run & acquire*. One warmed frame, **one** FoundationPose pass. `./scripts/physical_c5.sh` runs the same pipeline from a shell for diagnostics, and `--frames 5` there is the repeatability mode | a 6-DoF pose in the camera frame, straight into the workflow. **No external pose ground truth exists**, so no accuracy is claimed |
 | **Simulated** RGB-D | *Object source: Simulated RGB-D camera* → *Reset run & acquire*. `./scripts/stage_b.sh` / `./scripts/stage_c.sh` / `./scripts/stage_e.sh` drive the same library from a shell | the quantitative pose error, against Isaac ground truth read **after** the estimate |
 
 Both call `perception/simulated_rgbd_pipeline.py` and
@@ -3500,8 +3515,20 @@ are **measured** and are kept distinct from the `documented_nominal` profile in
 not a calibration of this unit.
 
 ```bash
+# One pose, one FoundationPose pass — what the dashboard button does.
+./scripts/physical_c5.sh --model cylinder5 --frames 1 --roi 255,70,445,719
+
+# Repeatability validation: 5 independent measurement frames, 5 independent
+# estimates, and the spread between them.
 ./scripts/physical_c5.sh --model cylinder5 --frames 5 --roi 255,70,445,719
 ```
+
+**`--frames` counts measurement frames, and each costs exactly one inference
+pass.** Sensor warm-up is separate and is discarded inside the capture, so
+warming the camera never costs an estimate. An ordinary acquisition takes one
+warmed frame and estimates it once; `--frames 5` (or 10, or 12) is the
+repeatability/validation mode, where N independent frames of one stationary
+scene give N independent poses whose spread is the reported figure.
 
 **Segmentation for the physical scene.** `depth_plane_foreground` fits the
 dominant work surface and keeps what stands on it — geometry, no learned

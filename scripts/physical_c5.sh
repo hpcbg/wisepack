@@ -5,7 +5,16 @@
 #     ./scripts/physical_c5.sh                  # capture, segment, estimate
 #     ./scripts/physical_c5.sh --segment-only   # stop after the mask
 #     ./scripts/physical_c5.sh --model cylinder3
+#     ./scripts/physical_c5.sh --frames 1       # one pose, one inference pass
 #     ./scripts/physical_c5.sh --frames 10      # more frames -> better spread
+#
+# `--frames` COUNTS MEASUREMENT FRAMES, and each one costs exactly one
+# FoundationPose pass. This CLI is the repeatability/validation tool, so it
+# defaults to 5 independent frames of the stationary scene and reports the
+# spread between the poses. The dashboard's Acquire button asks a different
+# question — where is the part now — and takes 1. Sensor warm-up is separate
+# from both: the settling frames are discarded inside the capture and are never
+# estimated, so warming the camera never costs an inference pass.
 #     ./scripts/physical_c5.sh --dataset <name> # re-run on an earlier capture
 #     ./scripts/physical_c5.sh --roi 255,70,445,719
 #

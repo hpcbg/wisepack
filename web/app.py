@@ -2135,8 +2135,8 @@ def api_perception_physical():
     if document is None:
         return {
             "available": False,
-            "reason": ("no physical D435 result yet. Run "
-                       "./scripts/physical_c5.sh --model cylinder5 --frames 5 "
+            "reason": ("no physical D435 result yet. Press Acquire & estimate, "
+                       "or run ./scripts/physical_c5.sh --model cylinder5 "
                        "--roi 255,70,445,719, or replay a recorded capture "
                        "with --dataset."),
         }
@@ -2229,8 +2229,13 @@ def api_perception_physical():
                                    "mask_extent_long_mm",
                                    "mask_extent_across_mm",
                                    "mask_median_range_mm")},
+        # REPEATABILITY IS CARRIED AS IT WAS WRITTEN, including its own
+        # `measured` flag. A one-frame acquisition reports that the figure was
+        # NOT measured; it never reports a spread of zero, which would read as a
+        # perfect instrument rather than as an unasked question.
         "repeatability": document.get("repeatability", {}),
         "plausibility": document.get("plausibility", {}),
+        "timing_ms": document.get("timing_ms", {}),
         "images": sorted(k for k, name in PHYSICAL_C5_IMAGES.items()
                          if os.path.isfile(os.path.join(PHYSICAL_C5_DIR, name))),
         "completed_at": document.get("completed_at", ""),
@@ -2289,13 +2294,19 @@ def api_perception_physical_acquire(payload: Optional[Dict[str, Any]] = None):
     if refusal:
         return {"ok": False, **refusal}
     # WHICH RUN THIS ACQUISITION IS FOR, captured BEFORE the slow part. A
-    # capture plus five inference passes takes tens of seconds, and the operator
-    # can start a different run in that time.
+    # capture plus an inference pass is still seconds of wall clock, and the
+    # operator can start a different run in that time.
     token = run_token()
     try:
         result = run_physical(
             model_id=model_id, roi_px=roi,
-            frames=int(body.get("frames", 5)),
+            # ONE MEASUREMENT FRAME, ONE FoundationPose PASS — the default for
+            # an ordinary acquisition, which asks "where is the part now". The
+            # camera is still warmed inside the capture; warm-up frames are
+            # discarded there and are never estimated. Asking for more frames
+            # is a REPEATABILITY request and belongs to the validation tools,
+            # which is why it must be said explicitly rather than defaulted to.
+            frames=int(body.get("frames", 1)),
             refine_iterations=int(body.get("refine_iterations", 5)),
             dataset=str(body.get("dataset", "")).strip(),
             method=chosen)
@@ -2333,6 +2344,10 @@ def api_perception_physical_acquire(payload: Optional[Dict[str, Any]] = None):
         "completed_at": document.get("completed_at", ""),
         "frame_id": observation.get("frame_id", ""),
         "pose_valid": (observation.get("pose") or {}).get("valid"),
+        # WHAT THE WAIT WAS SPENT ON, and how many estimates it bought. Returned
+        # to the button that pressed it so "one inference" is an observable
+        # fact rather than a claim in a comment.
+        "timing_ms": document.get("timing_ms", {}),
         # TWO SEPARATE FACTS, REPORTED SEPARATELY. The source pose is not
         # placeable; the packing geometry is known.
         "workarea_pose_available": False,

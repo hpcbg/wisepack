@@ -88,8 +88,26 @@ def report(document: Dict[str, Any]) -> None:
     print(f"    workarea_pose_available {pose['workarea_pose_available']}   "
           "(no camera-to-work-area extrinsic has been measured)")
 
+    timing = document.get("timing_ms") or {}
+    if timing:
+        print()
+        print("  TIME — where the wall clock went")
+        print(f"    measurement frames      {timing.get('measurement_frames')}")
+        print(f"    FoundationPose passes   {timing.get('inference_passes')}")
+        for label, key in (("capture + warm-up ms", "capture_ms"),
+                           ("segmentation ms", "segmentation_ms"),
+                           ("artefact images ms", "artifacts_ms"),
+                           ("inference total ms", "inference_total_ms"),
+                           ("total ms", "total_ms")):
+            if timing.get(key) is not None:
+                print(f"    {label:24}{timing[key]}")
+
     print()
     print("  REPEATABILITY — stationary scene, NOT accuracy")
+    # NOT MEASURED IS NOT ZERO. With one measurement frame there is no spread,
+    # and printing nothing under this heading reads as "all zeros".
+    if spread.get("measured") is False:
+        print(f"    {spread.get('note', 'not measured')}")
     for label, key in (("body centre", "object_centre"),
                        ("model origin", "model_frame_origin")):
         block = spread.get(key) or {}
@@ -119,7 +137,13 @@ def main() -> int:
     parser.add_argument("--model", default="cylinder5",
                         help="the CAD model an operator placed in view")
     parser.add_argument("--frames", type=int, default=5,
-                        help="frames captured, and poses estimated, for spread")
+                        help="MEASUREMENT frames captured, each estimated "
+                             "independently — the spread between them is the "
+                             "repeatability figure. This is the validation "
+                             "tool, so it defaults to 5; the dashboard's "
+                             "ordinary acquisition asks for 1. Sensor warm-up "
+                             "is separate and is discarded inside the capture, "
+                             "so it never costs an estimate.")
     parser.add_argument("--refine-iterations", type=int, default=5)
     parser.add_argument("--plane-tolerance-mm", type=float, default=None)
     parser.add_argument("--min-height-mm", type=float, default=None)

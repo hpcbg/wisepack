@@ -1,7 +1,7 @@
 """A slow acquisition cannot overwrite a run the operator started after it.
 
 THE PROBLEM. An Isaac render plus FoundationPose inference is about a minute of
-wall clock; a physical capture plus five inference passes is tens of seconds. In
+wall clock; a physical capture plus its single inference pass is seconds. In
 that window the operator can generate a preset, detect with the planar camera or
 start any other run. A result that lands afterwards is not WRONG — it is a
 correct measurement about a run that no longer exists, and applying it would

@@ -55,9 +55,16 @@ if [ "$RUN" = "1" ]; then
         *" --roi "*) ;;
         *) ARGS+=(--roi 255,70,445,719) ;;
     esac
+    # ONE MEASUREMENT FRAME, SO ONE FoundationPose PASS — the same thing the
+    # dashboard's own Acquire button does, because this script exists to bring
+    # up THAT panel. It injected 5, which is what MEASURING REPEATABILITY needs
+    # and not what showing a pose needs, and paid five inference passes for one
+    # displayed result. Sensor warm-up is unaffected: the settling frames are
+    # discarded inside the capture and were never estimated. Pass `--frames 5`
+    # (or 10, or 12) to make this a repeatability run again.
     case " ${ARGS[*]-} " in
         *" --frames "*) ;;
-        *) ARGS+=(--frames 5) ;;
+        *) ARGS+=(--frames 1) ;;
     esac
     echo "[physical-c5-dashboard] running the physical perception step"
     "$REPO/scripts/physical_c5.sh" "${ARGS[@]}" || {

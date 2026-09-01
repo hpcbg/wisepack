@@ -18,6 +18,11 @@ WHAT IT DOES NOT DO, and these are the load-bearing absences:
   extrinsic is invented, so `workarea_pose_available` stays false.
 * NO OBJECT IDENTIFICATION. `model_id` is an input. The ROI says WHERE to look
   and can never say WHAT is there.
+* NO REPEATED INFERENCE ON ONE FRAME. `frames` counts MEASUREMENT frames, and
+  each gets exactly one FoundationPose pass. Sensor warm-up happens inside the
+  capture and is discarded there, so warming the camera never costs an estimate
+  — which is what lets an ordinary acquisition run the estimator ONCE while the
+  repeatability tools still get N independent estimates from N frames.
 """
 
 from __future__ import annotations
@@ -205,11 +210,20 @@ def require_camera() -> Dict[str, Any]:
 
 
 def capture(model_id: str, frames: int) -> Dict[str, Any]:
-    """One dataset of `frames` synchronised, aligned RGB-D frames.
+    """One dataset of `frames` synchronised, aligned RGB-D MEASUREMENT frames.
 
-    ONE CAPTURE, SEVERAL FRAMES: the scene is stationary, so the frames differ
-    only by sensor noise — which is what makes the spread of the poses estimated
-    from them a measure of repeatability.
+    WARM-UP FRAMES ARE NOT MEASUREMENT FRAMES, and the distinction is the whole
+    reason `frames` can honestly be 1. The stream is opened per acquisition, so
+    the worker's `capture_dataset` discards the opening frames while
+    auto-exposure settles and only then writes `frames` of them. A dark frame is
+    not a measurement of the scene; a warmed one is. Nothing sleeps — the
+    settling is counted in frames the device actually delivered.
+
+    ONE CAPTURE, SEVERAL FRAMES, WHEN SEVERAL ARE ASKED FOR: the scene is
+    stationary, so the frames differ only by sensor noise — which is what makes
+    the spread of the poses estimated from them a measure of repeatability. That
+    spread is a VALIDATION question. An ordinary acquisition asks a different
+    one — "where is the part now" — and one warmed frame answers it.
     """
     document, error = post("/camera/capture", {
         "model_id": model_id, "frames": frames,
@@ -237,8 +251,18 @@ def segment(dataset: str, frame: int, options: Dict[str, Any]
 
 def estimate(dataset: str, model_id: str, frames: int, options: Dict[str, Any],
              refine_iterations: int, log: Callable[[str], None] = _noop,
-             method: str = METHOD) -> List[Any]:
-    """One batch per frame, through the SAME provider the Isaac path uses."""
+             method: str = METHOD,
+             timings_ms: Optional[List[float]] = None) -> List[Any]:
+    """One batch per MEASUREMENT frame, through the SAME provider Isaac uses.
+
+    ONE INFERENCE PER MEASUREMENT FRAME — never more, and never fewer. `frames`
+    is the number of measurement frames the capture wrote, so an ordinary
+    acquisition (`frames=1`) runs FoundationPose exactly once and a repeatability
+    run (`frames=5`) runs it five times on five independent frames.
+
+    `timings_ms`, when given, receives the wall clock of each pass, so the
+    caller can report inference time without measuring it a second way.
+    """
     from providers.foundationpose_rgbd import FoundationPoseProvider
 
     provider = FoundationPoseProvider()
@@ -253,6 +277,8 @@ def estimate(dataset: str, model_id: str, frames: int, options: Dict[str, Any],
             mask_source="depth_plane_foreground", segmentation=options,
             method=method)
         elapsed = (time.monotonic() - started) * 1000.0
+        if timings_ms is not None:
+            timings_ms.append(round(elapsed, 1))
         if str(getattr(batch.status, "value", batch.status)) != "ok":
             log(f"frame {index}: estimation FAILED — {batch.error}")
         else:
@@ -290,8 +316,19 @@ def repeatability(batches: List[Any]) -> Dict[str, Any]:
     """
     poses = [pose_of(b) for b in succeeded(batches)]
     if len(poses) < 2:
-        return {"frames": len(poses),
-                "note": "fewer than two successful estimates; no spread exists"}
+        # NOT MEASURED IS NOT ZERO, and writing the zeros would be the worse
+        # error of the two. A single measurement frame has no spread to report;
+        # a spread of 0.000 mm reads as a perfect instrument. `measured: False`
+        # is said in the data so no consumer can render the absence as a result.
+        return {
+            "frames": len(poses),
+            "measured": False,
+            "note": ("REPEATABILITY IS NOT MEASURED here and is NOT zero: a "
+                     "single measurement frame has no spread. Measuring it "
+                     "needs several independent frames of the same stationary "
+                     "scene — run the multi-frame validation, e.g. "
+                     "./scripts/physical_c5.sh --model <id> --frames 5."),
+        }
 
     def spread(values: List[float]) -> Dict[str, float]:
         mean = sum(values) / len(values)
@@ -336,6 +373,7 @@ def repeatability(batches: List[Any]) -> Dict[str, Any]:
 
     return {
         "frames": len(poses),
+        "measured": True,
         "model_frame_origin": {
             "x_mm": spread([c[0] for c in centres]),
             "y_mm": spread([c[1] for c in centres]),
@@ -458,12 +496,21 @@ def eligible_models(repo_root: str = REPO) -> List[Dict[str, Any]]:
     return sorted(listing, key=lambda m: (m["is_reference"], m["model_id"]))
 
 
-def run(model_id: str, roi_px: Optional[List[int]] = None, frames: int = 5,
+def run(model_id: str, roi_px: Optional[List[int]] = None, frames: int = 1,
         refine_iterations: int = 5, dataset: str = "",
         segmentation_options: Optional[Dict[str, Any]] = None,
         method: str = METHOD,
         log: Callable[[str], None] = _noop) -> "PhysicalResult":
     """Acquire, segment, refuse or estimate — and write the artefact.
+
+    `frames` IS THE NUMBER OF MEASUREMENT FRAMES, and it is exactly the number
+    of FoundationPose passes. It defaults to ONE, because that is what an
+    ordinary acquisition asks for: the sensor is warmed inside the capture, the
+    warmed frame is aligned and segmented, and the estimator runs once on it.
+    Asking for more frames is a VALIDATION request — N independent frames of one
+    stationary scene, N independent estimates, and the spread between them is
+    the repeatability figure. Nothing here re-estimates a frame it already
+    estimated, so N never silently becomes the cost of a demonstration.
 
     RAISES `PhysicalAcquisitionError` at the stage that refused. Returns the
     same document `.cache-perception/physical-c5/physical_c5.json` holds, which
@@ -471,6 +518,8 @@ def run(model_id: str, roi_px: Optional[List[int]] = None, frames: int = 5,
     """
     from wisepack_core.rgbd import load_object_registry              # noqa: PLC0415
 
+    started_at = time.monotonic()
+    timing: Dict[str, Any] = {}
     os.makedirs(OUT, exist_ok=True)
     options: Dict[str, Any] = dict(segmentation_options or {})
     if roi_px:
@@ -492,17 +541,26 @@ def run(model_id: str, roi_px: Optional[List[int]] = None, frames: int = 5,
 
     device = require_camera()
     live = not dataset
+    stage = time.monotonic()
     if live:
+        # THE CAPTURE INCLUDES THE WARM-UP, which is why it is timed as one
+        # stage: the settling frames are the price of opening the stream, not a
+        # separate thing an operator can skip.
         capture_document = capture(model_id, frames)
         dataset = os.path.basename(capture_document["root"])
         log(f"captured {dataset}")
     else:
         capture_document = {}
         log(f"replaying capture {dataset}")
+    timing["capture_ms"] = round((time.monotonic() - stage) * 1000.0, 1)
 
+    stage = time.monotonic()
     segmentation = segment(dataset, 0, options)
+    timing["segmentation_ms"] = round((time.monotonic() - stage) * 1000.0, 1)
+    stage = time.monotonic()
     for kind, name in ARTIFACTS:
         fetch_image(kind, os.path.join(OUT, name))
+    timing["artifacts_ms"] = round((time.monotonic() - stage) * 1000.0, 1)
 
     # THE REFUSAL. No mask is fabricated, and no previous result is substituted.
     if not segmentation.get("mask_valid"):
@@ -512,8 +570,12 @@ def run(model_id: str, roi_px: Optional[List[int]] = None, frames: int = 5,
             {"segmentation": segmentation, "dataset": dataset,
              "images": [k for k, _ in ARTIFACTS]})
 
+    inference_ms: List[float] = []
     batches = estimate(dataset, model_id, frames, options, refine_iterations,
-                       log, method=method)
+                       log, method=method, timings_ms=inference_ms)
+    timing["inference_passes"] = len(batches)
+    timing["inference_ms"] = inference_ms
+    timing["inference_total_ms"] = round(sum(inference_ms), 1)
     ok = succeeded(batches)
     if not ok:
         raise PhysicalAcquisitionError(
@@ -526,6 +588,14 @@ def run(model_id: str, roi_px: Optional[List[int]] = None, frames: int = 5,
     copy_source_frames(dataset, int(segmentation.get("frame_index", 0)))
 
     first = ok[0]
+    # THE ESTIMATOR'S OWN CLOCK, beside the caller's. `inference_ms` is measured
+    # around the provider call and includes the HTTP round trip; `duration_ms`
+    # is what the worker says the registration itself took. They answer
+    # different questions and neither is a substitute for the other.
+    timing["estimator_reported_ms"] = (first.detector_status or {}).get(
+        "duration_ms")
+    timing["measurement_frames"] = frames
+    timing["total_ms"] = round((time.monotonic() - started_at) * 1000.0, 1)
     matrix = segmentation["intrinsics"]
     intrinsics = {"fx": matrix[0][0], "fy": matrix[1][1],
                   "cx": matrix[0][2], "cy": matrix[1][2]}
@@ -558,6 +628,10 @@ def run(model_id: str, roi_px: Optional[List[int]] = None, frames: int = 5,
                      "stated by the operator, and is never inferred from it."),
         "completed_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         "capture": capture_document,
+        # WHAT THE WAIT WAS SPENT ON. An acquisition that takes a while is a
+        # different problem depending on WHICH stage took it, and "it felt slow"
+        # is not something a later reader can act on.
+        "timing_ms": timing,
         "segmentation": segmentation,
         "observation": observation_of(first),
         "batch": first.to_dict() if hasattr(first, "to_dict") else {},
