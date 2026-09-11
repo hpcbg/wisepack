@@ -1,0 +1,29 @@
+workcell: Configured demo transform provenance configured_demo path <repo>/config/isaac_workcell.yaml
+camera->workarea: {'parent_frame': 'wisepack_workarea', 'child_frame': 'camera_color_optical_frame', 'translation_mm': [0.0, 0.0, 542.0], 'rotation': {'x': 1.0, 'y': 0.0, 'z': 0.0, 'w': 0.0}, 'method': 'configured_demo', 'revision': 'demo-2026-09-11', 'measured_at': '', 'reprojection_error_px': None, 'sample_count': None, 'valid': True, 'notes': 'Fixed top-down mount assumed for the demonstrator. Height taken from one depth-plane fit on the bench, not from a calibration procedure. Replace with a measured_calibration entry when one exists; do not edit this one.'}
+workarea->table : {'parent_frame': 'table', 'child_frame': 'wisepack_workarea', 'translation_mm': [650.0, 0.0, 0.0], 'rotation': {'x': 0.0, 'y': 0.0, 'z': 0.0, 'w': 1.0}, 'method': 'configured_demo', 'revision': 'demo-2026-09-11', 'measured_at': '', 'reprojection_error_px': None, 'sample_count': None, 'valid': True, 'notes': "Work-area origin placed in front of the robot by choice, not by measurement. The robot base itself is the `table` frame origin (0, 0, 0) and the table height is the selected robot layout's table_top_z_m; both are stated in wisepack_core.isaac_transform.SceneLayout and are not duplicated here."}
+
+=== placement 1: dataset cylinder5-20260911-073311 run_mode live method foundationpose_rgbd_model_free
+ camera-frame model origin (mm): [-161.36, 85.17, 620.76]
+ camera-frame body centre  (mm): [-170.58, -13.66, 520.7]  tube axis: [0.0951, 0.9954, 0.0121]
+ workarea pose (mm): [-170.578, 13.662, 21.303] axis [0.09512, -0.995392, -0.012124]
+ table pose    (mm): [479.422, 13.662, 21.303] axis [0.09512, -0.995392, -0.012124]
+ hand check    (mm): [479.422, 13.662, 21.303]
+ Isaac world   (m) : [0.479422, 0.013662, 0.421303] q(wxyz) [-0.164930, -0.100404, -0.704259, 0.683181]
+ pose the bridge SENT (table, mm): {'x': 479.422, 'y': 13.662, 'z': 21.303} orientation {'x': -0.100404, 'y': -0.704259, 'z': 0.683181, 'w': -0.164930}
+ recomputed == sent: True
+ Isaac read-back after settle (m): [0.4867, 0.0146, 0.4181] commanded [0.4794, 0.0137, 0.4213] settle offset mm 8.0
+ pick yaw for the gripper (deg): -84.54
+ scene geometry: {'source': 'engineering_cad', 'model_id': 'cylinder5', 'note': "engineering CAD from config/perception_objects.yaml; the estimator's learned representation is never used as scene geometry"} | estimator: learned_representation
+
+=== placement 2: dataset cylinder5-20260810-133408 run_mode replay method foundationpose_rgbd_model_free
+ camera-frame model origin (mm): [-78.35, 101.85, 594.81]
+ camera-frame body centre  (mm): [-162.7, 7.21, 533.21]  tube axis: [0.0872, 0.996, -0.0187]
+ workarea pose (mm): [-162.698, -7.214, 8.787] axis [0.087235, -0.996012, 0.018708]
+ table pose    (mm): [487.302, -7.214, 8.787] axis [0.087235, -0.996012, 0.018708]
+ hand check    (mm): [487.302, -7.214, 8.787]
+ Isaac world   (m) : [0.487302, -0.007214, 0.408787] q(wxyz) [-0.443609, -0.385850, -0.584607, 0.559075]
+ pose the bridge SENT (table, mm): {'x': 487.302, 'y': -7.214, 'z': 8.787} orientation {'x': -0.385850, 'y': -0.584607, 'z': 0.559075, 'w': -0.443609}
+ recomputed == sent: True
+ Isaac read-back after settle (m): [0.4816, -0.0081, 0.4184] commanded [0.4873, -0.0072, 0.4088] settle offset mm 11.2
+ pick yaw for the gripper (deg): -84.99
+ scene geometry: {'source': 'engineering_cad', 'model_id': 'cylinder5', 'note': "engineering CAD from config/perception_objects.yaml; the estimator's learned representation is never used as scene geometry"} | estimator: learned_representation

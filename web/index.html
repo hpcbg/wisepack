@@ -673,6 +673,14 @@
       <h3>Physical execution
         <span class="note" id="phys-note"></span>
       </h3>
+      <!-- WHERE THE SOURCE OBJECTS CAME FROM, and how they reached the Isaac
+           scene. Four short lines, rendered from the bridge's scene_sync status:
+           a run whose objects are a physical RGB-D observation says so, names
+           the transform by its PROVENANCE ("Configured demo transform", never
+           "calibrated"), and says whether Isaac has acknowledged that exact
+           scene. A generated run shows the generated source. Deliberately not a
+           banner. -->
+      <div class="muted" id="phys-scene" style="margin:4px 0 8px 0"></div>
       <div class="scroll"><table id="phys"><tbody></tbody></table></div>
     </div>
 
@@ -3325,6 +3333,44 @@ async function refreshSimulatorNav() {
   link.hidden = !(d && d.transport && d.transport !== "none");
 }
 
+function renderSceneSync(sync) {
+  // SCENE SOURCE / WORK-AREA TRANSFORM / ISAAC SCENE / OBJECT. The transform
+  // line is the bridge's own provenance label — the demonstrator's reads
+  // "Configured demo transform" — and this code never rewords it into anything
+  // stronger. "Not synchronized" is the honest default for every run whose
+  // objects are not a physical observation acknowledged by Isaac.
+  const box = $("#phys-scene");
+  if (!box) return;
+  box.innerHTML = "";
+  if (!sync) { box.textContent = "Isaac scene: Not synchronized"; return; }
+  const rows = [];
+  rows.push(["Scene source", sync.scene_source_label || sync.scene_source || "—"]);
+  if (sync.physical) {
+    rows.push(["Workarea transform", sync.transform_label || "No transform"]);
+    let scene = "Not synchronized";
+    if (sync.synchronized) scene = "Synchronized";
+    else if (sync.status === "refused") scene = "Refused — " + (sync.refusal || "");
+    else if (sync.status === "requested") scene = "Synchronizing…";
+    rows.push(["Isaac scene", scene]);
+    const objects = (sync.objects || []).map(o => {
+      const p = ((o.source_pose || {}).position_mm) || {};
+      const model = o.model_id ? o.model_id.charAt(0).toUpperCase() + o.model_id.slice(1) : "proxy";
+      const where = (p.x !== undefined)
+        ? ` at (${Math.round(p.x)}, ${Math.round(p.y)}, ${Math.round(p.z)}) mm in ${(o.source_pose || {}).frame || "table"}`
+        : "";
+      return `${model} [${o.geometry_source || "?"}]${where}`;
+    });
+    rows.push(["Object", objects.length ? objects.join("; ") : "—"]);
+    if (sync.observation_batch_id)
+      rows.push(["Observation batch", `${sync.observation_batch_id} (revision ${sync.scenario_revision})`]);
+  } else {
+    rows.push(["Isaac scene", "Not synchronized (generated source objects)"]);
+  }
+  for (const [k, v] of rows) {
+    box.append(el("div", {}, [el("b", {}, k + ": "), document.createTextNode(v)]));
+  }
+}
+
 async function refreshPhysical() {
   const doc = await api("/api/execution");
   const box = $("#physpanel");
@@ -3348,6 +3394,7 @@ async function refreshPhysical() {
     bits.push(`placement error vs plan: mean ${s.mean_position_error_mm} mm, max ${s.max_position_error_mm} mm`);
   const note = $("#phys-note");
   if (note) note.textContent = bits.join(" · ");
+  renderSceneSync(isaac.scene_sync || null);
 
   const body = $("#phys tbody");
   body.innerHTML = "";

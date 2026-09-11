@@ -174,6 +174,14 @@ export WISEPACK_ISAAC_HEADLESS="$HEADLESS"
 ISAAC_ARGS=(--preset "$PRESET" --seed "$SEED")
 [ -n "$ROBOT" ] && ISAAC_ARGS+=(--robot "$ROBOT")
 [ "$HEADLESS" = "1" ] && ISAAC_ARGS+=(--headless)
+# OBSERVATIONAL FRAME CAPTURE, reachable through the environment so the
+# dashboard launcher's supervisor — which starts this script with no
+# arguments — can record DemoCamera frames of a live run as evidence. It
+# renders the existing spectator camera and changes no motion, timing or gate.
+if [ -n "${WISEPACK_ISAAC_CAPTURE_DIR:-}" ]; then
+    ISAAC_ARGS+=(--capture-frames "$WISEPACK_ISAAC_CAPTURE_DIR"
+                 --capture-every "${WISEPACK_ISAAC_CAPTURE_EVERY:-30}")
+fi
 ISAAC_ARGS+=("$@")
 
 # --- WebRTC livestreaming (opt-in) -----------------------------------------

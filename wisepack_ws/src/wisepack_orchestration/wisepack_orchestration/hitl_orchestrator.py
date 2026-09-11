@@ -601,6 +601,16 @@ class HitLOrchestrator(Node):
                 self.adopt_pending_observation()
             except Exception as exc:                    # noqa: BLE001
                 self.get_logger().error(f"observation adoption failed: {exc}")
+        # THE SCENE HANDSHAKE FOLLOWS THE REVISION, EVERY TICK. The tree's
+        # sequences have memory: once parked at the approval gate they never
+        # re-tick GenerateOrLoadScenario, so a batch adopted inside ScanAndDetect
+        # — which bumps the scenario revision — would otherwise leave the
+        # physical scene requested for the previous revision. Idempotent per
+        # (run_id, revision); a no-op for the simulated backend.
+        try:
+            self.sync_physical_scene()
+        except Exception as exc:                        # noqa: BLE001
+            self.get_logger().error(f"scene synchronization failed: {exc}")
         try:
             self.tree.tick_once()
         except Exception as exc:                        # noqa: BLE001
@@ -1183,7 +1193,7 @@ class HitLOrchestrator(Node):
         """Why physical authorisation must be refused right now, or ""."""
         if self.isaac is None:
             return ""
-        return self.isaac.scene_block_reason()
+        return self.isaac.scene_block_reason(self.engine)
 
     def _on_approval(self, msg: String) -> None:
         decision = (msg.data or "").strip().upper()

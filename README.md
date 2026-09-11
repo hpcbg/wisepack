@@ -4131,35 +4131,84 @@ is usable and, if not, why.
 | coordinates all near `(1, 1)` | uncalibrated frame; WISEPACK rejects this rather than planning from it. |
 | detected but `outside_workarea` in diagnostics | the declared work area is smaller than the calibrated plane; set `WISEPACK_PHYSICAL_WORKAREA_*_MM`. |
 
-#### Next step: Isaac scene synchronization
+#### Isaac scene synchronization — a real observation drives the workcell
 
-Deliberately **not** implemented here. The interface for it exists and is
-already exercised: `/api/perception` publishes `scene_objects`, a
-backend-neutral list of
+**Implemented, for one object, through a configured demo transform.** A physical
+D435 observation of Cylinder5 becomes the source object of the Isaac workcell,
+and the existing robot picks *that* object from *its* transformed pose. The
+claim is exactly this and no more:
 
-```json
-{"object_id": "physical-cylinder-001", "object_type": "cylindrical_proxy",
- "frame_id": "wisepack_workarea",
- "pose": {"x_mm": 82.4, "y_mm": 46.1, "z_mm": 0.0, "yaw_deg": -31.0,
-          "reference_point": "object_body"},
- "tube_axis_line": null,
- "geometry": {"shape": "cylinder", "diameter_mm": 65, "length_mm": 215,
-              "inner_diameter_mm": null, "source": "configured_proxy"},
- "model_id": "", "perception_method": "planar_fasterrcnn"}
+> a real RGB-D observation drives the synchronized Isaac workcell through an
+> **explicitly configured demo transform**. No millimetre physical calibration
+> accuracy is claimed, and none was measured.
+
+**The frame chain, stated once.** `config/isaac_workcell.yaml` holds two rigid
+transforms, each with `method: configured_demo`:
+
+```text
+camera_color_optical_frame   FoundationPose reports here (+Z forward, +Y down)
+    -> wisepack_workarea     half turn about X, camera 542 mm above the table:
+                             top-down mount ASSUMED; the height is one
+                             depth-plane fit from the bench, used as a constant
+    -> table                 the Isaac workcell frame, mm, origin at the robot
+                             base on the table top: work-area origin placed
+                             650 mm in front of the base BY CHOICE
+    -> world                 metres, from the selected robot's SceneLayout
 ```
 
-A scene synchronizer needs an identity, a pose, a geometry and the frame the pose
-is in - which is exactly this, and nothing else. **No consumer will ever need to
-parse bottle-specific detector JSON inside Isaac.**
+`wisepack_core.scene_sync` is the only code that applies it, on top of
+`RigidTransform` and `isaac_transform`. The simulator, the bridge and the
+dashboard do no frame arithmetic of their own; the simulator only draws the
+configured frames as axis markers so a wrong assumption is visible.
 
-The same shape carries an RGB-D observation without changing: the pose is the
-**physical body centre** rather than the CAD origin (for a planar observation the
-two coincide), `tube_axis_line` holds the measured long axis as a **line** when
-the method measured one, and `model_id` names the CAD part so a twin can draw the
-real geometry instead of an anonymous cylinder. What is still missing for an RGB-D
-observation is the frame: `frame_id` is `camera_color_optical_frame` and
-`workarea_pose_available` is false, so the synchronizer has nothing to place
-against until the camera→work-area extrinsic exists.
+**What travels to Isaac.** A `RESET_SCENE`/`SYNC_SCENE` command now carries a
+`SceneSpec` (schema `wisepack-isaac/1.1`, additive): the run, the scenario
+revision, the observation batch id, the transform provenance and, per object,
+its id, engineering dimensions, `model_id`, and a **table-frame pose with a full
+orientation** — the transformed body centre and the observed tube axis, not the
+CAD origin. The simulator removes every previous source object and spawns
+exactly these; the acknowledgement reports `scene_source =
+physical_observation`, the batch id, the transform provenance and the poses read
+back from PhysX. A generated run sends no spec and behaves exactly as before.
+
+**The pick target is the observation.** `isaac_transform.source_pose_for` is
+the one selector both ends call: for a physical scene it returns the spec's
+pose for that item id and **raises** for an item the batch did not observe. The
+orchestrator's `EXECUTE_ITEM.source_pose` and the pose the body was spawned at
+are the same numbers by construction, and `table_pose_for_index` is not
+imported by the bridge at all. The gripper turns to the observed heading
+(`pick_yaw_deg`); the place yaw is unchanged.
+
+**What is refused, and holds the gate.** `pose_valid` false, no transform
+configured, a non-finite result, a centre outside the configured work-area
+bounds or off the source plane, an unreachable centre, a failed batch, and a
+stale request (same run, older revision) at the simulator. Nothing is clamped,
+snapped or substituted: the dashboard says *Isaac scene: Refused — reason* and
+approval stays disabled.
+
+**Model-free stays model-free.** The estimator's input is unchanged; the scene
+spec copies the observation's `object_model_id` and names the scene geometry
+`engineering_cad`, so Isaac spawns the registry's CAD part and never the learned
+reconstruction. `tests/test_scene_sync.py` pins every claim in this section.
+
+**The demonstration preset.** The real Cylinder5 is 342 mm long and does not fit
+the 300 mm smoke bin, so `isaac_cylinder5_physical` pairs one placeholder item
+with the 380 x 220 x 150 mm `isaac_c5_bin` — the longest bin whose corners stay
+inside both supported arms' validated reach. Launch with
+`WISEPACK_PRESET=isaac_cylinder5_physical ./run_wisepack_dashboard.sh isaac`,
+select *Physical RGB-D*, acquire, and the Physical execution panel reads:
+
+```text
+Scene source:        Physical RGB-D observation
+Workarea transform:  Configured demo transform
+Isaac scene:         Synchronized
+Object:              Cylinder5 [cad_mesh] at (x, y, z) mm in table
+```
+
+The two-position evidence for this path — camera-frame pose, configured
+transform, work-area pose, Isaac world pose and the robot's pick target for each
+placement, with the D435 frames and Isaac captures — is in
+[`simulators/isaac/SCENE_SYNC_EVIDENCE.md`](simulators/isaac/SCENE_SYNC_EVIDENCE.md).
 
 ## 16. Tests and evidence
 

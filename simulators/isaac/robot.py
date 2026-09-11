@@ -56,7 +56,8 @@ import numpy as np
 from wisepack_core.domain import Axis, Vec3
 from wisepack_core.isaac_contract import IsaacCommand, IsaacState, Pose
 from wisepack_core.isaac_transform import (
-    SceneLayout, mm_to_m, pose_to_world, world_to_pose, safe_release_pose,
+    SceneLayout, mm_to_m, pick_yaw_deg, pose_to_world, world_to_pose,
+    safe_release_pose,
 )
 
 from .config import LOG_ROBOT, MotionConfig
@@ -206,8 +207,8 @@ class PlacementSequence:
     # Geometry for the current item
     # ------------------------------------------------------------------ #
 
-    def _grasp_yaw(self) -> float:
-        """Yaw that aims the fingers ACROSS the cylinder, for THIS robot.
+    def _yaw_offset(self) -> float:
+        """The tool-frame yaw of THIS robot: fingers across a tube lying along X.
 
         A property of the shipped asset's tool frame, so it comes from the robot
         profile. The environment override in MotionConfig still wins when it is
@@ -218,11 +219,28 @@ class PlacementSequence:
             return self.motion.grasp_yaw_offset_deg
         return 0.0 if self.robot is None else self.robot.grasp_yaw_offset_deg
 
+    def _grasp_yaw(self) -> float:
+        """Yaw that aims the fingers ACROSS the cylinder AS IT ACTUALLY LIES.
+
+        The tool-frame offset plus the heading of the item's length in the
+        table plane, read from the commanded source pose by
+        `isaac_transform.pick_yaw_deg`. A generated item lies along X and adds
+        nothing, so every generated run keeps the yaw it always had; a
+        synchronized physical tube lies wherever the camera saw it, and the
+        hand turns to it rather than closing along it.
+        """
+        heading = 0.0
+        if self.command is not None and self.command.source_pose is not None:
+            heading = pick_yaw_deg(self.command.source_pose)
+        return self._yaw_offset() + heading
+
     def _place_yaw(self) -> Tuple[float, bool]:
         """(yaw degrees, axis_was_approximated) for the planned target axis.
 
-        The item is picked lying along world X, so a target axis of X needs no
-        extra yaw and Y needs a quarter turn.
+        The item is HELD across the fingers whatever heading it was picked at
+        — that is what the grasp yaw guarantees — so the place yaw is the
+        tool-frame offset alone: a target axis of X needs no extra yaw and Y
+        needs a quarter turn, exactly as before, independent of the pick.
 
         A target axis of Z cannot be reached by a top-down parallel gripper
         without a regrasp, which this iteration does not implement. Rather than
@@ -234,10 +252,10 @@ class PlacementSequence:
         assert self.command is not None and self.command.target_pose is not None
         axis = Axis(self.command.target_pose.axis)
         if axis is Axis.Y:
-            return self._grasp_yaw() + 90.0, False
+            return self._yaw_offset() + 90.0, False
         if axis is Axis.Z:
-            return self._grasp_yaw(), True
-        return self._grasp_yaw(), False
+            return self._yaw_offset(), True
+        return self._yaw_offset(), False
 
     def _container_rim_z(self) -> float:
         assert self.command is not None

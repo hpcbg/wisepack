@@ -58,14 +58,17 @@ import json
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 #: Bump the MINOR part for backwards-compatible additions (a new optional
 #: field), the MAJOR part when a consumer written against the old version would
 #: mis-read the new one. Receivers reject a mismatched MAJOR outright rather
 #: than guessing, because a silently mis-parsed pose is a robot moving somewhere
 #: nobody asked it to.
-SCHEMA_VERSION = "wisepack-isaac/1.0"
+#: 1.1 adds, all OPTIONAL and all ignorable by a 1.0 receiver: a full
+#: orientation on ``Pose``, the ``scene`` payload on the scene commands, and
+#: the scene-source fields on ``SceneAcknowledgement``.
+SCHEMA_VERSION = "wisepack-isaac/1.1"
 
 
 def schema_major(version: str) -> str:
@@ -260,9 +263,24 @@ class Pose:
     carries centres — a robot is commanded to a centre, never to a corner.
 
     ``axis`` is the WISEPACK ``Axis`` value ("x"/"y"/"z") the item's length
-    points along in ``frame``. Orientation is restricted to those three
-    axis-aligned choices because that is the complete set the packing model
-    produces (see ``domain.Axis``).
+    points along in ``frame``. For a PLANNED pose that is the complete
+    orientation: the packing model produces exactly those three axis-aligned
+    choices (see ``domain.Axis``).
+
+    ``orientation`` — OPTIONAL, ADDITIVE (schema 1.1) — is the full rotation of
+    the item's BODY frame into ``frame``, as a unit quaternion ``(x, y, z, w)``,
+    the order every WISEPACK pose uses. The body frame has the item's LENGTH
+    along its local +Z, which is the convention the axis-aligned form already
+    implies (a Z-aligned cylinder laid along ``axis``). A pose carrying an
+    orientation is one a REAL observation produced: a tube on a bench does not
+    lie exactly along a world axis, and rounding it to one would send the
+    gripper across the wrong line. When present it is authoritative and
+    ``axis`` is its nearest-axis projection, kept for consumers that only
+    understand the planned form. When absent, ``axis`` is the orientation.
+
+    Carried as a plain tuple, not a ``wisepack_core.pose.Orientation``, so this
+    module stays import-free on both sides of the wire; the conversion into a
+    rotation happens in ``isaac_transform.pose_to_world`` and nowhere else.
     """
 
     x_mm: float
@@ -270,15 +288,40 @@ class Pose:
     z_mm: float
     axis: str = "x"
     frame: str = "table"
+    orientation: Optional[Tuple[float, float, float, float]] = None
+
+    def __post_init__(self) -> None:
+        if self.orientation is None:
+            return
+        try:
+            values = tuple(float(v) for v in self.orientation)
+        except (TypeError, ValueError) as exc:
+            raise ContractError(f"pose orientation must be four numbers: {exc}") from exc
+        if len(values) != 4:
+            raise ContractError(
+                f"pose orientation must be (x, y, z, w), got {len(values)} values")
+        if any(v != v or abs(v) == float("inf") for v in values):
+            raise ContractError("pose orientation is not finite")
+        norm = sum(v * v for v in values) ** 0.5
+        if abs(norm - 1.0) > 1e-3:
+            raise ContractError(
+                f"pose orientation has norm {norm:.6f}, not 1 — this is not a "
+                "unit quaternion")
+        object.__setattr__(self, "orientation", tuple(v / norm for v in values))
 
     def to_dict(self) -> Dict[str, Any]:
-        return {
+        doc: Dict[str, Any] = {
             "position_mm": {"x": round(float(self.x_mm), 3),
                             "y": round(float(self.y_mm), 3),
                             "z": round(float(self.z_mm), 3)},
             "axis": self.axis,
             "frame": self.frame,
         }
+        if self.orientation is not None:
+            x, y, z, w = self.orientation
+            doc["orientation"] = {"x": round(x, 9), "y": round(y, 9),
+                                  "z": round(z, 9), "w": round(w, 9)}
+        return doc
 
     @staticmethod
     def from_dict(d: Any) -> "Pose":
@@ -290,11 +333,24 @@ class Pose:
         axis = str(d.get("axis", "x")).lower()
         if axis not in ("x", "y", "z"):
             raise ContractError(f"pose axis must be x, y or z; got {axis!r}")
+        orientation = d.get("orientation")
+        quaternion: Optional[Tuple[float, float, float, float]] = None
+        if isinstance(orientation, dict):
+            try:
+                quaternion = (float(orientation["x"]), float(orientation["y"]),
+                              float(orientation["z"]), float(orientation["w"]))
+            except (KeyError, TypeError, ValueError) as exc:
+                raise ContractError(f"malformed pose orientation: {exc}") from exc
+        elif isinstance(orientation, (list, tuple)):
+            quaternion = tuple(float(v) for v in orientation)   # type: ignore[assignment]
+        elif orientation is not None:
+            raise ContractError(
+                f"pose orientation must be an object, got {type(orientation).__name__}")
         try:
             return Pose(
                 x_mm=float(position["x"]), y_mm=float(position["y"]),
                 z_mm=float(position["z"]), axis=axis,
-                frame=str(d.get("frame", "table")))
+                frame=str(d.get("frame", "table")), orientation=quaternion)
         except (KeyError, TypeError, ValueError) as exc:
             raise ContractError(f"malformed pose position_mm: {exc}") from exc
 
@@ -307,6 +363,187 @@ class Pose:
 
 def _pose_or_none(d: Any) -> Optional[Pose]:
     return None if d is None else Pose.from_dict(d)
+
+
+# --------------------------------------------------------------------------- #
+# Scene payload: WHAT source objects a scene revision consists of
+# --------------------------------------------------------------------------- #
+
+#: Where the source objects of a scene revision came from.
+#:
+#: ``generated``             the deterministic scenario from (preset, seed), laid
+#:                           out by ``isaac_transform.table_pose_for_index``. The
+#:                           behaviour every run had before physical perception.
+#: ``physical_observation``  ONE ``ObservationBatch`` from a real sensor, carried
+#:                           through the configured frame chain. Its objects
+#:                           REPLACE the generated ones for that revision: they
+#:                           are not appended to them.
+SCENE_SOURCE_GENERATED = "generated"
+SCENE_SOURCE_PHYSICAL = "physical_observation"
+
+
+@dataclass(frozen=True)
+class SceneObject:
+    """One source object the physical scene must contain, fully specified.
+
+    ``source_pose`` is where the object's BODY CENTRE is in the ``table`` frame,
+    with its full orientation (see ``Pose.orientation``). It is what the scene
+    builder spawns and what the robot is later told to pick — the same numbers,
+    by construction, so the pick target cannot drift from the spawned body.
+
+    ``model_id``/``geometry_source`` name the ENGINEERING geometry the scene
+    instantiates. For a perception-driven object that is the authoritative CAD
+    part from the object registry — never the estimator's own reconstruction,
+    which is a perception artefact with no bore and capped ends.
+
+    ``provenance`` is evidence, not interface: which observation, which method,
+    the pose in every frame of the chain, and which transform (with what
+    provenance) moved it. Nothing downstream parses it; everything downstream
+    can show it.
+    """
+
+    item_id: str
+    dimensions: Dimensions
+    source_pose: Pose
+    model_id: str = ""
+    geometry_source: str = "generated"
+    observation_id: str = ""
+    perception_method: str = ""
+    weight_kg: float = 0.0
+    material: str = ""
+    provenance: Dict[str, Any] = field(default_factory=dict)
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "item_id": self.item_id,
+            "dimensions": self.dimensions.to_dict(),
+            "source_pose": self.source_pose.to_dict(),
+            "model_id": self.model_id,
+            "geometry_source": self.geometry_source,
+            "observation_id": self.observation_id,
+            "perception_method": self.perception_method,
+            "weight_kg": round(float(self.weight_kg), 4),
+            "material": self.material,
+            "provenance": dict(self.provenance),
+        }
+
+    @staticmethod
+    def from_dict(d: Any) -> "SceneObject":
+        if not isinstance(d, dict):
+            raise ContractError(
+                f"scene object must be an object, got {type(d).__name__}")
+        try:
+            return SceneObject(
+                item_id=str(d["item_id"]),
+                dimensions=Dimensions.from_dict(d["dimensions"]),
+                source_pose=Pose.from_dict(d["source_pose"]),
+                model_id=str(d.get("model_id", "") or ""),
+                geometry_source=str(d.get("geometry_source", "generated")),
+                observation_id=str(d.get("observation_id", "") or ""),
+                perception_method=str(d.get("perception_method", "") or ""),
+                weight_kg=float(d.get("weight_kg", 0.0) or 0.0),
+                material=str(d.get("material", "") or ""),
+                provenance=dict(d.get("provenance") or {}))
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ContractError(f"malformed scene object: {exc}") from exc
+
+
+@dataclass
+class SceneSpec:
+    """The complete set of source objects for ONE scene revision.
+
+    REPLACEMENT SEMANTICS, STRUCTURALLY. A scene command carrying a spec means
+    "the scene for revision N consists of exactly these objects"; the simulator
+    removes every previous source object and spawns these. There is no way to
+    express "add this object to what is there", on purpose.
+
+    ``run_id``/``scenario_revision``/``observation_batch_id`` are the correlation
+    the simulator checks a request against: a spec for an older revision of the
+    same run is STALE and must never rewrite a newer scene, however recently it
+    arrived.
+
+    ``transform_source`` is the provenance of the frame chain that placed the
+    objects — ``configured_demo`` for the demonstrator — and it is repeated
+    verbatim in the acknowledgement so nothing can present it as measured.
+    """
+
+    scene_source: str = SCENE_SOURCE_GENERATED
+    run_id: str = ""
+    scenario_revision: int = 0
+    observation_batch_id: str = ""
+    captured_at: str = ""
+    transform_source: str = ""
+    transform_revision: str = ""
+    objects: List[SceneObject] = field(default_factory=list)
+
+    def __post_init__(self) -> None:
+        if self.scene_source not in (SCENE_SOURCE_GENERATED, SCENE_SOURCE_PHYSICAL):
+            raise ContractError(f"unknown scene source {self.scene_source!r}")
+        ids = [o.item_id for o in self.objects]
+        if len(set(ids)) != len(ids):
+            raise ContractError(f"scene spec repeats an item id: {ids}")
+        if self.scene_source == SCENE_SOURCE_PHYSICAL and not self.transform_source:
+            raise ContractError(
+                "a physical-observation scene must name the transform that "
+                "placed its objects (transform_source)")
+
+    @property
+    def is_physical(self) -> bool:
+        return self.scene_source == SCENE_SOURCE_PHYSICAL
+
+    @property
+    def object_ids(self) -> List[str]:
+        return [o.item_id for o in self.objects]
+
+    def object(self, item_id: str) -> Optional[SceneObject]:
+        for candidate in self.objects:
+            if candidate.item_id == item_id:
+                return candidate
+        return None
+
+    def is_stale_against(self, run_id: str, scenario_revision: int) -> str:
+        """Why this spec must not rewrite a scene at (run_id, revision), or "".
+
+        Same run, older revision: stale. A different run is a different world
+        and is never compared by revision number — revisions restart per run.
+        """
+        if run_id and self.run_id == run_id \
+                and int(self.scenario_revision) < int(scenario_revision):
+            return (f"scene spec for {self.run_id} revision "
+                    f"{self.scenario_revision} is older than the scene already "
+                    f"built for revision {scenario_revision}")
+        return ""
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "scene_source": self.scene_source,
+            "run_id": self.run_id,
+            "scenario_revision": int(self.scenario_revision),
+            "observation_batch_id": self.observation_batch_id,
+            "captured_at": self.captured_at,
+            "transform_source": self.transform_source,
+            "transform_revision": self.transform_revision,
+            "objects": [o.to_dict() for o in self.objects],
+        }
+
+    @staticmethod
+    def from_dict(d: Any) -> Optional["SceneSpec"]:
+        if d is None:
+            return None
+        if not isinstance(d, dict):
+            raise ContractError(f"scene spec must be an object, got {type(d).__name__}")
+        try:
+            return SceneSpec(
+                scene_source=str(d.get("scene_source", SCENE_SOURCE_GENERATED)),
+                run_id=str(d.get("run_id", "") or ""),
+                scenario_revision=int(d.get("scenario_revision", 0) or 0),
+                observation_batch_id=str(d.get("observation_batch_id", "") or ""),
+                captured_at=str(d.get("captured_at", "") or ""),
+                transform_source=str(d.get("transform_source", "") or ""),
+                transform_revision=str(d.get("transform_revision", "") or ""),
+                objects=[SceneObject.from_dict(o) for o in (d.get("objects") or [])])
+        except (TypeError, ValueError) as exc:
+            raise ContractError(f"malformed scene spec: {exc}") from exc
 
 
 def _check_envelope(doc: Any, kind: str) -> Dict[str, Any]:
@@ -393,11 +630,23 @@ class IsaacCommand:
     #: makes "this is the instance I asked for" checkable instead of inferred
     #: from timing. 0 means unstamped, and is never treated as a mismatch.
     simulator_generation: int = 0
+    #: THE SOURCE OBJECTS, on RESET_SCENE / SYNC_SCENE (schema 1.1). None means
+    #: the generated scenario from (preset, seed), exactly as before; a spec
+    #: means "this revision's scene consists of exactly these objects" — the
+    #: path a physical ObservationBatch takes into the simulator.
+    scene: Optional[SceneSpec] = None
     timestamp: str = field(default_factory=utc_now_iso)
     schema_version: str = SCHEMA_VERSION
 
     def __post_init__(self) -> None:
         self.command = IsaacCommandType(self.command)
+        if isinstance(self.scene, dict):
+            self.scene = SceneSpec.from_dict(self.scene)
+        if self.scene is not None and self.command not in (
+                IsaacCommandType.RESET_SCENE, IsaacCommandType.SYNC_SCENE):
+            raise ContractError(
+                f"{self.command.value} does not carry a scene; only the scene "
+                "commands describe source objects")
         if self.command is IsaacCommandType.EXECUTE_ITEM:
             missing = [name for name, value in (
                 ("item_id", self.item_id), ("dimensions", self.dimensions),
@@ -434,6 +683,7 @@ class IsaacCommand:
             "scenario_revision": int(self.scenario_revision),
             "robot_id": self.robot_id,
             "simulator_generation": int(self.simulator_generation),
+            "scene": self.scene.to_dict() if self.scene is not None else None,
         }
 
     def to_json(self) -> str:
@@ -466,6 +716,7 @@ class IsaacCommand:
             scenario_revision=int(doc.get("scenario_revision", 0)),
             robot_id=str(doc.get("robot_id", "") or ""),
             simulator_generation=int(doc.get("simulator_generation", 0) or 0),
+            scene=SceneSpec.from_dict(doc.get("scene")),
             timestamp=str(doc.get("timestamp", utc_now_iso())),
             schema_version=str(doc["schema_version"]),
         )
@@ -539,6 +790,18 @@ class SceneAcknowledgement:
     #: True when the existing scene was verified as already correct rather than
     #: destroyed and rebuilt. A correct scene is not rebuilt for the sake of it.
     verified_without_rebuild: bool = False
+    #: WHAT THE SOURCE OBJECTS ARE (schema 1.1): ``generated`` or
+    #: ``physical_observation``, and for the latter WHICH batch and WHICH
+    #: transform provenance placed them. A generated-scene acknowledgement can
+    #: never satisfy a run that synchronized a physical batch, and vice versa.
+    scene_source: str = SCENE_SOURCE_GENERATED
+    observation_batch_id: str = ""
+    transform_source: str = ""
+    #: The spawned objects' poses as READ BACK from the simulator after they
+    #: settled — ``{item_id: {"position_m": [...], "quaternion_wxyz": [...],
+    #: "commanded_position_m": [...]}}``. Evidence that the transformed poses
+    #: are readable and where the bodies actually are; never used for control.
+    object_poses: Dict[str, Any] = field(default_factory=dict)
     timestamp: str = field(default_factory=utc_now_iso)
 
     def to_dict(self) -> Dict[str, Any]:
@@ -557,6 +820,10 @@ class SceneAcknowledgement:
             "robot_home_verified": bool(self.robot_home_verified),
             "container_empty_verified": bool(self.container_empty_verified),
             "verified_without_rebuild": bool(self.verified_without_rebuild),
+            "scene_source": self.scene_source,
+            "observation_batch_id": self.observation_batch_id,
+            "transform_source": self.transform_source,
+            "object_poses": dict(self.object_poses),
             "timestamp": self.timestamp,
         }
 
@@ -579,6 +846,11 @@ class SceneAcknowledgement:
             robot_home_verified=bool(doc.get("robot_home_verified", False)),
             container_empty_verified=bool(doc.get("container_empty_verified", False)),
             verified_without_rebuild=bool(doc.get("verified_without_rebuild", False)),
+            scene_source=str(doc.get("scene_source", SCENE_SOURCE_GENERATED)
+                             or SCENE_SOURCE_GENERATED),
+            observation_batch_id=str(doc.get("observation_batch_id", "") or ""),
+            transform_source=str(doc.get("transform_source", "") or ""),
+            object_poses=dict(doc.get("object_poses") or {}),
             timestamp=str(doc.get("timestamp", "")),
         )
 
@@ -586,7 +858,9 @@ class SceneAcknowledgement:
                    preset: str, seed: int, fingerprint: str,
                    object_count: int, robot_id: str = "",
                    robot_profile_revision: str = "",
-                   simulator_generation: int = 0) -> List[str]:
+                   simulator_generation: int = 0,
+                   scene_source: str = "",
+                   observation_batch_id: str = "") -> List[str]:
         """Every reason this acknowledgement does not describe the given run.
 
         Returns sentences an operator can act on, not booleans. "scene not
@@ -632,6 +906,20 @@ class SceneAcknowledgement:
                 f"{self.simulator_generation} but this run is waiting for "
                 f"generation {simulator_generation} — that scene was built by a "
                 "previous Isaac process")
+        # THE KIND OF SCENE, before its fingerprint. A run that synchronized a
+        # physical observation batch is not served by a generated scene that
+        # happens to have the same object count, and a physical scene built
+        # from an EARLIER batch is the stale scene this whole path exists to
+        # reject. Named separately so the operator reads "built from batch
+        # fp-physical-3, this run has fp-physical-4" rather than a digest.
+        if scene_source and self.scene_source != scene_source:
+            out.append(f"acknowledged a {self.scene_source} scene but this run "
+                       f"synchronizes a {scene_source} scene")
+        if (observation_batch_id and self.observation_batch_id
+                and self.observation_batch_id != observation_batch_id):
+            out.append(f"acknowledged scene built from observation batch "
+                       f"{self.observation_batch_id} but this run synchronized "
+                       f"batch {observation_batch_id}")
         if fingerprint and self.scene_fingerprint \
                 and self.scene_fingerprint != fingerprint:
             out.append(f"acknowledged scene fingerprint "
@@ -850,5 +1138,6 @@ __all__ = [
     "SCHEMA_VERSION", "schema_major", "ContractError", "utc_now_iso",
     "IsaacCommandType", "IsaacState", "ITEM_TERMINAL_STATES",
     "RUN_TERMINAL_STATES", "ITEM_PROGRESS_ORDER", "Dimensions", "Pose",
-    "IsaacCommand", "IsaacFeedback", "RunGate",
+    "IsaacCommand", "IsaacFeedback", "RunGate", "SceneAcknowledgement",
+    "SceneObject", "SceneSpec", "SCENE_SOURCE_GENERATED", "SCENE_SOURCE_PHYSICAL",
 ]

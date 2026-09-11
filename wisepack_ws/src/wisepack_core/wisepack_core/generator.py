@@ -102,6 +102,19 @@ CONTAINER_SPECS: Dict[str, Dict[str, Any]] = {
         "description": ("Bench-scale open-top bin for the Isaac Sim physical "
                         "smoke test (inner 300x220x150 mm, 0.010 m3)"),
     },
+    # THE PHYSICAL-PERCEPTION DEMONSTRATION BIN. The real Cylinder5 is 342 mm
+    # long and does not fit the 300 mm smoke bin in any horizontal orientation,
+    # so the D435 -> Isaac demonstration needs a longer one. 380 mm along X is
+    # the longest that keeps every corner inside BOTH supported arms' validated
+    # reach at retreat height (Panda 0.772 m of 0.78; xArm 7 0.705 m of 0.71 —
+    # see SceneLayout.validate). Bench-scale like the smoke bin, and equally
+    # kept out of every benchmark.
+    "isaac_c5_bin": {
+        "inner_width_mm": 380, "inner_depth_mm": 220, "inner_height_mm": 150,
+        "max_payload_kg": 30.0,
+        "description": ("Bench-scale open-top bin for the physical Cylinder5 "
+                        "demonstration (inner 380x220x150 mm, 0.013 m3)"),
+    },
 }
 
 
@@ -340,6 +353,12 @@ _PRESET_DESCRIPTIONS = {
         "Emika Panda rather than for a decommissioning cell. It is NOT a "
         "packing benchmark and contributes nothing to the measured "
         "baseline-versus-optimized result."),
+    "isaac_cylinder5_physical": (
+        "PHYSICAL PERCEPTION DEMONSTRATION for the Isaac Sim backend: one "
+        "bench-scale pipe segment into a bin long enough for the real 342 mm "
+        "Cylinder5. The generated item is a placeholder — a physical RGB-D "
+        "observation batch REPLACES it and the Isaac scene is synchronized "
+        "from that batch. NOT a packing benchmark."),
     "cut_avoids_extra_container": (
         "CURATED CUT-AWARE DATASET — hand-built so one cuttable pipe forces a "
         "second container whole but its segments fit residual cavities in the "
@@ -442,6 +461,19 @@ PRESETS: Dict[str, Dict[str, Any]] = {
         length_range_mm=(150, 250),
         diameter_range_mm=(40, 70),
         container_spec="isaac_smoke_bin",
+        permitted_axes=("x", "y"),
+        max_containers=2,
+    ),
+    # The physical Cylinder5 demonstration. Same hardware bounds as the smoke
+    # preset (a top-down gripper, horizontal axes only); the bin is the 380 mm
+    # `isaac_c5_bin` because the real part is 342 mm long. ONE generated
+    # placeholder item, so the scene a physical run starts from is as small as
+    # the scene it will be synchronized to.
+    "isaac_cylinder5_physical": dict(
+        item_count=1,
+        length_range_mm=(150, 250),
+        diameter_range_mm=(40, 70),
+        container_spec="isaac_c5_bin",
         permitted_axes=("x", "y"),
         max_containers=2,
     ),

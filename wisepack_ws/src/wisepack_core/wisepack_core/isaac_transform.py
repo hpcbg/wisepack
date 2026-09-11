@@ -40,8 +40,22 @@ loose bin, which is the right abstraction for a perception problem and the wrong
 one for a Panda with a 80 mm parallel gripper and no vision. This module lays the
 same items out in a deterministic single row on the table instead, derived from
 the item's index in the scenario. The layout is ground truth by construction and
-is documented as such — see ``simulators/isaac/README.md``. When real perception
-arrives it replaces ``table_pose_for_index``, and nothing else changes.
+is documented as such — see ``simulators/isaac/README.md``.
+
+WHERE REAL PERCEPTION PLUGS IN
+------------------------------
+``source_pose_for`` is the ONE selector both ends call for an item's pick pose.
+For a generated scene it is ``table_pose_for_index``, unchanged. For a scene
+synchronized from a physical ``ObservationBatch`` it is the transformed
+observation pose carried in the ``SceneSpec`` — and for such a scene the
+generated layout is REFUSED, never fallen back to: an item the batch did not
+observe has no pose, and inventing a row slot for it would send the arm to a
+place nothing was seen. The transformation of an observation into that pose
+lives in ``wisepack_core.scene_sync``, on top of the primitives here.
+
+A pose carrying a full ``orientation`` (see ``isaac_contract.Pose``) is
+converted here too: ``pose_to_world`` is still the only place a contract pose
+becomes an Isaac (position, quaternion), whichever form it arrived in.
 """
 
 from __future__ import annotations
@@ -49,10 +63,11 @@ from __future__ import annotations
 import dataclasses
 import math
 from dataclasses import dataclass
-from typing import Dict, Optional, Sequence, Tuple
+from typing import Any, Dict, Optional, Sequence, Tuple
 
 from .domain import Axis, Container, Placement, Vec3, WasteItem
 from .isaac_contract import Pose
+from .pose import Orientation
 
 #: Quaternions are (w, x, y, z) throughout — Isaac's convention for
 #: ``set_world_poses``. Written out rather than assumed, because the other
@@ -122,6 +137,85 @@ def axis_deviation_deg(quaternion: Sequence[float], axis: Axis) -> float:
               Axis.Z: (0.0, 0.0, 1.0)}[Axis(axis)]
     dot = sum(a * b for a, b in zip(local_z, target))
     return math.degrees(math.acos(min(1.0, abs(dot))))
+
+
+def quaternion_from_orientation(orientation: Orientation) -> Quaternion:
+    """``pose.Orientation`` (x, y, z, w) -> Isaac (w, x, y, z). The ONE reorder."""
+    return (float(orientation.w), float(orientation.x),
+            float(orientation.y), float(orientation.z))
+
+
+def orientation_from_quaternion(quaternion: Sequence[float]) -> Orientation:
+    """Isaac (w, x, y, z) -> ``pose.Orientation`` (x, y, z, w). The inverse."""
+    w, x, y, z = (float(v) for v in quaternion)
+    return Orientation.normalized(x, y, z, w)
+
+
+def alignment_to_local_z(axis_vector: Sequence[float]) -> Orientation:
+    """The rotation taking an object's own axis onto its local +Z, no spin.
+
+    THE BODY CONVENTION, in one place. Every Isaac source body — a parametric
+    ``Cylinder(axes="Z")`` and a CAD mesh alike — has its LENGTH along local +Z,
+    because that is what ``quaternion_for_axis`` and the grasp yaw assume. A CAD
+    part satisfies nothing by construction (Cylinder5's tube axis is
+    (0.928, -0.372, 0) in its own file), so its vertices are rotated by this
+    before spawning, and an OBSERVED orientation of that same part is composed
+    with the inverse of this so the body frame the scene spawns and the frame
+    the estimator reported describe the same physical tube.
+
+    The Isaac scene builder and the scene synchronizer both call THIS. Two
+    implementations of "align the axis to Z" that disagreed about the choice of
+    perpendicular for an antiparallel axis would put a half-turn between the
+    spawned mesh and the commanded pose.
+    """
+    source = [float(v) for v in axis_vector]
+    norm = math.sqrt(sum(v * v for v in source))
+    if norm < 1e-12:
+        raise ValueError("the object axis is a zero vector")
+    source = [v / norm for v in source]
+    target = [0.0, 0.0, 1.0]
+    dot = sum(a * b for a, b in zip(source, target))
+    cross = (source[1] * target[2] - source[2] * target[1],
+             source[2] * target[0] - source[0] * target[2],
+             source[0] * target[1] - source[1] * target[0])
+    if math.sqrt(sum(c * c for c in cross)) < 1e-9:
+        if dot > 0:
+            return Orientation.identity()
+        # Antiparallel: a half turn about any perpendicular. For a tube either
+        # end is equivalent, so the choice does not matter — but it is fixed
+        # here so both callers make the same one: a half turn about +X.
+        return Orientation(1.0, 0.0, 0.0, 0.0)
+    return Orientation.normalized(cross[0], cross[1], cross[2], 1.0 + dot)
+
+
+def pick_yaw_deg(pose: Pose) -> float:
+    """The yaw of the item's LENGTH in the XY plane of its frame, in degrees.
+
+    What a top-down parallel gripper needs from a pick pose: the fingers close
+    ACROSS the cylinder, so the hand turns to the tube's own heading. Folded
+    into (-90, 90] because the tube is a line — heading 100 deg and heading
+    -80 deg are the same line and the same grasp.
+
+    For a planned, axis-aligned pose this is 0 (along X) or 90 (along Y), which
+    is exactly what the sequence used before real orientations existed, so the
+    generated path is unchanged. A pose standing on end has no heading; 0 is
+    returned and the sequence reports the approximation as it already does.
+    """
+    if pose.orientation is not None:
+        x, y, z, w = pose.orientation
+        # Body local +Z (the length) expressed in the frame: third column of R.
+        length_axis = (2.0 * (x * z + y * w), 2.0 * (y * z - x * w))
+    else:
+        length_axis = {"x": (1.0, 0.0), "y": (0.0, 1.0),
+                       "z": (0.0, 0.0)}[str(pose.axis).lower()]
+    if math.hypot(*length_axis) < 1e-6:
+        return 0.0
+    yaw = math.degrees(math.atan2(length_axis[1], length_axis[0]))
+    while yaw <= -90.0:
+        yaw += 180.0
+    while yaw > 90.0:
+        yaw -= 180.0
+    return yaw
 
 
 # --------------------------------------------------------------------------- #
@@ -365,6 +459,41 @@ def table_pose_for_index(index: int, item: WasteItem,
     )
 
 
+class SourcePoseUnavailable(ValueError):
+    """A synchronized scene has no pose for the item — and no fallback exists."""
+
+
+def source_pose_for(scene: Any, index: int, item: WasteItem,
+                    layout: SceneLayout = DEFAULT_LAYOUT) -> Pose:
+    """THE pick pose of ``item`` — where it was spawned and where it is picked.
+
+    ``scene`` is an ``isaac_contract.SceneSpec`` or None. Both the scene
+    builder and the orchestrator's dispatch call this with the same arguments,
+    which is what makes "the robot picks from the pose the object was spawned
+    at" a property of the code rather than a coincidence of two call sites.
+
+      * no spec, or a ``generated`` spec  -> ``table_pose_for_index``. The
+        behaviour every generated run had.
+      * a ``physical_observation`` spec   -> the transformed observation pose
+        recorded for this item id, VERBATIM.
+
+    NO FALLBACK. For a physical scene an item the spec does not contain has no
+    pose. Falling back to a row slot would send the arm to a place the camera
+    never saw — precisely the silent substitution this path exists to remove —
+    so it raises, and the caller refuses the pick with the reason.
+    """
+    if scene is None or not getattr(scene, "is_physical", False):
+        return table_pose_for_index(index, item, layout)
+    source = scene.object(item.item_id)
+    if source is None:
+        raise SourcePoseUnavailable(
+            f"{item.item_id} is not among the {len(scene.objects)} object(s) of "
+            f"the synchronized physical scene (batch "
+            f"{scene.observation_batch_id or '?'}); no generated pose is "
+            "substituted for an unobserved item")
+    return source.source_pose
+
+
 def placement_pose(placement: Placement) -> Pose:
     """A planned placement as a contract pose, in its container's inner frame.
 
@@ -501,6 +630,12 @@ def pose_to_world(pose: Pose, layout: SceneLayout = DEFAULT_LAYOUT
     position = (origin[0] + mm_to_m(pose.x_mm),
                 origin[1] + mm_to_m(pose.y_mm),
                 origin[2] + mm_to_m(pose.z_mm))
+    if pose.orientation is not None:
+        # A FULL ORIENTATION IS AUTHORITATIVE. Every named frame here has its
+        # axes parallel to world, so the body rotation is the same quaternion in
+        # world — only the order changes, and only here.
+        return position, quaternion_from_orientation(
+            Orientation.normalized(*pose.orientation))
     return position, quaternion_for_axis(Axis(pose.axis))
 
 
@@ -518,12 +653,17 @@ def world_to_pose(position_m: Sequence[float], quaternion: Sequence[float],
     else:
         raise ValueError(
             f"unknown pose frame {frame!r}; expected 'table' or 'container:<id>'")
+    measured = orientation_from_quaternion(quaternion)
     return Pose(
         x_mm=m_to_mm(float(position_m[0]) - origin[0]),
         y_mm=m_to_mm(float(position_m[1]) - origin[1]),
         z_mm=m_to_mm(float(position_m[2]) - origin[2]),
         axis=axis_from_quaternion(quaternion).value,
         frame=frame,
+        # The MEASURED orientation travels too (additive, schema 1.1): the
+        # nearest axis is a summary, and a settled tube's real heading is the
+        # number a report should carry.
+        orientation=measured.as_tuple(),
     )
 
 
@@ -612,8 +752,16 @@ def check_containment(actual: Pose, container_inner: Vec3,
 
 
 def scene_fingerprint(scenario, layout: SceneLayout = DEFAULT_LAYOUT,
-                      robot_id: Optional[str] = None) -> str:
+                      robot_id: Optional[str] = None, scene: Any = None) -> str:
     """A deterministic digest of the PHYSICAL scene a scenario implies.
+
+    ``scene`` — an ``isaac_contract.SceneSpec`` or None — says where the source
+    objects come from. For a physical-observation scene the per-item pose is
+    the TRANSFORMED OBSERVATION carried in the spec, and the digest additionally
+    covers the scene source, the observation batch id and the transform
+    provenance: the same tube observed twice in two places is two different
+    worlds to the robot, and a generated scene with the same item can never
+    match a synchronized one. With no spec the digest is exactly what it was.
 
     Computed on BOTH sides from the same function, so "the simulator built what
     this run planned" becomes a string comparison instead of an inference. The
@@ -665,8 +813,13 @@ def scene_fingerprint(scenario, layout: SceneLayout = DEFAULT_LAYOUT,
         "items": [],
         "container": None,
     }
+    if scene is not None and getattr(scene, "is_physical", False):
+        parts["scene_source"] = scene.scene_source
+        parts["observation_batch_id"] = scene.observation_batch_id
+        parts["transform_source"] = scene.transform_source
+        parts["transform_revision"] = scene.transform_revision
     for index, item in enumerate(getattr(scenario, "items", []) or []):
-        pose = table_pose_for_index(index, item, layout)
+        pose = source_pose_for(scene, index, item, layout)
         position, orientation = pose_to_world(pose, layout)
         parts["items"].append({
             "id": item.item_id,
@@ -697,5 +850,7 @@ __all__ = [
     "axis_deviation_deg", "container_slot", "table_pose_for_index",
     "placement_pose", "dimensions_for", "pose_to_world", "world_to_pose",
     "container_frame", "check_containment", "container_inner_size",
-    "layout_for_robot", "scene_fingerprint",
+    "layout_for_robot", "scene_fingerprint", "source_pose_for",
+    "SourcePoseUnavailable", "alignment_to_local_z", "pick_yaw_deg",
+    "quaternion_from_orientation", "orientation_from_quaternion",
 ]

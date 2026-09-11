@@ -63,16 +63,20 @@ from wisepack_core.execution import (
     ExecutionBackend, robot_state_for_isaac_state, stage_for_isaac_state,
 )
 from wisepack_core.isaac_contract import (
-    ContractError, IsaacCommand, IsaacCommandType, IsaacFeedback, IsaacState,
-    RunGate, SceneAcknowledgement,
+    SCENE_SOURCE_GENERATED, ContractError, IsaacCommand, IsaacCommandType,
+    IsaacFeedback, IsaacState, RunGate, SceneAcknowledgement, SceneSpec,
 )
 from wisepack_core.robot_switch import (
     PHASE_FAILED, PHASE_READY, RobotSwitchClient, SwitchRequest, describe_phase,
 )
 from wisepack_core.isaac_transform import (
-    DEFAULT_LAYOUT, SceneLayout, dimensions_for, placement_pose,
-    layout_for_robot, scene_fingerprint, table_pose_for_index,
+    DEFAULT_LAYOUT, SceneLayout, SourcePoseUnavailable, dimensions_for,
+    placement_pose, layout_for_robot, scene_fingerprint, source_pose_for,
 )
+from wisepack_core.scene_sync import (
+    SceneSyncRefused, describe_chain, synchronize_scene,
+)
+from wisepack_core.workcell import WorkcellFrames, load_workcell
 
 LOG = "[isaac-bridge]"
 
@@ -114,8 +118,14 @@ class IsaacExecutionBridge:
                  ready_timeout_s: float = 240.0,
                  item_timeout_s: float = 180.0,
                  command_resend_s: float = 5.0,
-                 robot=None) -> None:
+                 robot=None, workcell: Optional[WorkcellFrames] = None) -> None:
         self.node = node
+        # THE CONFIGURED FRAME CHAIN, loaded once from config/isaac_workcell.yaml.
+        # A physical ObservationBatch reaches the simulator only through it. A
+        # missing or broken file is carried as "unavailable, because ..." and
+        # every physical synchronization is then refused with that reason —
+        # the bridge never patches the chain with an identity.
+        self.workcell: WorkcellFrames = workcell or load_workcell()
         # THE ROBOT DECIDES THE WORKCELL. The layout is derived from the
         # selected robot's profile — a shorter arm needs the bin nearer its base
         # — and the SIMULATOR derives the same layout from the same profile. If
@@ -171,6 +181,17 @@ class IsaacExecutionBridge:
         #: handshake used to happen only on an explicit reset, so a first run sat
         #: behind a gate nothing was ever going to open.
         self.scene_requested_for_run: str = ""
+        #: THE SOURCE OBJECTS the current request describes. None for a
+        #: generated scene (the wire payload is then exactly what it was); a
+        #: physical-observation spec once a batch has been synchronized. It is
+        #: what every EXECUTE_ITEM's source pose is read from, so the pick
+        #: target and the spawned body are the same numbers by construction.
+        self.scene_spec: Optional[SceneSpec] = None
+        #: Why the last physical synchronization was REFUSED, or "". While it
+        #: holds a reason no scene request goes out, nothing may be approved and
+        #: nothing may be picked: an invalid pose, a missing transform or an
+        #: object outside the work area is a stop, never a fallback.
+        self.scene_sync_refusal: str = ""
         #: The backend-neutral visualization descriptor the simulator reported
         #: with READY. Passed through verbatim — the orchestrator does not know
         #: what a WebRTC port is and must not learn.
@@ -261,6 +282,56 @@ class IsaacExecutionBridge:
                                     if self.acknowledged else None),
             "acknowledged_scene": (self.acknowledged.to_dict()
                                    if self.acknowledged else None),
+            # THE PERCEPTION -> SCENE LINK, for the dashboard and the evidence.
+            "scene_sync": self.scene_sync_status(),
+        }
+
+    def scene_sync_status(self) -> Dict[str, Any]:
+        """What the current scene revision's source objects are, and how placed.
+
+        `synchronized` is true only when a PHYSICAL spec was requested AND the
+        simulator acknowledged that exact scene. The transform is named by its
+        provenance label — "Configured demo transform" for the demonstrator —
+        and never by a word the configuration did not earn.
+        """
+        spec = self.scene_spec
+        physical = bool(spec is not None and spec.is_physical)
+        acknowledged = (self.acknowledged is not None and self.scene_ready
+                        and (self.acknowledged.scene_source == spec.scene_source
+                             if spec is not None else True))
+        return {
+            "scene_source": (spec.scene_source if spec is not None
+                             else SCENE_SOURCE_GENERATED),
+            "scene_source_label": ("Physical RGB-D observation" if physical
+                                   else "Generated scenario"),
+            "physical": physical,
+            "synchronized": bool(physical and acknowledged),
+            "status": ("synchronized" if physical and acknowledged
+                       else "refused" if self.scene_sync_refusal
+                       else "requested" if physical and self.reset_in_progress
+                       else "not_synchronized"),
+            "refusal": self.scene_sync_refusal,
+            "observation_batch_id": spec.observation_batch_id if spec else "",
+            "scenario_revision": spec.scenario_revision if spec else None,
+            "transform_source": (spec.transform_source if spec and physical
+                                 else ""),
+            "transform_label": (self.workcell.label if physical else ""),
+            "transform_available": self.workcell.available,
+            "transform_unavailable_reason": self.workcell.unavailable_reason,
+            "frame_chain": self.workcell.frame_chain,
+            "objects": ([{
+                "item_id": o.item_id,
+                "observation_id": o.observation_id,
+                "model_id": o.model_id,
+                "geometry_source": o.geometry_source,
+                "perception_method": o.perception_method,
+                "source_pose": o.source_pose.to_dict(),
+                "provenance": dict(o.provenance),
+            } for o in spec.objects] if spec is not None else []),
+            "acknowledged_object_poses": (
+                dict(self.acknowledged.object_poses)
+                if self.acknowledged else {}),
+            "chain": describe_chain(self.workcell, self.layout),
         }
 
     @property
@@ -279,6 +350,8 @@ class IsaacExecutionBridge:
     @property
     def scene_status(self) -> str:
         """building | ready | mismatch | failed | awaiting-acknowledgement."""
+        if self.scene_sync_refusal:
+            return "refused"
         if self.reset_failed_reason:
             return "failed"
         if self.scene_mismatch:
@@ -300,6 +373,10 @@ class IsaacExecutionBridge:
         return (not self.reset_in_progress
                 and not self.reset_failed_reason
                 and not self.scene_mismatch
+                # A REFUSED SYNCHRONIZATION is not a ready scene, whatever the
+                # simulator last acknowledged: the objects it holds are not the
+                # ones this revision observed.
+                and not self.scene_sync_refusal
                 # A robot whose model did not validate has an unknown
                 # relationship between what is commanded and what moves. No
                 # scene is "ready" for it.
@@ -312,8 +389,45 @@ class IsaacExecutionBridge:
                 and not self.switch_failed_reason
                 and self.scene_revision == self.required_revision)
 
-    def scene_block_reason(self) -> str:
+    def spec_mismatch_reason(self, engine) -> str:
+        """Why the requested scene is NOT the one ``engine`` now plans from, or "".
+
+        THE REVISION CAN MOVE WITHOUT A RESET. A physical batch is adopted
+        inside the running behaviour tree and bumps the scenario revision
+        there, so the scene this bridge last requested can describe an older
+        revision — or the generated placeholder — while the engine already
+        plans from a real observation. Every gate and every dispatch asks this
+        first, because acting on the older scene would pick the placeholder
+        from its generated row slot under the observation's item id: exactly
+        the silent fallback this path must never take.
+        """
+        if engine is None:
+            return ""
+        revision = int(getattr(engine, "scenario_revision", 0) or 0)
+        if self.required_revision != revision:
+            return (f"the physical scene was requested for scenario revision "
+                    f"{self.required_revision} but this run is now at revision "
+                    f"{revision}; a new scene acknowledgement is required")
+        source = getattr(getattr(engine, "config", None), "perception_source", None)
+        batch = getattr(engine, "observation_batch", None)
+        if getattr(source, "is_physical", False) and batch is not None \
+                and getattr(batch, "ok", False):
+            spec = self.scene_spec
+            if spec is None or not spec.is_physical:
+                return ("this run plans from physical observation batch "
+                        f"{batch.batch_id} but the requested scene is the "
+                        "generated placeholder; no pick is dispatched against it")
+            if spec.observation_batch_id != batch.batch_id:
+                return (f"the requested scene was synchronized from batch "
+                        f"{spec.observation_batch_id} but this run now plans "
+                        f"from batch {batch.batch_id}")
+        return ""
+
+    def scene_block_reason(self, engine=None) -> str:
         """Why physical execution is not authorised, in the operator's words."""
+        mismatch = self.spec_mismatch_reason(engine)
+        if mismatch:
+            return mismatch
         if self.switch_failed_reason:
             return (f"the robot switch to {self.switch_requested_robot} failed: "
                     f"{self.switch_failed_reason}")
@@ -324,6 +438,9 @@ class IsaacExecutionBridge:
         if self.robot_model_error:
             return (f"the simulator could not stand up the selected robot: "
                     f"{self.robot_model_error}")
+        if self.scene_sync_refusal:
+            return (f"the physical observation could not be synchronized into "
+                    f"the Isaac scene: {self.scene_sync_refusal}")
         if self.reset_failed_reason:
             return f"the simulator could not rebuild the scene: {self.reset_failed_reason}"
         if self.reset_in_progress:
@@ -560,6 +677,8 @@ class IsaacExecutionBridge:
         self.scene_mismatch = ""
         self.requested_fingerprint = ""
         self.scene_requested_for_run = ""
+        self.scene_spec = None
+        self.scene_sync_refusal = ""
         self.robot_status = {}
         self.robot_model_error = ""
         self.simulator_ready = False
@@ -617,24 +736,88 @@ class IsaacExecutionBridge:
             return
         if self.scene_ready and self.scene_revision == revision:
             return
-        self.request_scene_sync(engine, revision)
+        # A NEW REVISION OF A PHYSICAL RUN IS A REBUILD, not a verification:
+        # its source objects are a different observation batch, and the
+        # simulator's verify path would find the fingerprint mismatch and
+        # rebuild anyway. Asking for the rebuild directly says what is meant.
+        source = getattr(getattr(engine, "config", None), "perception_source", None)
+        physical = (getattr(source, "is_physical", False)
+                    and getattr(engine, "observation_batch", None) is not None)
+        self._request_scene(engine, revision, rebuild=bool(physical))
+
+    def _scene_spec_for(self, engine, revision: int) -> Optional[SceneSpec]:
+        """The source objects revision ``revision`` consists of, or None.
+
+        None means "the generated scenario from (preset, seed)" — the wire
+        payload every generated run always had. A physical run whose batch has
+        been applied gets a ``physical_observation`` spec built through the
+        configured frame chain; a physical run whose batch has NOT arrived yet
+        (the scan is still pending) is also None, so the simulator stands on
+        the generated scene until the observation replaces it.
+
+        Raises ``SceneSyncRefused`` — never returns a partial or substituted
+        scene — when the batch cannot be placed.
+        """
+        source = getattr(getattr(engine, "config", None), "perception_source", None)
+        physical = bool(getattr(source, "is_physical", False))
+        batch = getattr(engine, "observation_batch", None)
+        scenario = engine.scenario
+        if not physical or batch is None or scenario is None:
+            return None
+        if not batch.ok:
+            raise SceneSyncRefused(f"the observation batch failed: {batch.error}")
+        return synchronize_scene(
+            scenario.items, batch, self.workcell,
+            run_id=engine.run_id, scenario_revision=int(revision),
+            layout=self.layout)
 
     def _request_scene(self, engine, revision: int, *, rebuild: bool) -> None:
         scenario = engine.scenario
         self.required_revision = int(revision)
-        self.reset_in_progress = True
         self.reset_failed_reason = ""
         self.scene_mismatch = ""
         self.acknowledged = None
-        self._reset_requested_at = time.monotonic()
         self._in_flight = None
         self._in_flight_command = None
         self.scene_requested_for_run = engine.run_id
+
+        # THE SOURCE OBJECTS, decided before anything is sent. A physical batch
+        # that cannot be placed — invalid pose, no transform, outside the work
+        # area, unreachable — HOLDS the gate with the reason. No request goes
+        # out, so the simulator keeps whatever scene it has and the revision
+        # mismatch keeps every pick refused. Nothing is substituted.
+        try:
+            self.scene_spec = self._scene_spec_for(engine, self.required_revision)
+        except SceneSyncRefused as exc:
+            self.scene_spec = None
+            self.scene_sync_refusal = str(exc)
+            self.reset_in_progress = False
+            self.node.get_logger().error(
+                f"{LOG} scene synchronization REFUSED for revision "
+                f"{self.required_revision}: {exc}")
+            engine.note_physical_progress(
+                None, "isaac_scene_sync_refused", None, None,
+                f"physical observation not synchronized into the Isaac scene: "
+                f"{exc}",
+                details={"scenario_revision": self.required_revision,
+                         "reason": str(exc),
+                         "transform_available": self.workcell.available,
+                         "transform_label": self.workcell.label,
+                         "note": ("execution is HELD — no generated source "
+                                  "pose and no identity transform is "
+                                  "substituted for the observation")})
+            self.node.publish_execution()
+            return
+        self.scene_sync_refusal = ""
+        self.reset_in_progress = True
+        self._reset_requested_at = time.monotonic()
+
         # Computed from the scenario THIS run planned against, by the same
         # function Isaac will use on the scene it actually has. That turns
         # "is the world the right one?" into a string comparison.
         self.requested_fingerprint = (
-            scene_fingerprint(scenario, self.layout, self.robot_id)
+            scene_fingerprint(scenario, self.layout, self.robot_id,
+                              scene=self.scene_spec)
             if scenario is not None else "")
         self.requested_object_count = len(scenario.items) if scenario else 0
         command = (IsaacCommandType.RESET_SCENE if rebuild
@@ -647,17 +830,29 @@ class IsaacExecutionBridge:
             robot_id=self.robot_id,
             simulator_generation=self.expected_generation,
             total_items=self.requested_object_count,
-            scenario_revision=self.required_revision))
+            scenario_revision=self.required_revision,
+            scene=self.scene_spec))
+        physical = self.scene_spec is not None and self.scene_spec.is_physical
         engine.note_physical_progress(
             None, ("isaac_scene_reset_requested" if rebuild
                    else "isaac_scene_sync_requested"), None, None,
             (f"physical scene {'rebuild' if rebuild else 'verification'} "
-             f"requested for scenario revision {self.required_revision}"),
+             f"requested for scenario revision {self.required_revision}"
+             + (f" from observation batch "
+                f"{self.scene_spec.observation_batch_id} through the "
+                f"{self.workcell.label.lower()}" if physical else "")),
             details={"scenario_revision": self.required_revision,
                      "preset": scenario.preset if scenario else "",
                      "robot_id": self.robot_id,
                      "scene_fingerprint": self.requested_fingerprint,
-                     "expected_object_count": self.requested_object_count})
+                     "expected_object_count": self.requested_object_count,
+                     "scene_source": (self.scene_spec.scene_source if self.scene_spec
+                                      else SCENE_SOURCE_GENERATED),
+                     **({"observation_batch_id": self.scene_spec.observation_batch_id,
+                         "transform_source": self.scene_spec.transform_source,
+                         "transform_label": self.workcell.label,
+                         "objects": [o.to_dict() for o in self.scene_spec.objects]}
+                        if physical else {})})
 
     # ------------------------------------------------------------------ #
     # Outbound
@@ -781,6 +976,15 @@ class IsaacExecutionBridge:
         if not self.simulator_ready:
             return self._await_simulator(engine)
 
+        # THE REQUESTED SCENE MUST BE THIS REVISION'S. A batch adopted mid-run
+        # bumps the engine's revision without passing through a reset, so the
+        # handshake is re-checked here on every tick — idempotent per
+        # (run_id, revision) — and no pick is dispatched while the scene this
+        # bridge asked for is not the scene the engine now plans from.
+        self._sync_scene_if_needed(engine)
+        if self.spec_mismatch_reason(engine):
+            return True
+
         # THE SCENE GATE. Nothing may be picked until the physical scene has
         # been rebuilt for THIS scenario revision.
         if not self.scene_ready:
@@ -862,6 +1066,12 @@ class IsaacExecutionBridge:
             self._publish(self._in_flight_command)
 
     def _dispatch_next(self, engine) -> bool:
+        mismatch = self.spec_mismatch_reason(engine)
+        if mismatch:
+            # Belt and braces: tick() already holds on this. Never dispatch
+            # against a scene that is not the one this revision observed.
+            self.node.get_logger().warn(f"{LOG} holding dispatch: {mismatch}")
+            return True
         nxt = engine.next_physical_placement()
         if nxt is None:
             # Either a re-plan is pending approval (the workflow handles that) or
@@ -877,8 +1087,21 @@ class IsaacExecutionBridge:
         # The retry counter IS the attempt number. Sending it is what lets the
         # simulator tell a genuine retry from a latched replay — see
         # isaac_contract.RunGate.
-        command = self._build_command(engine, placement, item, container, index,
-                                      attempt=engine.cursor.retries)
+        try:
+            command = self._build_command(engine, placement, item, container,
+                                          index, attempt=engine.cursor.retries)
+        except SourcePoseUnavailable as exc:
+            # NO PICK WITHOUT A SYNCHRONIZED POSE. The item is failed on the
+            # audit trail with the reason; the arm is not sent to a generated
+            # row slot the camera never saw.
+            self.node.get_logger().error(f"{LOG} refusing to dispatch: {exc}")
+            engine.fail_physical_item(
+                placement, f"no synchronized source pose: {exc}",
+                details={"sequence_index": index, "reason": str(exc),
+                         "note": "generated table_pose_for_index is not used "
+                                 "for a synchronized physical scene"})
+            self.node.publish_execution()
+            return True
         self._in_flight = (placement, index)
         self._in_flight_command = command
         self._dispatched_at = time.monotonic()
@@ -912,6 +1135,11 @@ class IsaacExecutionBridge:
                 f"{LOG} {item.item_id} is not in the scene Isaac built "
                 "(injected after RUN_BEGIN); expecting ITEM_FAILED")
 
+        # THE PICK TARGET. For a synchronized physical scene this is the
+        # transformed observation pose recorded in the scene spec — the same
+        # numbers the simulator spawned the body at — and never a generated row
+        # slot. For a generated scene it is the row slot, exactly as before.
+        # `source_pose_for` raises rather than substitute; see _dispatch_next.
         return IsaacCommand(
             command=IsaacCommandType.EXECUTE_ITEM,
             run_id=engine.run_id,
@@ -919,7 +1147,8 @@ class IsaacExecutionBridge:
             attempt=attempt,
             item_id=item.item_id,
             dimensions=dimensions_for(item),
-            source_pose=table_pose_for_index(spawn_index, item, self.layout),
+            source_pose=source_pose_for(self.scene_spec, spawn_index, item,
+                                        self.layout),
             target_pose=placement_pose(placement),
             container_id=container.container_id,
             container_inner_mm=container.inner_size.to_dict(),
@@ -1174,6 +1403,7 @@ class IsaacExecutionBridge:
                         f"{feedback.scenario_revision} but this run is at "
                         f"{self.required_revision}")
             else:
+                spec = self.scene_spec
                 reasons = acknowledgement.mismatches(
                     run_id=engine.run_id,
                     scenario_id=(scenario.scenario_id if scenario else ""),
@@ -1184,7 +1414,11 @@ class IsaacExecutionBridge:
                     object_count=self.requested_object_count,
                     robot_id=self.robot_id,
                     robot_profile_revision=self.robot_profile_revision,
-                    simulator_generation=self.expected_generation)
+                    simulator_generation=self.expected_generation,
+                    scene_source=(spec.scene_source if spec is not None
+                                  else SCENE_SOURCE_GENERATED),
+                    observation_batch_id=(spec.observation_batch_id
+                                          if spec is not None else ""))
             if reasons:
                 self.reset_in_progress = False
                 self.scene_mismatch = "; ".join(reasons)
@@ -1219,6 +1453,25 @@ class IsaacExecutionBridge:
                          "scene": (acknowledgement.to_dict()
                                    if acknowledgement else None)})
         elif state is IsaacState.RESET_FAILED:
+            if (feedback.scenario_revision and self.required_revision
+                    and feedback.scenario_revision != self.required_revision):
+                # A failure report about ANOTHER revision — typically the
+                # simulator refusing a stale request that this run has already
+                # moved past. Logged, never applied: holding this revision for
+                # a request it did not make would be the stale rewrite in
+                # reverse.
+                self.node.get_logger().warn(
+                    f"{LOG} ignoring RESET_FAILED for revision "
+                    f"{feedback.scenario_revision} (this run is at "
+                    f"{self.required_revision}): {feedback.message}")
+                engine.note_physical_progress(
+                    None, "isaac_scene_stale_report_ignored", None, None,
+                    f"ignored a scene failure report for revision "
+                    f"{feedback.scenario_revision}: {feedback.message}",
+                    details={"reported_revision": feedback.scenario_revision,
+                             "required_revision": self.required_revision})
+                self.node.publish_execution()
+                return
             self.reset_in_progress = False
             self.reset_failed_reason = feedback.message or "reset failed"
             engine.note_physical_progress(

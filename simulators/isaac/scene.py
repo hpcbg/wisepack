@@ -43,8 +43,10 @@ from pxr import Gf, UsdGeom, UsdLux
 from wisepack_core.domain import (GEOMETRY_SOURCE_CAD_MESH, Scenario, Vec3,
                                   WasteItem)
 from wisepack_core.isaac_transform import (
-    SceneLayout, mm_to_m, pose_to_world, table_pose_for_index,
+    SceneLayout, alignment_to_local_z, mm_to_m, pose_to_world,
+    quaternion_from_orientation, source_pose_for,
 )
+from wisepack_core.pose import CAMERA_OPTICAL_FRAME, WORKAREA_FRAME
 
 from .config import LOG_SCENE, PhysicsConfig
 
@@ -60,6 +62,12 @@ TABLE_PATH = f"{WORLD}/Table"
 ITEMS_ROOT = f"{WORLD}/Items"
 CONTAINERS_ROOT = f"{WORLD}/Containers"
 MATERIALS_ROOT = f"{WORLD}/PhysicsMaterials"
+#: Debug frame markers: the configured camera pose, the work-area origin, the
+#: robot base and each synchronized object's COMMANDED pose. Visual only — no
+#: collision, no physics — so a wrong frame assumption is seen before it is
+#: picked at.
+MARKERS_ROOT = f"{WORLD}/FrameMarkers"
+OBJECT_MARKERS_ROOT = f"{MARKERS_ROOT}/Objects"
 
 
 def item_path(item_id: str) -> str:
@@ -76,32 +84,22 @@ def container_path(container_id: str) -> str:
 
 
 def _alignment_to_local_z(model: Any) -> Any:
-    """Rotation taking a model's own tube axis onto local +Z.
+    """Rotation taking a model's own tube axis onto local +Z, as a 3x3 array.
 
     The registry declares that axis — measured, and a VECTOR for parts modelled
     obliquely — so this reads a declaration rather than re-deriving geometry.
-    Returns identity when the axis is already +Z.
+
+    THE ROTATION ITSELF COMES FROM `wisepack_core.isaac_transform.
+    alignment_to_local_z`, the same function the scene synchronizer composes
+    an OBSERVED orientation with. One implementation, so the body the scene
+    spawns and the body pose the orchestrator commands cannot disagree by the
+    choice of perpendicular a second implementation might make.
     """
     vector = tuple(getattr(model, "task_axis_vector", ()) or ())
     if not vector:
         vector = {"x": (1.0, 0.0, 0.0), "y": (0.0, 1.0, 0.0),
                   "z": (0.0, 0.0, 1.0)}[getattr(model, "task_axis", "z")]
-    source = np.asarray(vector, dtype=np.float64)
-    source = source / np.linalg.norm(source)
-    target = np.array([0.0, 0.0, 1.0])
-
-    cross = np.cross(source, target)
-    dot = float(source @ target)
-    if np.linalg.norm(cross) < 1e-9:
-        # Parallel or antiparallel: identity, or a half turn about any
-        # perpendicular. For a tube either end is equivalent, so the choice of
-        # perpendicular does not matter.
-        return np.eye(3) if dot > 0 else np.diag([1.0, -1.0, -1.0])
-    skew = np.array([[0.0, -cross[2], cross[1]],
-                     [cross[2], 0.0, -cross[0]],
-                     [-cross[1], cross[0], 0.0]])
-    return (np.eye(3) + skew
-            + skew @ skew * (1.0 / (1.0 + dot)))
+    return np.asarray(alignment_to_local_z(vector).to_matrix(), dtype=np.float64)
 
 
 class WisepackScene:
@@ -253,18 +251,31 @@ class WisepackScene:
               f"{inner_mm.x}x{inner_mm.y}x{inner_mm.z} mm, inner origin at "
               f"{tuple(round(v, 3) for v in self.layout.container_origin_for(container_id))} m")
 
-    def build_items(self, scenario: Scenario) -> None:
+    def build_items(self, scenario: Scenario, scene: Any = None) -> None:
         """Spawn one dynamic cylinder per WISEPACK waste item, on the table.
+
+        WHERE: from `source_pose_for` — the generated row for a generated scene,
+        the transformed observation for a synchronized physical one. The same
+        selector the orchestrator dispatches from, so the pose an item is
+        spawned at and the pose the robot is told to pick it from are the same
+        numbers by construction.
 
         Mass is taken from the item, not from a density: the generator already
         computed it from the real alloy density and the hollow tube's material
         volume, and a solid cylinder of the same outer diameter would be several
         times heavier than the pipe it represents.
         """
+        physical = bool(scene is not None and getattr(scene, "is_physical", False))
         for index, item in enumerate(scenario.items):
-            pose = table_pose_for_index(index, item, self.layout)
+            pose = source_pose_for(scene, index, item, self.layout)
             position, orientation = pose_to_world(pose, self.layout)
             path = item_path(item.item_id)
+            if physical:
+                # The COMMANDED pose, drawn as a small frame so the settled body
+                # can be compared against it by eye.
+                self._add_axes_marker(
+                    f"{OBJECT_MARKERS_ROOT}/{item.item_id.replace('-', '_')}",
+                    position, orientation, length_m=0.08, width_m=0.004)
 
             # TWO GEOMETRY PATHS, and the item says which. Neither replaces the
             # other: a generated tube is a parametric cylinder and stays exactly
@@ -312,7 +323,9 @@ class WisepackScene:
             print(f"{LOG_SCENE} item {item.item_id}: "
                   f"{item.length_mm}x{item.outer_diameter_mm} mm, "
                   f"{item.weight_kg} kg at "
-                  f"{tuple(round(v, 3) for v in position)} m")
+                  f"{tuple(round(v, 3) for v in position)} m"
+                  + (f" q(wxyz)={tuple(round(float(v), 4) for v in orientation)}"
+                     " [synchronized physical observation]" if physical else ""))
 
     def _build_cad_item(self, item: WasteItem, path: str,
                         position: Any, orientation: Any) -> None:
@@ -478,11 +491,88 @@ class WisepackScene:
               f"{self.layout.robot_id or 'default'} workcell")
 
     # ------------------------------------------------------------------ #
+    # Debug frame markers
+    # ------------------------------------------------------------------ #
+
+    def _add_axes_marker(self, path: str, position: Any, orientation_wxyz: Any,
+                         length_m: float = 0.12, width_m: float = 0.006) -> None:
+        """Three coloured strokes (X red, Y green, Z blue) at a world pose.
+
+        `UsdGeom.BasisCurves`, not geometry prims: curves carry no collision
+        API and no rigid body, so a marker can never be picked, pushed or
+        settled on. `orientation_wxyz` follows `pose_to_world`.
+        """
+        stage = stage_utils.get_current_stage(backend="usd")
+        if stage.GetPrimAtPath(path):
+            stage.RemovePrim(path)
+        w, x, y, z = (float(v) for v in orientation_wxyz)
+        rotation = np.array([
+            [1 - 2 * (y * y + z * z), 2 * (x * y - z * w), 2 * (x * z + y * w)],
+            [2 * (x * y + z * w), 1 - 2 * (x * x + z * z), 2 * (y * z - x * w)],
+            [2 * (x * z - y * w), 2 * (y * z + x * w), 1 - 2 * (x * x + y * y)],
+        ])
+        origin = np.asarray(position, dtype=float)
+        colours = ((1.0, 0.1, 0.1), (0.1, 0.9, 0.1), (0.15, 0.3, 1.0))
+        xform = UsdGeom.Xform.Define(stage, path)
+        for axis_index, colour in enumerate(colours):
+            tip = origin + rotation[:, axis_index] * length_m
+            curve = UsdGeom.BasisCurves.Define(
+                stage, f"{path}/axis_{'xyz'[axis_index]}")
+            curve.CreateTypeAttr(UsdGeom.Tokens.linear)
+            curve.CreateCurveVertexCountsAttr([2])
+            curve.CreatePointsAttr([Gf.Vec3f(*[float(v) for v in origin]),
+                                    Gf.Vec3f(*[float(v) for v in tip])])
+            curve.CreateWidthsAttr([width_m, width_m])
+            curve.CreateDisplayColorAttr([Gf.Vec3f(*colour)])
+        del xform
+
+    def add_frame_markers(self, workcell: Any) -> None:
+        """Draw the configured demo frames: robot base, work area, camera.
+
+        Every pose here is DERIVED from `config/isaac_workcell.yaml` through the
+        same `RigidTransform`s the synchronizer applies — nothing is typed in —
+        so the picture shows the assumption the scene was actually built with.
+        `workcell` is a `wisepack_core.workcell.WorkcellFrames`; an unavailable
+        chain draws the base only and says so.
+        """
+        origin = np.asarray(self.layout.table_frame_origin_m, dtype=float)
+        self._add_axes_marker(f"{MARKERS_ROOT}/robot_base", origin,
+                              (1.0, 0.0, 0.0, 0.0), length_m=0.15)
+        if not getattr(workcell, "available", False):
+            print(f"{LOG_SCENE} frame markers: robot base only — "
+                  f"{getattr(workcell, 'unavailable_reason', 'no workcell frames')}")
+            return
+        to_table = workcell.workarea_to_table
+        # Work-area origin: the workarea frame's origin expressed in table, mm.
+        wa_position = origin + np.asarray(
+            to_table.apply_to_position((0.0, 0.0, 0.0)), dtype=float) / 1000.0
+        wa_orientation = quaternion_from_orientation(to_table.rotation)
+        self._add_axes_marker(f"{MARKERS_ROOT}/{WORKAREA_FRAME}", wa_position,
+                              wa_orientation, length_m=0.15)
+        # Camera: the camera frame's origin and axes, carried through both
+        # links of the chain. Optical +Z (blue) should point DOWN at the table.
+        cam_in_wa = workcell.camera_to_workarea
+        cam_position = origin + np.asarray(to_table.apply_to_position(
+            cam_in_wa.apply_to_position((0.0, 0.0, 0.0))), dtype=float) / 1000.0
+        cam_orientation = quaternion_from_orientation(
+            to_table.rotation.multiply(cam_in_wa.rotation))
+        self._add_axes_marker(f"{MARKERS_ROOT}/{CAMERA_OPTICAL_FRAME}",
+                              cam_position, cam_orientation, length_m=0.12)
+        print(f"{LOG_SCENE} frame markers ({workcell.label.lower()}): "
+              f"work area at {tuple(round(float(v), 3) for v in wa_position)} m, "
+              f"camera at {tuple(round(float(v), 3) for v in cam_position)} m")
+
+    # ------------------------------------------------------------------ #
     # Scene reset
     # ------------------------------------------------------------------ #
 
-    def reset_items(self, scenario: Scenario) -> None:
+    def reset_items(self, scenario: Scenario, scene: Any = None) -> None:
         """Put the world back to the start of a NEW scenario.
+
+        ``scene`` — an ``isaac_contract.SceneSpec`` or None — says where the
+        new source objects come from; see ``build_items``. Whatever it says,
+        the PREVIOUS objects are removed first: a physical observation batch
+        replaces the generated row, it is never spawned beside it.
 
         REMOVES every previous item rather than repositioning it. A new scenario
         can have different ids, different dimensions and a different count, so
@@ -504,8 +594,10 @@ class WisepackScene:
         self.items.clear()
         self.item_specs.clear()
         self.item_index.clear()
+        if stage.GetPrimAtPath(OBJECT_MARKERS_ROOT):
+            stage.RemovePrim(OBJECT_MARKERS_ROOT)
         print(f"{LOG_SCENE} removed {removed} item(s) from the previous scenario")
-        self.build_items(scenario)
+        self.build_items(scenario, scene=scene)
 
     def settle_items(self, updater, frames: int = 90) -> None:
         """Let freshly spawned bodies resolve contact before anything is picked.
@@ -602,5 +694,5 @@ class WisepackScene:
 
 __all__ = [
     "WisepackScene", "item_path", "container_path", "TABLE_PATH",
-    "ITEMS_ROOT", "CONTAINERS_ROOT", "WORLD",
+    "ITEMS_ROOT", "CONTAINERS_ROOT", "WORLD", "MARKERS_ROOT",
 ]

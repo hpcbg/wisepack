@@ -2246,8 +2246,11 @@ def api_perception_physical():
         # this result as a planning input by omitting a label.
         "planning_available": False,
         "planning_blocked_reason": (
-            "Physical 6-DoF perception validated in camera coordinates. "
-            "Work-area calibration is required before planning or execution."),
+            "Physical 6-DoF perception validated in camera coordinates. No "
+            "measured camera-to-work-area calibration exists; an Isaac run "
+            "places this object through the CONFIGURED DEMO transform in "
+            "config/isaac_workcell.yaml and reports it as such, never as "
+            "calibrated."),
         "accuracy_note": document.get("accuracy_note", ""),
     }
 

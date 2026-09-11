@@ -37,11 +37,18 @@ claim the same placement, because only one of the two code paths is reachable.
 These are stated first, not buried, because each one changes how a result should
 be read.
 
-**No perception.** There is no camera, no detector and no pose estimator. Item
-poses are **ground truth** — this process spawned the items, so it knows exactly
-where they are. The extension point is
-`wisepack_core.isaac_transform.table_pose_for_index`; replacing it with real
-perception changes nothing else in the stack.
+**Perception reaches this scene through ONE configured demo transform.** For a
+generated run nothing changed: item poses are **ground truth** — this process
+spawned the items from `table_pose_for_index`, so it knows exactly where they
+are. For a run whose objects are a physical RGB-D `ObservationBatch`, the scene
+command carries a `SceneSpec` and this process spawns exactly those objects at
+the transformed observation poses (`isaac_transform.source_pose_for`, the same
+selector the orchestrator dispatches from). The transform that placed them is
+`config/isaac_workcell.yaml`, provenance `configured_demo` — an assumption
+about where the D435 hangs over the table, **not** a measured calibration —
+and the acknowledgement, the audit trail and the dashboard say so. There is no
+camera, detector or estimator in this process; it never transforms an
+observation itself.
 
 **Secure-grasp approximation.** When the gripper closes, the item is welded to
 the robot's end-effector link with a temporary USD fixed joint, removed the instant the gripper

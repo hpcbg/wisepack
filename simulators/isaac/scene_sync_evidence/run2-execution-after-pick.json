@@ -1,0 +1,698 @@
+{
+ "backend": "isaac",
+ "label": "ISAAC SIM / FRANKA EMIKA PANDA",
+ "detail": "placements are executed by the selected manipulator in NVIDIA Isaac Sim; the release is physical and PhysX settles the item under gravity and contact",
+ "physical": true,
+ "known": true,
+ "robot": {
+  "id": "panda",
+  "display_name": "Franka Emika Panda",
+  "manufacturer": "Franka Robotics",
+  "model": "Panda",
+  "dof": 9,
+  "arm_dof": 7,
+  "gripper_dof": 2,
+  "enabled": true,
+  "status": "validated",
+  "kinematics": "differential-ik-dls",
+  "motion_planning": false,
+  "nominal_reach_m": 0.78,
+  "compatible_presets": [
+   "isaac_cylinders_smoke",
+   "isaac_cylinder5_physical"
+  ],
+  "skills": [
+   "HOME",
+   "MOVE_TO_PICK",
+   "GRASP",
+   "LIFT",
+   "MOVE_TO_CONTAINER",
+   "RELEASE",
+   "SETTLE",
+   "VERIFY"
+  ],
+  "profile_revision": "38759be4f9d288df",
+  "notes": "Retained as the validated simulation and regression backend. WISEPACK has no physical Panda; this profile exists so that introducing a second robot can be shown not to have broken the first."
+ },
+ "robot_id": "panda",
+ "robot_switch": {
+  "available": true,
+  "unavailable_reason": "",
+  "in_flight": false,
+  "request_id": "",
+  "previous_robot_id": "",
+  "requested_robot_id": "",
+  "host_robot_id": "panda",
+  "host_generation": 1,
+  "host_ready": true,
+  "expected_generation": 0,
+  "phase": "SIMULATOR_READY",
+  "phase_label": "the selected robot model loaded",
+  "failed": false,
+  "failed_reason": "",
+  "supervisor_present": true
+ },
+ "isaac": {
+  "backend": "isaac",
+  "run_id": "run-dc3b1d2a",
+  "robot_id": "panda",
+  "robot_display_name": "Franka Emika Panda",
+  "robot_profile_revision": "38759be4f9d288df",
+  "robot_status": {
+   "robot_id": "panda",
+   "display_name": "Franka Emika Panda",
+   "manufacturer": "Franka Robotics",
+   "model": "Panda",
+   "dof": 9,
+   "implementation_status": "validated",
+   "robot_profile_revision": "38759be4f9d288df",
+   "registry_revision": "fc1c1c85dac3faee",
+   "simulator_generation": 1,
+   "configured_robots": [
+    "xarm7",
+    "panda"
+   ],
+   "selected_robot": "panda",
+   "kinematics": "differential-ik-dls",
+   "motion_planning": false,
+   "last_robot_error": "",
+   "adapter": "PandaRobotAdapter",
+   "asset_resolved": "https://omniverse-content-production.s3-us-west-2.amazonaws.com/Assets/Isaac/6.0/Isaac/Robots/FrankaRobotics/FrankaPanda/franka.usd",
+   "articulation_valid": true,
+   "articulation_root": "/World/Panda",
+   "expected_arm_joints": [
+    "panda_joint1",
+    "panda_joint2",
+    "panda_joint3",
+    "panda_joint4",
+    "panda_joint5",
+    "panda_joint6",
+    "panda_joint7"
+   ],
+   "discovered_arm_joints": [
+    "panda_joint1",
+    "panda_joint2",
+    "panda_joint3",
+    "panda_joint4",
+    "panda_joint5",
+    "panda_joint6",
+    "panda_joint7"
+   ],
+   "discovered_dof_names": [
+    "panda_joint1",
+    "panda_joint2",
+    "panda_joint3",
+    "panda_joint4",
+    "panda_joint5",
+    "panda_joint6",
+    "panda_joint7",
+    "panda_finger_joint1",
+    "panda_finger_joint2"
+   ],
+   "discovered_link_names": [
+    "panda_link0",
+    "panda_link1",
+    "panda_link2",
+    "panda_link3",
+    "panda_link4",
+    "panda_link5",
+    "panda_link6",
+    "panda_link7",
+    "panda_hand",
+    "panda_leftfinger",
+    "panda_rightfinger"
+   ],
+   "expected_gripper_joints": [
+    "panda_finger_joint1",
+    "panda_finger_joint2"
+   ],
+   "end_effector_resolved": "/World/Panda/panda_hand",
+   "gripper_ready": true,
+   "home_verified": true,
+   "kinematics_ready": true,
+   "tool_centre_point_m": 0.103,
+   "model_valid": true,
+   "active_robot": "panda",
+   "scene_ready": true
+  },
+  "acknowledged_robot": "panda",
+  "robot_model_error": "",
+  "robot_switch": {
+   "available": true,
+   "unavailable_reason": "",
+   "in_flight": false,
+   "request_id": "",
+   "previous_robot_id": "",
+   "requested_robot_id": "",
+   "host_robot_id": "panda",
+   "host_generation": 1,
+   "host_ready": true,
+   "expected_generation": 0,
+   "phase": "SIMULATOR_READY",
+   "phase_label": "the selected robot model loaded",
+   "failed": false,
+   "failed_reason": "",
+   "supervisor_present": true
+  },
+  "expected_simulator_generation": 0,
+  "acknowledged_simulator_generation": 1,
+  "simulator_ready": true,
+  "run_open": true,
+  "run_finished": false,
+  "last_state": "ITEM_COMPLETED",
+  "in_flight_item": null,
+  "items_completed": 1,
+  "results": [
+   {
+    "item_id": "item-001",
+    "sequence_index": 0,
+    "state": "ITEM_COMPLETED",
+    "robot_id": "panda",
+    "target_pose": {
+     "position_mm": {
+      "x": 171.0,
+      "y": 12.5,
+      "z": 12.5
+     },
+     "axis": "x",
+     "frame": "container:CNT-01"
+    },
+    "actual_pose": {
+     "position_mm": {
+      "x": 202.563,
+      "y": 55.675,
+      "z": 18.132
+     },
+     "axis": "x",
+     "frame": "container:CNT-01",
+     "orientation": {
+      "x": -0.443186509,
+      "y": 0.550986155,
+      "z": -0.551007732,
+      "w": 0.443159627
+     }
+    },
+    "position_error_mm": 53.78,
+    "message": "settled inside the container, 54 mm from the planned pose, axis off by 12 deg",
+    "settle_elapsed_s": 1.08,
+    "final_linear_velocity_mps": 0.0,
+    "final_angular_velocity_radps": 0.0,
+    "peak_linear_velocity_mps": 0.0055,
+    "peak_angular_velocity_radps": 0.015,
+    "linear_velocity_threshold": 0.01,
+    "angular_velocity_threshold": 0.1,
+    "containment": {
+     "inside_footprint": true,
+     "above_floor": true,
+     "below_rim_overflow": true,
+     "in_scene": true
+    },
+    "sequence_state": "WAIT_FOR_SETTLE",
+    "grasp": "temporary fixed joint (secure-grasp approximation)",
+    "settled": true,
+    "settle_timed_out": false,
+    "axis_error_deg": 12.38,
+    "notes": []
+   }
+  ],
+  "visualization": {
+   "backend": "isaac",
+   "available": false,
+   "transport": "none",
+   "status": "unavailable",
+   "status_label": "Stream unavailable",
+   "viewer_url": null,
+   "stream_id": null,
+   "camera_name": null,
+   "interactive": false,
+   "embeddable": false,
+   "signal_port": null,
+   "media_port": null,
+   "client_connected": null,
+   "frames_verified": false,
+   "message": "Isaac Sim is running headless with WebRTC streaming disabled (set WISEPACK_ISAAC_STREAMING=1 to enable it)",
+   "client_hint": "",
+   "detail": {}
+  },
+  "simulator_version": "Isaac Sim 6.0.1-rc.7+release.42383.32955d8d.gl",
+  "scene_revision": 2,
+  "required_revision": 2,
+  "scene_ready": true,
+  "reset_in_progress": false,
+  "reset_failed_reason": "",
+  "ros_bridge_ready": true,
+  "scene_status": "ready",
+  "scene_mismatch": "",
+  "requested_fingerprint": "3498e6457e8192642a72da9ac2580b0e83e912d7176bef5dc68dee928df6292b",
+  "acknowledged_fingerprint": "3498e6457e8192642a72da9ac2580b0e83e912d7176bef5dc68dee928df6292b",
+  "expected_object_count": 1,
+  "actual_object_count": 1,
+  "acknowledged_scene": {
+   "run_id": "run-dc3b1d2a",
+   "scenario_id": "isaac_cylinder5_physical-s42",
+   "scenario_revision": 2,
+   "preset": "isaac_cylinder5_physical",
+   "seed": 42,
+   "robot_id": "panda",
+   "robot_profile_revision": "38759be4f9d288df",
+   "simulator_generation": 1,
+   "scene_fingerprint": "3498e6457e8192642a72da9ac2580b0e83e912d7176bef5dc68dee928df6292b",
+   "object_ids": [
+    "item-001"
+   ],
+   "object_count": 1,
+   "robot_home_verified": true,
+   "container_empty_verified": true,
+   "verified_without_rebuild": false,
+   "scene_source": "physical_observation",
+   "observation_batch_id": "physical-cylinder5-1",
+   "transform_source": "configured_demo",
+   "object_poses": {
+    "item-001": {
+     "commanded_position_m": [
+      0.4873,
+      -0.0072,
+      0.4088
+     ],
+     "position_m": [
+      0.4816,
+      -0.0081,
+      0.4184
+     ],
+     "quaternion_wxyz": [
+      0.521443,
+      0.477595,
+      0.521443,
+      -0.477595
+     ],
+     "readable": true,
+     "settle_offset_mm": 11.2
+    }
+   },
+   "timestamp": "2026-09-11T09:50:53.420Z"
+  },
+  "scene_sync": {
+   "scene_source": "physical_observation",
+   "scene_source_label": "Physical RGB-D observation",
+   "physical": true,
+   "synchronized": true,
+   "status": "synchronized",
+   "refusal": "",
+   "observation_batch_id": "physical-cylinder5-1",
+   "scenario_revision": 2,
+   "transform_source": "configured_demo",
+   "transform_label": "Configured demo transform",
+   "transform_available": true,
+   "transform_unavailable_reason": "",
+   "frame_chain": [
+    "camera_color_optical_frame",
+    "wisepack_workarea",
+    "table",
+    "world"
+   ],
+   "objects": [
+    {
+     "item_id": "item-001",
+     "observation_id": "physical-cylinder5-1-obj-1",
+     "model_id": "cylinder5",
+     "geometry_source": "cad_mesh",
+     "perception_method": "foundationpose_rgbd_model_free",
+     "source_pose": {
+      "position_mm": {
+       "x": 487.302,
+       "y": -7.214,
+       "z": 8.787
+      },
+      "axis": "y",
+      "frame": "table",
+      "orientation": {
+       "x": -0.385850404,
+       "y": -0.58460727,
+       "z": 0.559075302,
+       "w": -0.443608626
+      }
+     },
+     "provenance": {
+      "frame_chain": [
+       "camera_color_optical_frame",
+       "wisepack_workarea",
+       "table",
+       "world"
+      ],
+      "transform_source": "configured_demo",
+      "transform_revision": "demo-2026-09-11",
+      "camera_pose": {
+       "frame": "camera_color_optical_frame",
+       "centre_mm": [
+        -162.698,
+        7.214,
+        533.213
+       ],
+       "orientation": {
+        "x": 0.443608626,
+        "y": 0.559075302,
+        "z": 0.58460727,
+        "w": -0.385850404
+       },
+       "rpy_deg": [
+        93.439,
+        -71.826,
+        171.727
+       ],
+       "axis_line": [
+        0.087235,
+        0.996012,
+        -0.018708
+       ]
+      },
+      "workarea_pose": {
+       "frame": "wisepack_workarea",
+       "centre_mm": [
+        -162.698,
+        -7.214,
+        8.787
+       ],
+       "orientation": {
+        "x": -0.385850404,
+        "y": -0.58460727,
+        "z": 0.559075302,
+        "w": -0.443608626
+       },
+       "rpy_deg": [
+        -86.561,
+        71.826,
+        -171.727
+       ],
+       "axis_line": [
+        0.087235,
+        -0.996012,
+        0.018708
+       ]
+      },
+      "table_pose": {
+       "frame": "table",
+       "centre_mm": [
+        487.302,
+        -7.214,
+        8.787
+       ],
+       "orientation": {
+        "x": -0.385850404,
+        "y": -0.58460727,
+        "z": 0.559075302,
+        "w": -0.443608626
+       },
+       "rpy_deg": [
+        -86.561,
+        71.826,
+        -171.727
+       ],
+       "axis_line": [
+        0.087235,
+        -0.996012,
+        0.018708
+       ]
+      },
+      "world_pose": {
+       "frame": "world",
+       "position_m": [
+        0.487302,
+        -0.007214,
+        0.408787
+       ],
+       "quaternion_wxyz": [
+        -0.443608626,
+        -0.385850404,
+        -0.58460727,
+        0.559075302
+       ]
+      },
+      "pose": {
+       "observation_id": "physical-cylinder5-1-obj-1",
+       "perception_method": "foundationpose_rgbd_model_free",
+       "estimator_geometry": "learned_representation",
+       "object_model_id": "cylinder5",
+       "detector": "foundationpose/rgbd-6dof",
+       "model_id": "a1b694b83e633c2cb6115b9063d940a687759392",
+       "captured_at": "2026-09-11T09:50:49Z",
+       "pose_valid": true,
+       "source_frame": "camera_color_optical_frame",
+       "measured_dof": [
+        "x",
+        "y",
+        "z",
+        "orientation_partial"
+       ],
+       "height_assumed_on_source_plane": false,
+       "symmetry": {
+        "type": "discrete",
+        "axis": "z",
+        "fold": 2,
+        "rotation_observable": true,
+        "ambiguous_dof": [
+         "rotation_about_z_modulo_180deg"
+        ]
+       }
+      },
+      "scene_geometry": {
+       "source": "engineering_cad",
+       "model_id": "cylinder5",
+       "note": "engineering CAD from config/perception_objects.yaml; the estimator's learned representation is never used as scene geometry"
+      }
+     }
+    }
+   ],
+   "acknowledged_object_poses": {
+    "item-001": {
+     "commanded_position_m": [
+      0.4873,
+      -0.0072,
+      0.4088
+     ],
+     "position_m": [
+      0.4816,
+      -0.0081,
+      0.4184
+     ],
+     "quaternion_wxyz": [
+      0.521443,
+      0.477595,
+      0.521443,
+      -0.477595
+     ],
+     "readable": true,
+     "settle_offset_mm": 11.2
+    }
+   },
+   "chain": {
+    "available": true,
+    "unavailable_reason": "",
+    "provenance": "configured_demo",
+    "label": "Configured demo transform",
+    "frame_chain": [
+     "camera_color_optical_frame",
+     "wisepack_workarea",
+     "table",
+     "world"
+    ],
+    "camera_to_workarea": {
+     "parent_frame": "wisepack_workarea",
+     "child_frame": "camera_color_optical_frame",
+     "translation_mm": [
+      0.0,
+      0.0,
+      542.0
+     ],
+     "rotation": {
+      "x": 1.0,
+      "y": 0.0,
+      "z": 0.0,
+      "w": 0.0
+     },
+     "method": "configured_demo",
+     "revision": "demo-2026-09-11",
+     "measured_at": "",
+     "reprojection_error_px": null,
+     "sample_count": null,
+     "valid": true,
+     "notes": "Fixed top-down mount assumed for the demonstrator. Height taken from one depth-plane fit on the bench, not from a calibration procedure. Replace with a measured_calibration entry when one exists; do not edit this one."
+    },
+    "workarea_to_table": {
+     "parent_frame": "table",
+     "child_frame": "wisepack_workarea",
+     "translation_mm": [
+      650.0,
+      0.0,
+      0.0
+     ],
+     "rotation": {
+      "x": 0.0,
+      "y": 0.0,
+      "z": 0.0,
+      "w": 1.0
+     },
+     "method": "configured_demo",
+     "revision": "demo-2026-09-11",
+     "measured_at": "",
+     "reprojection_error_px": null,
+     "sample_count": null,
+     "valid": true,
+     "notes": "Work-area origin placed in front of the robot by choice, not by measurement. The robot base itself is the `table` frame origin (0, 0, 0) and the table height is the selected robot layout's table_top_z_m; both are stated in wisepack_core.isaac_transform.SceneLayout and are not duplicated here."
+    },
+    "bounds": {
+     "x_mm": [
+      -320.0,
+      320.0
+     ],
+     "y_mm": [
+      -260.0,
+      260.0
+     ],
+     "source_plane_z_mm": 0.0,
+     "plane_tolerance_below_mm": 30.0,
+     "plane_tolerance_above_mm": 80.0
+    },
+    "camera": {
+     "sensor_id": "d435",
+     "mount": "fixed, above the work area, optical axis pointing down at the table",
+     "note": "The camera pose is the inverse of the first transform above. It is drawn in the Isaac scene as a frame marker so a wrong assumption is visible."
+    },
+    "path": "<repo>/config/isaac_workcell.yaml",
+    "table_to_world": {
+     "parent_frame": "world",
+     "child_frame": "table",
+     "origin_m": [
+      0.0,
+      0.0,
+      0.4
+     ],
+     "note": "millimetres to metres; axes parallel; from the selected robot's SceneLayout"
+    },
+    "robot_base_table_mm": [
+     0.0,
+     0.0,
+     0.0
+    ],
+    "table_top_z_m": 0.4,
+    "container_outer_xy_m": [
+     0.09,
+     0.32
+    ]
+   }
+  }
+ },
+ "source": "ros",
+ "results": [
+  {
+   "item_id": "item-001",
+   "state": "ITEM_COMPLETED",
+   "container_id": "CNT-01",
+   "target_pose": {
+    "position_mm": {
+     "x": 171.0,
+     "y": 12.5,
+     "z": 12.5
+    },
+    "axis": "x",
+    "frame": "container:CNT-01"
+   },
+   "actual_pose": {
+    "position_mm": {
+     "x": 195.857,
+     "y": 56.258,
+     "z": 12.628
+    },
+    "axis": "x",
+    "frame": "container:CNT-01",
+    "orientation": {
+     "x": -0.705299821,
+     "y": 0.050523432,
+     "z": -0.705299165,
+     "w": -0.050523596
+    }
+   },
+   "position_error_mm": 50.32,
+   "message": "settled inside the container, 50 mm from the planned pose, axis off by 8 deg",
+   "detail": {
+    "settle_elapsed_s": 1.08,
+    "final_linear_velocity_mps": 0.0,
+    "final_angular_velocity_radps": 0.0,
+    "peak_linear_velocity_mps": 0.0,
+    "peak_angular_velocity_radps": 0.0,
+    "linear_velocity_threshold": 0.01,
+    "angular_velocity_threshold": 0.1,
+    "containment": {
+     "inside_footprint": true,
+     "above_floor": true,
+     "below_rim_overflow": true,
+     "in_scene": true
+    },
+    "sequence_state": "WAIT_FOR_SETTLE",
+    "grasp": "temporary fixed joint (secure-grasp approximation)",
+    "settled": true,
+    "settle_timed_out": false,
+    "axis_error_deg": 8.19,
+    "notes": []
+   }
+  },
+  {
+   "item_id": "item-001",
+   "state": "ITEM_COMPLETED",
+   "container_id": "CNT-01",
+   "target_pose": {
+    "position_mm": {
+     "x": 171.0,
+     "y": 12.5,
+     "z": 12.5
+    },
+    "axis": "x",
+    "frame": "container:CNT-01"
+   },
+   "actual_pose": {
+    "position_mm": {
+     "x": 202.563,
+     "y": 55.675,
+     "z": 18.132
+    },
+    "axis": "x",
+    "frame": "container:CNT-01",
+    "orientation": {
+     "x": -0.443186509,
+     "y": 0.550986155,
+     "z": -0.551007732,
+     "w": 0.443159627
+    }
+   },
+   "position_error_mm": 53.78,
+   "message": "settled inside the container, 54 mm from the planned pose, axis off by 12 deg",
+   "detail": {
+    "settle_elapsed_s": 1.08,
+    "final_linear_velocity_mps": 0.0,
+    "final_angular_velocity_radps": 0.0,
+    "peak_linear_velocity_mps": 0.0055,
+    "peak_angular_velocity_radps": 0.015,
+    "linear_velocity_threshold": 0.01,
+    "angular_velocity_threshold": 0.1,
+    "containment": {
+     "inside_footprint": true,
+     "above_floor": true,
+     "below_rim_overflow": true,
+     "in_scene": true
+    },
+    "sequence_state": "WAIT_FOR_SETTLE",
+    "grasp": "temporary fixed joint (secure-grasp approximation)",
+    "settled": true,
+    "settle_timed_out": false,
+    "axis_error_deg": 12.38,
+    "notes": []
+   }
+  }
+ ],
+ "summary": {
+  "items_reported": 2,
+  "items_completed": 2,
+  "items_failed": 0,
+  "mean_position_error_mm": 52.0,
+  "max_position_error_mm": 53.8
+ }
+}

@@ -207,7 +207,8 @@ def test_planning_is_declared_unavailable_in_the_data_not_only_the_markup():
     planning input. The refusal travels with the result."""
     app = _read(APP)
     assert '"planning_available": False' in app
-    assert "Work-area calibration is required before planning or execution" in app
+    assert "measured camera-to-work-area calibration exists" in app
+    assert "CONFIGURED DEMO transform" in app
 
 
 def test_the_panel_shows_the_calibration_message():

@@ -1,0 +1,108 @@
+# WISEPACK — the DEMO workcell frame assumptions.
+#
+# THIS FILE IS A CONFIGURED ASSUMPTION, NOT A CALIBRATION. Every number below
+# was chosen so that one physical D435, one physical Cylinder5 and the Isaac Sim
+# workcell form ONE coherent geometry for the demonstration. None of it was
+# measured by a camera/robot calibration procedure, and `provenance` says so on
+# every transform. A synchronized Isaac scene built through this file reports
+#
+#     Workarea transform: configured demo transform
+#
+# and never "calibrated". When a measured hand-eye / camera-to-workarea
+# calibration exists it is recorded as a SEPARATE transform with
+# `method: measured_calibration`; these entries are not overwritten, because the
+# difference between the assumption and the measurement is itself the evidence.
+#
+# THE FRAME CHAIN, made explicit (wisepack_core.scene_sync applies it, and
+# nothing else does arithmetic on these numbers):
+#
+#     camera_color_optical_frame      the D435 colour optical frame FoundationPose
+#                                     reports in: +Z forward, +X right, +Y down
+#         -> wisepack_workarea        the WISEPACK work-area frame: Z up, origin
+#                                     on the source-object plane (the table top)
+#             -> table                the Isaac WORKCELL frame in millimetres:
+#                                     origin at the robot base projected onto
+#                                     the table top, axes parallel to world
+#                                     (wisepack_core.isaac_transform.SceneLayout)
+#                 -> world            Isaac world, metres, Z up — the layout's
+#                                     table_frame_origin_m lifts `table` there
+#
+# All transforms are T_parent_from_child in WISEPACK's RigidTransform form:
+# millimetres, quaternion (x, y, z, w), so a child-frame point p maps to
+# R p + t in the parent frame.
+
+schema: wisepack-isaac-workcell/1.0
+
+#: The provenance stamped on every synchronized scene built from this file.
+provenance: configured_demo
+
+transforms:
+
+  # camera_color_optical_frame -> wisepack_workarea.
+  #
+  # ASSUMPTION: the D435 is rigidly mounted ABOVE the work area with its optical
+  # axis pointing DOWN at the table. A half turn about the camera X axis maps
+  # optical +Z (into the scene, downwards) onto workarea -Z and optical +Y
+  # (image down) onto workarea -Y; image right stays +X.
+  #
+  # The height is the depth of the table plane under the camera. 542 mm is the
+  # value the depth-plane segmentation fitted on the demonstration bench
+  # (plane normal [-0.023, 0.011, -1.000] in the optical frame, i.e. within
+  # 1.5 deg of straight down; see .cache-perception/physical-c5/physical_c5.json
+  # `segmentation`). It is used here as a CONFIGURED constant: the residual tilt
+  # is deliberately not modelled, and the number is not re-fitted per run.
+  - parent_frame: wisepack_workarea
+    child_frame: camera_color_optical_frame
+    translation_mm: [0.0, 0.0, 542.0]
+    rotation: {x: 1.0, y: 0.0, z: 0.0, w: 0.0}
+    method: configured_demo
+    revision: demo-2026-09-11
+    notes: >-
+      Fixed top-down mount assumed for the demonstrator. Height taken from one
+      depth-plane fit on the bench, not from a calibration procedure. Replace
+      with a measured_calibration entry when one exists; do not edit this one.
+
+  # wisepack_workarea -> table (the Isaac workcell frame, mm).
+  #
+  # ASSUMPTION: the point directly under the camera sits 650 mm in front of the
+  # robot base along +X, on the table top, with the work-area axes parallel to
+  # the workcell axes. Chosen so that the operator ROI used on the bench
+  # (roughly x in [-230, -120] mm, y in [-200, 180] mm of the work area) lands
+  # 0.42-0.53 m in front of the base — inside both supported arms' reach and
+  # clear of the container, which the layout places to the robot's left.
+  - parent_frame: table
+    child_frame: wisepack_workarea
+    translation_mm: [650.0, 0.0, 0.0]
+    rotation: {x: 0.0, y: 0.0, z: 0.0, w: 1.0}
+    method: configured_demo
+    revision: demo-2026-09-11
+    notes: >-
+      Work-area origin placed in front of the robot by choice, not by
+      measurement. The robot base itself is the `table` frame origin (0, 0, 0)
+      and the table height is the selected robot layout's table_top_z_m; both
+      are stated in wisepack_core.isaac_transform.SceneLayout and are not
+      duplicated here.
+
+workarea:
+  #: The region of the work-area frame a synchronized object may occupy. An
+  #: observation outside it is REFUSED, never clamped: a transform error that
+  #: lands a tube a metre away must stop the run, not move the tube.
+  bounds_mm:
+    x: [-320.0, 320.0]
+    y: [-260.0, 260.0]
+  #: Where source objects rest: the table top, z = 0 of the work-area frame.
+  #: A cylinder's centre therefore sits one radius above it.
+  source_plane_z_mm: 0.0
+  #: How far a transformed object centre may sit below / above that plane
+  #: before the observation is refused. The lower bound catches a transform that
+  #: puts the object inside the table; the upper bound catches one that floats
+  #: it in the air. Neither snaps the pose — Isaac settles a small residual.
+  plane_tolerance_below_mm: 30.0
+  plane_tolerance_above_mm: 80.0
+
+camera:
+  sensor_id: d435
+  mount: fixed, above the work area, optical axis pointing down at the table
+  note: >-
+    The camera pose is the inverse of the first transform above. It is drawn in
+    the Isaac scene as a frame marker so a wrong assumption is visible.

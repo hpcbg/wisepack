@@ -285,11 +285,15 @@ import rclpy                                                         # noqa: E40
 
 from wisepack_core.generator import build_scenario                   # noqa: E402
 from wisepack_core.isaac_contract import (                           # noqa: E402
-    IsaacCommand, IsaacCommandType, IsaacState,
+    SCENE_SOURCE_GENERATED, IsaacCommand, IsaacCommandType, IsaacState,
+    SceneSpec,
 )
 from wisepack_core.isaac_transform import (                          # noqa: E402
-    dimensions_for, layout_for_robot, placement_pose, table_pose_for_index,
+    dimensions_for, layout_for_robot, placement_pose, pose_to_world,
+    source_pose_for, table_pose_for_index,
 )
+from wisepack_core.scene_sync import scene_items                     # noqa: E402
+from wisepack_core.workcell import load_workcell                     # noqa: E402
 
 from simulators.isaac.config import (                                # noqa: E402
     LOG_APP, LOG_ROBOT, AppConfig, MotionConfig, PhysicsConfig,
@@ -358,6 +362,21 @@ class WisepackIsaacApp:
         #: reset has happened; the startup build is revision-agnostic and is
         #: trusted by the orchestrator (see isaac_bridge.open_run).
         self._scene_revision = None
+        #: WHICH RUN that revision belongs to. Revisions restart per run, so a
+        #: stale-request check without the run id would compare numbers from
+        #: two different worlds.
+        self._scene_run_id = ""
+        #: THE SOURCE OBJECTS the current scene was built from. None for the
+        #: generated scenario; a `physical_observation` spec once a real
+        #: ObservationBatch has been synchronized in. Every pick against a
+        #: physical scene is checked against it, and the acknowledgement
+        #: reports its source, batch and transform provenance verbatim.
+        self.scene_spec: Optional[SceneSpec] = None
+        #: The configured demo frame chain, for the frame markers drawn in the
+        #: scene. Loaded for VISUALISATION only: the poses in a scene spec are
+        #: already expressed in the table frame by the orchestrator, and this
+        #: process never transforms an observation itself.
+        self.workcell = load_workcell()
         self.smoke_items = 0
         self._smoke_queue: list = []
         self._smoke_publisher = None
@@ -407,6 +426,10 @@ class WisepackIsaacApp:
         # that opens a second gets one, so a two-container run still renders.
         container_ids = [f"CNT-{n:02d}" for n in (1, 2)]
         self.scene.build(self.scenario, container_ids)
+        # WHERE THE CAMERA AND THE WORK AREA ARE ASSUMED TO BE, drawn so a wrong
+        # assumption is visible before a wrong pick is. Markers only: no
+        # collision, no physics.
+        self.scene.add_frame_markers(self.workcell)
 
         # THE ROBOT, through its adapter. Mounted ON the table top, which is the
         # datum every pose is measured against. Placed before physics starts, so
@@ -613,6 +636,27 @@ class WisepackIsaacApp:
             self._begin_run(command)
             return
 
+        if command.command in (IsaacCommandType.RESET_SCENE,
+                               IsaacCommandType.SYNC_SCENE):
+            # A STALE REQUEST NEVER REWRITES A NEWER SCENE. Same run, older
+            # revision — a latched replay, or a batch that was superseded while
+            # it was in flight — is refused with the reason, and the scene the
+            # newer revision built stays exactly as it is. Reported as a
+            # failure FOR THAT OLD REVISION, which the orchestrator ignores
+            # because it has already moved on; it is never applied to the
+            # current one.
+            stale = self._stale_scene_request(command)
+            if stale:
+                print(f"{LOG_APP} REFUSED {command.command.value}: {stale}")
+                self.bridge.publish(
+                    IsaacState.RESET_FAILED, command.run_id,
+                    scenario_revision=command.scenario_revision,
+                    message=f"stale scene request refused: {stale}",
+                    detail={"stale": True,
+                            "scene_revision": self._scene_revision,
+                            "scene_run_id": self._scene_run_id})
+                return
+
         if command.command is IsaacCommandType.RESET_SCENE:
             # Deliberately NOT run-gated: a reset is how a new run becomes
             # legitimate, so gating it on the previous run's id would make the
@@ -799,12 +843,20 @@ class WisepackIsaacApp:
         revision = command.scenario_revision
         preset = command.preset or self.config.preset
         seed = int(command.seed or self.config.seed)
+        spec = command.scene if (command.scene is not None
+                                 and command.scene.is_physical) else None
         self.bridge.publish(
             IsaacState.RESETTING, command.run_id,
             scenario_revision=revision,
-            message=f"rebuilding the scene for {preset} seed {seed} "
-                    f"(revision {revision})")
-        print(f"{LOG_APP} RESET_SCENE -> {preset} seed {seed} rev {revision}")
+            message=(f"rebuilding the scene from observation batch "
+                     f"{spec.observation_batch_id} ({len(spec.objects)} "
+                     f"object(s), {spec.transform_source} transform, revision "
+                     f"{revision})" if spec is not None else
+                     f"rebuilding the scene for {preset} seed {seed} "
+                     f"(revision {revision})"))
+        print(f"{LOG_APP} RESET_SCENE -> {preset} seed {seed} rev {revision}"
+              + (f" from PHYSICAL batch {spec.observation_batch_id}: "
+                 f"{spec.object_ids}" if spec is not None else " (generated)"))
 
         try:
             # 1. Stop the arm and drop anything it is holding. Order matters:
@@ -853,12 +905,22 @@ class WisepackIsaacApp:
             for _ in range(5):
                 simulation_app.update()
 
-            # 5. Rebuild the objects from the NEW preset and seed. This removes
-            #    every previous cylinder — including the ones lying in the
-            #    container — so the container is empty by construction.
+            # 5. Rebuild the objects. This removes every previous cylinder —
+            #    including the ones lying in the container — so the container
+            #    is empty by construction.
+            #
+            #    TWO SOURCES, ONE RULE: the previous source objects are REMOVED
+            #    and the requested ones are spawned. A physical spec replaces
+            #    the generated items wholesale — a real observation is never
+            #    appended beside the generated row. The container specification
+            #    still comes from the preset, which describes the packaging
+            #    target and which no camera observes.
             self.scenario = build_scenario(preset, seed=seed)
             self.config.preset, self.config.seed = preset, seed
-            self.scene.reset_items(self.scenario)
+            if spec is not None:
+                self.scenario.items = scene_items(spec)
+            self.scene_spec = spec
+            self.scene.reset_items(self.scenario, scene=spec)
 
             # 6. Start physics again. Prims created while stopped acquire their
             #    views here, which is why step 5 runs between stop and play.
@@ -891,18 +953,27 @@ class WisepackIsaacApp:
                 "containers": {k: v.to_dict()
                                for k, v in self.scene.containers.items()},
                 "scenario_id": self.scenario.scenario_id,
+                "scene_source": (spec.scene_source if spec is not None
+                                 else SCENE_SOURCE_GENERATED),
             }
             self._scene_revision = revision
+            self._scene_run_id = command.run_id
             self.bridge.publish(
                 IsaacState.SCENE_READY, command.run_id,
                 scenario_revision=revision,
                 scene=self._scene_acknowledgement(
                     command, verified_without_rebuild=False),
-                message=f"scene rebuilt for {self.scenario.scenario_id} "
-                        f"({len(self.scene.items)} items)",
+                message=(f"scene rebuilt from observation batch "
+                         f"{spec.observation_batch_id} ({len(self.scene.items)} "
+                         f"physical object(s), {spec.transform_source} "
+                         "transform)" if spec is not None else
+                         f"scene rebuilt for {self.scenario.scenario_id} "
+                         f"({len(self.scene.items)} items)"),
                 detail=summary)
             print(f"{LOG_APP} SCENE_READY revision {revision}: "
-                  f"{len(self.scene.items)} items, container empty")
+                  f"{len(self.scene.items)} items, container empty"
+                  + (f", source {spec.scene_source} batch "
+                     f"{spec.observation_batch_id}" if spec is not None else ""))
         except Exception as exc:                        # noqa: BLE001
             # Reported, never swallowed: the orchestrator HOLDS on RESET_FAILED
             # rather than running against a stale scene.
@@ -925,6 +996,7 @@ class WisepackIsaacApp:
         from wisepack_core.isaac_contract import SceneAcknowledgement  # noqa: PLC0415
         from wisepack_core.isaac_transform import scene_fingerprint    # noqa: PLC0415
 
+        spec = self.scene_spec
         return SceneAcknowledgement(
             run_id=command.run_id,
             scenario_id=self.scenario.scenario_id,
@@ -939,13 +1011,80 @@ class WisepackIsaacApp:
             robot_profile_revision=self.profile.revision,
             simulator_generation=SIMULATOR_GENERATION,
             scene_fingerprint=scene_fingerprint(self.scenario, self.layout,
-                                                self.profile.robot_id),
+                                                self.profile.robot_id,
+                                                scene=spec),
             object_ids=sorted(self.scene.items),
             object_count=len(self.scene.items),
             robot_home_verified=self._robot_is_home(),
             container_empty_verified=not [i for i in self.scene.items
                                           if self._is_in_container(i)],
-            verified_without_rebuild=verified_without_rebuild)
+            verified_without_rebuild=verified_without_rebuild,
+            # WHAT KIND OF SCENE, from what, through which transform. Copied
+            # from the spec the scene was BUILT from — not from the command
+            # being answered — so an acknowledgement can only describe the
+            # world that exists.
+            scene_source=(spec.scene_source if spec is not None
+                          else SCENE_SOURCE_GENERATED),
+            observation_batch_id=(spec.observation_batch_id
+                                  if spec is not None else ""),
+            transform_source=(spec.transform_source if spec is not None else ""),
+            object_poses=self._object_poses_read_back())
+
+    def _object_poses_read_back(self) -> dict:
+        """Every source body's pose as PhysX reports it, beside its command.
+
+        MEASURED, for the evidence trail: where the transformed observation
+        told the scene to put the tube, and where the settled body actually is.
+        A body that cannot be read is reported as such — that is the case
+        `_verify_scene_usable` refuses on, and the acknowledgement must not
+        paper over it.
+        """
+        poses = {}
+        for index, item in enumerate(self.scenario.items):
+            entry: dict = {}
+            try:
+                commanded, _ = pose_to_world(
+                    source_pose_for(self.scene_spec, index, item, self.layout),
+                    self.layout)
+                entry["commanded_position_m"] = [round(float(v), 4)
+                                                 for v in commanded]
+            except Exception as exc:                          # noqa: BLE001
+                entry["commanded_position_m"] = None
+                entry["error"] = str(exc)
+            read = self.scene.item_world_pose(item.item_id)
+            if read is None:
+                entry["position_m"] = None
+                entry["readable"] = False
+            else:
+                entry["position_m"] = [round(float(v), 4) for v in read[0]]
+                entry["quaternion_wxyz"] = [round(float(v), 6) for v in read[1]]
+                entry["readable"] = True
+                if entry.get("commanded_position_m"):
+                    entry["settle_offset_mm"] = round(float(sum(
+                        (a - b) ** 2 for a, b in zip(
+                            entry["position_m"], entry["commanded_position_m"])
+                    ) ** 0.5) * 1000.0, 1)
+            poses[item.item_id] = entry
+        return poses
+
+    def _stale_scene_request(self, command: IsaacCommand) -> str:
+        """Why a scene request must NOT be applied over the current scene, or "".
+
+        Same run, older revision than the one already built: stale. Checked on
+        the command's own correlation and, when it carries one, on its spec's.
+        A request for another run is a new world and is never called stale.
+        """
+        current = self._scene_revision
+        if current is None or not self._scene_run_id:
+            return ""
+        if command.run_id == self._scene_run_id \
+                and int(command.scenario_revision) < int(current):
+            return (f"revision {command.scenario_revision} of run "
+                    f"{command.run_id} is older than the scene already built "
+                    f"for revision {current}")
+        if command.scene is not None:
+            return command.scene.is_stale_against(self._scene_run_id, int(current))
+        return ""
 
     def _robot_is_home(self) -> bool:
         """MEASURED, not assumed: the adapter reads the joints and compares.
@@ -977,10 +1116,24 @@ class WisepackIsaacApp:
                     f"the run is waiting for generation "
                     f"{command.simulator_generation}")
         wanted = build_scenario(preset, seed=seed)
-        if scene_fingerprint(wanted, self.layout, self.profile.robot_id) \
+        requested = command.scene if (command.scene is not None
+                                      and command.scene.is_physical) else None
+        if requested is not None:
+            wanted.items = scene_items(requested)
+        if (requested is None) != (self.scene_spec is None):
+            return ("the built scene is "
+                    f"{'a physical-observation' if self.scene_spec else 'the generated'}"
+                    f" scene, but the run requested "
+                    f"{'a physical-observation' if requested else 'the generated'}"
+                    " one")
+        if scene_fingerprint(wanted, self.layout, self.profile.robot_id,
+                             scene=requested) \
                 != scene_fingerprint(self.scenario, self.layout,
-                                     self.profile.robot_id):
-            return "the built scene does not match the requested scenario"
+                                     self.profile.robot_id, scene=self.scene_spec):
+            return ("the built scene does not match the requested "
+                    + ("observation batch "
+                       f"{requested.observation_batch_id}" if requested
+                       else "scenario"))
         if len(self.scene.items) != len(wanted.items):
             return (f"{len(self.scene.items)} object(s) in the scene, "
                     f"{len(wanted.items)} in the scenario")
@@ -1017,6 +1170,7 @@ class WisepackIsaacApp:
             self._verify_scene_usable()
             self.bridge.gate.adopt(command.run_id)
             self._scene_revision = command.scenario_revision
+            self._scene_run_id = command.run_id
             acknowledgement = self._scene_acknowledgement(
                 command, verified_without_rebuild=True)
             self.bridge.publish(
@@ -1107,6 +1261,13 @@ class WisepackIsaacApp:
                     f"{self._scene_revision}")
         if not self.scene.has_item(item):
             return f"{item} does not exist in the current scene"
+        if self.scene_spec is not None and self.scene_spec.object(item) is None:
+            # A PHYSICAL SCENE PICKS OBSERVED OBJECTS ONLY. A body that exists
+            # but was not part of the synchronized batch has no observed pose,
+            # and a command for it can only have been built from something
+            # other than the observation.
+            return (f"{item} is not among the objects synchronized from "
+                    f"observation batch {self.scene_spec.observation_batch_id}")
         if self.sequence.holding:
             return (f"a grasp joint for {self.sequence.holding} is still "
                     "attached — the previous item was never released")

@@ -1,0 +1,2473 @@
+{
+  "device": {
+    "name": "RealSense D435",
+    "serial_number": "317222072788",
+    "firmware_version": "5.17.0.10",
+    "product_line": "D400",
+    "usb_type_descriptor": "3.2",
+    "sensors": [
+      {
+        "name": "Stereo Module",
+        "streams": [
+          {
+            "stream": "Depth",
+            "width": 1280,
+            "height": 720,
+            "format": "format.z16",
+            "fps": 30
+          },
+          {
+            "stream": "Depth",
+            "width": 1280,
+            "height": 720,
+            "format": "format.z16",
+            "fps": 15
+          },
+          {
+            "stream": "Depth",
+            "width": 1280,
+            "height": 720,
+            "format": "format.z16",
+            "fps": 6
+          },
+          {
+            "stream": "Depth",
+            "width": 848,
+            "height": 100,
+            "format": "format.z16",
+            "fps": 300
+          },
+          {
+            "stream": "Depth",
+            "width": 848,
+            "height": 100,
+            "format": "format.z16",
+            "fps": 100
+          },
+          {
+            "stream": "Depth",
+            "width": 848,
+            "height": 480,
+            "format": "format.z16",
+            "fps": 90
+          },
+          {
+            "stream": "Depth",
+            "width": 848,
+            "height": 480,
+            "format": "format.z16",
+            "fps": 60
+          },
+          {
+            "stream": "Depth",
+            "width": 848,
+            "height": 480,
+            "format": "format.z16",
+            "fps": 30
+          },
+          {
+            "stream": "Depth",
+            "width": 848,
+            "height": 480,
+            "format": "format.z16",
+            "fps": 15
+          },
+          {
+            "stream": "Depth",
+            "width": 848,
+            "height": 480,
+            "format": "format.z16",
+            "fps": 6
+          },
+          {
+            "stream": "Depth",
+            "width": 640,
+            "height": 480,
+            "format": "format.z16",
+            "fps": 90
+          },
+          {
+            "stream": "Depth",
+            "width": 640,
+            "height": 360,
+            "format": "format.z16",
+            "fps": 90
+          },
+          {
+            "stream": "Depth",
+            "width": 640,
+            "height": 480,
+            "format": "format.z16",
+            "fps": 60
+          },
+          {
+            "stream": "Depth",
+            "width": 640,
+            "height": 360,
+            "format": "format.z16",
+            "fps": 60
+          },
+          {
+            "stream": "Depth",
+            "width": 640,
+            "height": 480,
+            "format": "format.z16",
+            "fps": 30
+          },
+          {
+            "stream": "Depth",
+            "width": 640,
+            "height": 360,
+            "format": "format.z16",
+            "fps": 30
+          },
+          {
+            "stream": "Depth",
+            "width": 640,
+            "height": 480,
+            "format": "format.z16",
+            "fps": 15
+          },
+          {
+            "stream": "Depth",
+            "width": 640,
+            "height": 360,
+            "format": "format.z16",
+            "fps": 15
+          },
+          {
+            "stream": "Depth",
+            "width": 640,
+            "height": 480,
+            "format": "format.z16",
+            "fps": 6
+          },
+          {
+            "stream": "Depth",
+            "width": 640,
+            "height": 360,
+            "format": "format.z16",
+            "fps": 6
+          },
+          {
+            "stream": "Depth",
+            "width": 480,
+            "height": 270,
+            "format": "format.z16",
+            "fps": 90
+          },
+          {
+            "stream": "Depth",
+            "width": 480,
+            "height": 270,
+            "format": "format.z16",
+            "fps": 60
+          },
+          {
+            "stream": "Depth",
+            "width": 480,
+            "height": 270,
+            "format": "format.z16",
+            "fps": 30
+          },
+          {
+            "stream": "Depth",
+            "width": 480,
+            "height": 270,
+            "format": "format.z16",
+            "fps": 15
+          },
+          {
+            "stream": "Depth",
+            "width": 480,
+            "height": 270,
+            "format": "format.z16",
+            "fps": 6
+          },
+          {
+            "stream": "Depth",
+            "width": 424,
+            "height": 240,
+            "format": "format.z16",
+            "fps": 90
+          },
+          {
+            "stream": "Depth",
+            "width": 424,
+            "height": 240,
+            "format": "format.z16",
+            "fps": 60
+          },
+          {
+            "stream": "Depth",
+            "width": 424,
+            "height": 240,
+            "format": "format.z16",
+            "fps": 30
+          },
+          {
+            "stream": "Depth",
+            "width": 424,
+            "height": 240,
+            "format": "format.z16",
+            "fps": 15
+          },
+          {
+            "stream": "Depth",
+            "width": 424,
+            "height": 240,
+            "format": "format.z16",
+            "fps": 6
+          },
+          {
+            "stream": "Depth",
+            "width": 256,
+            "height": 144,
+            "format": "format.z16",
+            "fps": 300
+          },
+          {
+            "stream": "Depth",
+            "width": 256,
+            "height": 144,
+            "format": "format.z16",
+            "fps": 90
+          },
+          {
+            "stream": "Infrared 1",
+            "width": 1280,
+            "height": 800,
+            "format": "format.y8",
+            "fps": 30
+          },
+          {
+            "stream": "Infrared 1",
+            "width": 1280,
+            "height": 720,
+            "format": "format.y8",
+            "fps": 30
+          },
+          {
+            "stream": "Infrared 1",
+            "width": 1280,
+            "height": 800,
+            "format": "format.y16",
+            "fps": 25
+          },
+          {
+            "stream": "Infrared 1",
+            "width": 1280,
+            "height": 800,
+            "format": "format.y16",
+            "fps": 15
+          },
+          {
+            "stream": "Infrared 1",
+            "width": 1280,
+            "height": 800,
+            "format": "format.y8",
+            "fps": 15
+          },
+          {
+            "stream": "Infrared 1",
+            "width": 1280,
+            "height": 720,
+            "format": "format.y8",
+            "fps": 15
+          },
+          {
+            "stream": "Infrared 1",
+            "width": 1280,
+            "height": 720,
+            "format": "format.y8",
+            "fps": 6
+          },
+          {
+            "stream": "Infrared 1",
+            "width": 848,
+            "height": 100,
+            "format": "format.y8",
+            "fps": 300
+          },
+          {
+            "stream": "Infrared 1",
+            "width": 848,
+            "height": 100,
+            "format": "format.y8",
+            "fps": 100
+          },
+          {
+            "stream": "Infrared 1",
+            "width": 848,
+            "height": 480,
+            "format": "format.y8",
+            "fps": 90
+          },
+          {
+            "stream": "Infrared 1",
+            "width": 848,
+            "height": 480,
+            "format": "format.y8",
+            "fps": 60
+          },
+          {
+            "stream": "Infrared 1",
+            "width": 848,
+            "height": 480,
+            "format": "format.y8",
+            "fps": 30
+          },
+          {
+            "stream": "Infrared 1",
+            "width": 848,
+            "height": 480,
+            "format": "format.y8",
+            "fps": 15
+          },
+          {
+            "stream": "Infrared 1",
+            "width": 848,
+            "height": 480,
+            "format": "format.y8",
+            "fps": 6
+          },
+          {
+            "stream": "Infrared 1",
+            "width": 640,
+            "height": 480,
+            "format": "format.y8",
+            "fps": 90
+          },
+          {
+            "stream": "Infrared 1",
+            "width": 640,
+            "height": 360,
+            "format": "format.y8",
+            "fps": 90
+          },
+          {
+            "stream": "Infrared 1",
+            "width": 640,
+            "height": 480,
+            "format": "format.y8",
+            "fps": 60
+          },
+          {
+            "stream": "Infrared 1",
+            "width": 640,
+            "height": 360,
+            "format": "format.y8",
+            "fps": 60
+          },
+          {
+            "stream": "Infrared 1",
+            "width": 640,
+            "height": 480,
+            "format": "format.y8",
+            "fps": 30
+          },
+          {
+            "stream": "Infrared 1",
+            "width": 640,
+            "height": 360,
+            "format": "format.y8",
+            "fps": 30
+          },
+          {
+            "stream": "Infrared 1",
+            "width": 640,
+            "height": 400,
+            "format": "format.y16",
+            "fps": 25
+          },
+          {
+            "stream": "Infrared 1",
+            "width": 640,
+            "height": 480,
+            "format": "format.y8",
+            "fps": 15
+          },
+          {
+            "stream": "Infrared 1",
+            "width": 640,
+            "height": 400,
+            "format": "format.y16",
+            "fps": 15
+          },
+          {
+            "stream": "Infrared 1",
+            "width": 640,
+            "height": 360,
+            "format": "format.y8",
+            "fps": 15
+          },
+          {
+            "stream": "Infrared 1",
+            "width": 640,
+            "height": 480,
+            "format": "format.y8",
+            "fps": 6
+          },
+          {
+            "stream": "Infrared 1",
+            "width": 640,
+            "height": 360,
+            "format": "format.y8",
+            "fps": 6
+          },
+          {
+            "stream": "Infrared 1",
+            "width": 480,
+            "height": 270,
+            "format": "format.y8",
+            "fps": 90
+          },
+          {
+            "stream": "Infrared 1",
+            "width": 480,
+            "height": 270,
+            "format": "format.y8",
+            "fps": 60
+          },
+          {
+            "stream": "Infrared 1",
+            "width": 480,
+            "height": 270,
+            "format": "format.y8",
+            "fps": 30
+          },
+          {
+            "stream": "Infrared 1",
+            "width": 480,
+            "height": 270,
+            "format": "format.y8",
+            "fps": 15
+          },
+          {
+            "stream": "Infrared 1",
+            "width": 480,
+            "height": 270,
+            "format": "format.y8",
+            "fps": 6
+          },
+          {
+            "stream": "Infrared 1",
+            "width": 424,
+            "height": 240,
+            "format": "format.y8",
+            "fps": 90
+          },
+          {
+            "stream": "Infrared 1",
+            "width": 424,
+            "height": 240,
+            "format": "format.y8",
+            "fps": 60
+          },
+          {
+            "stream": "Infrared 1",
+            "width": 424,
+            "height": 240,
+            "format": "format.y8",
+            "fps": 30
+          },
+          {
+            "stream": "Infrared 1",
+            "width": 424,
+            "height": 240,
+            "format": "format.y8",
+            "fps": 15
+          },
+          {
+            "stream": "Infrared 1",
+            "width": 424,
+            "height": 240,
+            "format": "format.y8",
+            "fps": 6
+          },
+          {
+            "stream": "Infrared 2",
+            "width": 1280,
+            "height": 800,
+            "format": "format.y8",
+            "fps": 30
+          },
+          {
+            "stream": "Infrared 2",
+            "width": 1280,
+            "height": 720,
+            "format": "format.y8",
+            "fps": 30
+          },
+          {
+            "stream": "Infrared 2",
+            "width": 1280,
+            "height": 800,
+            "format": "format.y16",
+            "fps": 25
+          },
+          {
+            "stream": "Infrared 2",
+            "width": 1280,
+            "height": 800,
+            "format": "format.y16",
+            "fps": 15
+          },
+          {
+            "stream": "Infrared 2",
+            "width": 1280,
+            "height": 800,
+            "format": "format.y8",
+            "fps": 15
+          },
+          {
+            "stream": "Infrared 2",
+            "width": 1280,
+            "height": 720,
+            "format": "format.y8",
+            "fps": 15
+          },
+          {
+            "stream": "Infrared 2",
+            "width": 1280,
+            "height": 720,
+            "format": "format.y8",
+            "fps": 6
+          },
+          {
+            "stream": "Infrared 2",
+            "width": 848,
+            "height": 100,
+            "format": "format.y8",
+            "fps": 300
+          },
+          {
+            "stream": "Infrared 2",
+            "width": 848,
+            "height": 100,
+            "format": "format.y8",
+            "fps": 100
+          },
+          {
+            "stream": "Infrared 2",
+            "width": 848,
+            "height": 480,
+            "format": "format.y8",
+            "fps": 90
+          },
+          {
+            "stream": "Infrared 2",
+            "width": 848,
+            "height": 480,
+            "format": "format.y8",
+            "fps": 60
+          },
+          {
+            "stream": "Infrared 2",
+            "width": 848,
+            "height": 480,
+            "format": "format.y8",
+            "fps": 30
+          },
+          {
+            "stream": "Infrared 2",
+            "width": 848,
+            "height": 480,
+            "format": "format.y8",
+            "fps": 15
+          },
+          {
+            "stream": "Infrared 2",
+            "width": 848,
+            "height": 480,
+            "format": "format.y8",
+            "fps": 6
+          },
+          {
+            "stream": "Infrared 2",
+            "width": 640,
+            "height": 480,
+            "format": "format.y8",
+            "fps": 90
+          },
+          {
+            "stream": "Infrared 2",
+            "width": 640,
+            "height": 360,
+            "format": "format.y8",
+            "fps": 90
+          },
+          {
+            "stream": "Infrared 2",
+            "width": 640,
+            "height": 480,
+            "format": "format.y8",
+            "fps": 60
+          },
+          {
+            "stream": "Infrared 2",
+            "width": 640,
+            "height": 360,
+            "format": "format.y8",
+            "fps": 60
+          },
+          {
+            "stream": "Infrared 2",
+            "width": 640,
+            "height": 480,
+            "format": "format.y8",
+            "fps": 30
+          },
+          {
+            "stream": "Infrared 2",
+            "width": 640,
+            "height": 360,
+            "format": "format.y8",
+            "fps": 30
+          },
+          {
+            "stream": "Infrared 2",
+            "width": 640,
+            "height": 400,
+            "format": "format.y16",
+            "fps": 25
+          },
+          {
+            "stream": "Infrared 2",
+            "width": 640,
+            "height": 480,
+            "format": "format.y8",
+            "fps": 15
+          },
+          {
+            "stream": "Infrared 2",
+            "width": 640,
+            "height": 400,
+            "format": "format.y16",
+            "fps": 15
+          },
+          {
+            "stream": "Infrared 2",
+            "width": 640,
+            "height": 360,
+            "format": "format.y8",
+            "fps": 15
+          },
+          {
+            "stream": "Infrared 2",
+            "width": 640,
+            "height": 480,
+            "format": "format.y8",
+            "fps": 6
+          },
+          {
+            "stream": "Infrared 2",
+            "width": 640,
+            "height": 360,
+            "format": "format.y8",
+            "fps": 6
+          },
+          {
+            "stream": "Infrared 2",
+            "width": 480,
+            "height": 270,
+            "format": "format.y8",
+            "fps": 90
+          },
+          {
+            "stream": "Infrared 2",
+            "width": 480,
+            "height": 270,
+            "format": "format.y8",
+            "fps": 60
+          },
+          {
+            "stream": "Infrared 2",
+            "width": 480,
+            "height": 270,
+            "format": "format.y8",
+            "fps": 30
+          },
+          {
+            "stream": "Infrared 2",
+            "width": 480,
+            "height": 270,
+            "format": "format.y8",
+            "fps": 15
+          },
+          {
+            "stream": "Infrared 2",
+            "width": 480,
+            "height": 270,
+            "format": "format.y8",
+            "fps": 6
+          },
+          {
+            "stream": "Infrared 2",
+            "width": 424,
+            "height": 240,
+            "format": "format.y8",
+            "fps": 90
+          },
+          {
+            "stream": "Infrared 2",
+            "width": 424,
+            "height": 240,
+            "format": "format.y8",
+            "fps": 60
+          },
+          {
+            "stream": "Infrared 2",
+            "width": 424,
+            "height": 240,
+            "format": "format.y8",
+            "fps": 30
+          },
+          {
+            "stream": "Infrared 2",
+            "width": 424,
+            "height": 240,
+            "format": "format.y8",
+            "fps": 15
+          },
+          {
+            "stream": "Infrared 2",
+            "width": 424,
+            "height": 240,
+            "format": "format.y8",
+            "fps": 6
+          }
+        ]
+      },
+      {
+        "name": "RGB Camera",
+        "streams": [
+          {
+            "stream": "Color",
+            "width": 1920,
+            "height": 1080,
+            "format": "format.rgb8",
+            "fps": 30
+          },
+          {
+            "stream": "Color",
+            "width": 1920,
+            "height": 1080,
+            "format": "format.bgra8",
+            "fps": 30
+          },
+          {
+            "stream": "Color",
+            "width": 1920,
+            "height": 1080,
+            "format": "format.rgba8",
+            "fps": 30
+          },
+          {
+            "stream": "Color",
+            "width": 1920,
+            "height": 1080,
+            "format": "format.bgr8",
+            "fps": 30
+          },
+          {
+            "stream": "Color",
+            "width": 1920,
+            "height": 1080,
+            "format": "format.yuyv",
+            "fps": 30
+          },
+          {
+            "stream": "Color",
+            "width": 1920,
+            "height": 1080,
+            "format": "format.rgb8",
+            "fps": 15
+          },
+          {
+            "stream": "Color",
+            "width": 1920,
+            "height": 1080,
+            "format": "format.bgra8",
+            "fps": 15
+          },
+          {
+            "stream": "Color",
+            "width": 1920,
+            "height": 1080,
+            "format": "format.rgba8",
+            "fps": 15
+          },
+          {
+            "stream": "Color",
+            "width": 1920,
+            "height": 1080,
+            "format": "format.bgr8",
+            "fps": 15
+          },
+          {
+            "stream": "Color",
+            "width": 1920,
+            "height": 1080,
+            "format": "format.yuyv",
+            "fps": 15
+          },
+          {
+            "stream": "Color",
+            "width": 1920,
+            "height": 1080,
+            "format": "format.rgb8",
+            "fps": 6
+          },
+          {
+            "stream": "Color",
+            "width": 1920,
+            "height": 1080,
+            "format": "format.bgra8",
+            "fps": 6
+          },
+          {
+            "stream": "Color",
+            "width": 1920,
+            "height": 1080,
+            "format": "format.rgba8",
+            "fps": 6
+          },
+          {
+            "stream": "Color",
+            "width": 1920,
+            "height": 1080,
+            "format": "format.bgr8",
+            "fps": 6
+          },
+          {
+            "stream": "Color",
+            "width": 1920,
+            "height": 1080,
+            "format": "format.yuyv",
+            "fps": 6
+          },
+          {
+            "stream": "Color",
+            "width": 1280,
+            "height": 720,
+            "format": "format.rgb8",
+            "fps": 30
+          },
+          {
+            "stream": "Color",
+            "width": 1280,
+            "height": 720,
+            "format": "format.bgra8",
+            "fps": 30
+          },
+          {
+            "stream": "Color",
+            "width": 1280,
+            "height": 720,
+            "format": "format.rgba8",
+            "fps": 30
+          },
+          {
+            "stream": "Color",
+            "width": 1280,
+            "height": 720,
+            "format": "format.bgr8",
+            "fps": 30
+          },
+          {
+            "stream": "Color",
+            "width": 1280,
+            "height": 720,
+            "format": "format.yuyv",
+            "fps": 30
+          },
+          {
+            "stream": "Color",
+            "width": 1280,
+            "height": 720,
+            "format": "format.rgb8",
+            "fps": 15
+          },
+          {
+            "stream": "Color",
+            "width": 1280,
+            "height": 720,
+            "format": "format.bgra8",
+            "fps": 15
+          },
+          {
+            "stream": "Color",
+            "width": 1280,
+            "height": 720,
+            "format": "format.rgba8",
+            "fps": 15
+          },
+          {
+            "stream": "Color",
+            "width": 1280,
+            "height": 720,
+            "format": "format.bgr8",
+            "fps": 15
+          },
+          {
+            "stream": "Color",
+            "width": 1280,
+            "height": 720,
+            "format": "format.yuyv",
+            "fps": 15
+          },
+          {
+            "stream": "Color",
+            "width": 1280,
+            "height": 720,
+            "format": "format.rgb8",
+            "fps": 6
+          },
+          {
+            "stream": "Color",
+            "width": 1280,
+            "height": 720,
+            "format": "format.bgra8",
+            "fps": 6
+          },
+          {
+            "stream": "Color",
+            "width": 1280,
+            "height": 720,
+            "format": "format.rgba8",
+            "fps": 6
+          },
+          {
+            "stream": "Color",
+            "width": 1280,
+            "height": 720,
+            "format": "format.bgr8",
+            "fps": 6
+          },
+          {
+            "stream": "Color",
+            "width": 1280,
+            "height": 720,
+            "format": "format.yuyv",
+            "fps": 6
+          },
+          {
+            "stream": "Color",
+            "width": 960,
+            "height": 540,
+            "format": "format.rgb8",
+            "fps": 60
+          },
+          {
+            "stream": "Color",
+            "width": 960,
+            "height": 540,
+            "format": "format.bgra8",
+            "fps": 60
+          },
+          {
+            "stream": "Color",
+            "width": 960,
+            "height": 540,
+            "format": "format.rgba8",
+            "fps": 60
+          },
+          {
+            "stream": "Color",
+            "width": 960,
+            "height": 540,
+            "format": "format.bgr8",
+            "fps": 60
+          },
+          {
+            "stream": "Color",
+            "width": 960,
+            "height": 540,
+            "format": "format.yuyv",
+            "fps": 60
+          },
+          {
+            "stream": "Color",
+            "width": 960,
+            "height": 540,
+            "format": "format.rgb8",
+            "fps": 30
+          },
+          {
+            "stream": "Color",
+            "width": 960,
+            "height": 540,
+            "format": "format.bgra8",
+            "fps": 30
+          },
+          {
+            "stream": "Color",
+            "width": 960,
+            "height": 540,
+            "format": "format.rgba8",
+            "fps": 30
+          },
+          {
+            "stream": "Color",
+            "width": 960,
+            "height": 540,
+            "format": "format.bgr8",
+            "fps": 30
+          },
+          {
+            "stream": "Color",
+            "width": 960,
+            "height": 540,
+            "format": "format.yuyv",
+            "fps": 30
+          },
+          {
+            "stream": "Color",
+            "width": 960,
+            "height": 540,
+            "format": "format.rgb8",
+            "fps": 15
+          },
+          {
+            "stream": "Color",
+            "width": 960,
+            "height": 540,
+            "format": "format.bgra8",
+            "fps": 15
+          },
+          {
+            "stream": "Color",
+            "width": 960,
+            "height": 540,
+            "format": "format.rgba8",
+            "fps": 15
+          },
+          {
+            "stream": "Color",
+            "width": 960,
+            "height": 540,
+            "format": "format.bgr8",
+            "fps": 15
+          },
+          {
+            "stream": "Color",
+            "width": 960,
+            "height": 540,
+            "format": "format.yuyv",
+            "fps": 15
+          },
+          {
+            "stream": "Color",
+            "width": 960,
+            "height": 540,
+            "format": "format.rgb8",
+            "fps": 6
+          },
+          {
+            "stream": "Color",
+            "width": 960,
+            "height": 540,
+            "format": "format.bgra8",
+            "fps": 6
+          },
+          {
+            "stream": "Color",
+            "width": 960,
+            "height": 540,
+            "format": "format.rgba8",
+            "fps": 6
+          },
+          {
+            "stream": "Color",
+            "width": 960,
+            "height": 540,
+            "format": "format.bgr8",
+            "fps": 6
+          },
+          {
+            "stream": "Color",
+            "width": 960,
+            "height": 540,
+            "format": "format.yuyv",
+            "fps": 6
+          },
+          {
+            "stream": "Color",
+            "width": 848,
+            "height": 480,
+            "format": "format.rgb8",
+            "fps": 60
+          },
+          {
+            "stream": "Color",
+            "width": 848,
+            "height": 480,
+            "format": "format.bgra8",
+            "fps": 60
+          },
+          {
+            "stream": "Color",
+            "width": 848,
+            "height": 480,
+            "format": "format.rgba8",
+            "fps": 60
+          },
+          {
+            "stream": "Color",
+            "width": 848,
+            "height": 480,
+            "format": "format.bgr8",
+            "fps": 60
+          },
+          {
+            "stream": "Color",
+            "width": 848,
+            "height": 480,
+            "format": "format.yuyv",
+            "fps": 60
+          },
+          {
+            "stream": "Color",
+            "width": 848,
+            "height": 480,
+            "format": "format.rgb8",
+            "fps": 30
+          },
+          {
+            "stream": "Color",
+            "width": 848,
+            "height": 480,
+            "format": "format.bgra8",
+            "fps": 30
+          },
+          {
+            "stream": "Color",
+            "width": 848,
+            "height": 480,
+            "format": "format.rgba8",
+            "fps": 30
+          },
+          {
+            "stream": "Color",
+            "width": 848,
+            "height": 480,
+            "format": "format.bgr8",
+            "fps": 30
+          },
+          {
+            "stream": "Color",
+            "width": 848,
+            "height": 480,
+            "format": "format.yuyv",
+            "fps": 30
+          },
+          {
+            "stream": "Color",
+            "width": 848,
+            "height": 480,
+            "format": "format.rgb8",
+            "fps": 15
+          },
+          {
+            "stream": "Color",
+            "width": 848,
+            "height": 480,
+            "format": "format.bgra8",
+            "fps": 15
+          },
+          {
+            "stream": "Color",
+            "width": 848,
+            "height": 480,
+            "format": "format.rgba8",
+            "fps": 15
+          },
+          {
+            "stream": "Color",
+            "width": 848,
+            "height": 480,
+            "format": "format.bgr8",
+            "fps": 15
+          },
+          {
+            "stream": "Color",
+            "width": 848,
+            "height": 480,
+            "format": "format.yuyv",
+            "fps": 15
+          },
+          {
+            "stream": "Color",
+            "width": 848,
+            "height": 480,
+            "format": "format.rgb8",
+            "fps": 6
+          },
+          {
+            "stream": "Color",
+            "width": 848,
+            "height": 480,
+            "format": "format.bgra8",
+            "fps": 6
+          },
+          {
+            "stream": "Color",
+            "width": 848,
+            "height": 480,
+            "format": "format.rgba8",
+            "fps": 6
+          },
+          {
+            "stream": "Color",
+            "width": 848,
+            "height": 480,
+            "format": "format.bgr8",
+            "fps": 6
+          },
+          {
+            "stream": "Color",
+            "width": 848,
+            "height": 480,
+            "format": "format.yuyv",
+            "fps": 6
+          },
+          {
+            "stream": "Color",
+            "width": 640,
+            "height": 480,
+            "format": "format.rgb8",
+            "fps": 60
+          },
+          {
+            "stream": "Color",
+            "width": 640,
+            "height": 480,
+            "format": "format.bgra8",
+            "fps": 60
+          },
+          {
+            "stream": "Color",
+            "width": 640,
+            "height": 480,
+            "format": "format.rgba8",
+            "fps": 60
+          },
+          {
+            "stream": "Color",
+            "width": 640,
+            "height": 480,
+            "format": "format.bgr8",
+            "fps": 60
+          },
+          {
+            "stream": "Color",
+            "width": 640,
+            "height": 480,
+            "format": "format.yuyv",
+            "fps": 60
+          },
+          {
+            "stream": "Color",
+            "width": 640,
+            "height": 360,
+            "format": "format.rgb8",
+            "fps": 60
+          },
+          {
+            "stream": "Color",
+            "width": 640,
+            "height": 360,
+            "format": "format.bgra8",
+            "fps": 60
+          },
+          {
+            "stream": "Color",
+            "width": 640,
+            "height": 360,
+            "format": "format.rgba8",
+            "fps": 60
+          },
+          {
+            "stream": "Color",
+            "width": 640,
+            "height": 360,
+            "format": "format.bgr8",
+            "fps": 60
+          },
+          {
+            "stream": "Color",
+            "width": 640,
+            "height": 360,
+            "format": "format.yuyv",
+            "fps": 60
+          },
+          {
+            "stream": "Color",
+            "width": 640,
+            "height": 480,
+            "format": "format.rgb8",
+            "fps": 30
+          },
+          {
+            "stream": "Color",
+            "width": 640,
+            "height": 480,
+            "format": "format.bgra8",
+            "fps": 30
+          },
+          {
+            "stream": "Color",
+            "width": 640,
+            "height": 480,
+            "format": "format.rgba8",
+            "fps": 30
+          },
+          {
+            "stream": "Color",
+            "width": 640,
+            "height": 480,
+            "format": "format.bgr8",
+            "fps": 30
+          },
+          {
+            "stream": "Color",
+            "width": 640,
+            "height": 480,
+            "format": "format.yuyv",
+            "fps": 30
+          },
+          {
+            "stream": "Color",
+            "width": 640,
+            "height": 360,
+            "format": "format.rgb8",
+            "fps": 30
+          },
+          {
+            "stream": "Color",
+            "width": 640,
+            "height": 360,
+            "format": "format.bgra8",
+            "fps": 30
+          },
+          {
+            "stream": "Color",
+            "width": 640,
+            "height": 360,
+            "format": "format.rgba8",
+            "fps": 30
+          },
+          {
+            "stream": "Color",
+            "width": 640,
+            "height": 360,
+            "format": "format.bgr8",
+            "fps": 30
+          },
+          {
+            "stream": "Color",
+            "width": 640,
+            "height": 360,
+            "format": "format.yuyv",
+            "fps": 30
+          },
+          {
+            "stream": "Color",
+            "width": 640,
+            "height": 480,
+            "format": "format.rgb8",
+            "fps": 15
+          },
+          {
+            "stream": "Color",
+            "width": 640,
+            "height": 480,
+            "format": "format.bgra8",
+            "fps": 15
+          },
+          {
+            "stream": "Color",
+            "width": 640,
+            "height": 480,
+            "format": "format.rgba8",
+            "fps": 15
+          },
+          {
+            "stream": "Color",
+            "width": 640,
+            "height": 480,
+            "format": "format.bgr8",
+            "fps": 15
+          },
+          {
+            "stream": "Color",
+            "width": 640,
+            "height": 480,
+            "format": "format.yuyv",
+            "fps": 15
+          },
+          {
+            "stream": "Color",
+            "width": 640,
+            "height": 360,
+            "format": "format.rgb8",
+            "fps": 15
+          },
+          {
+            "stream": "Color",
+            "width": 640,
+            "height": 360,
+            "format": "format.bgra8",
+            "fps": 15
+          },
+          {
+            "stream": "Color",
+            "width": 640,
+            "height": 360,
+            "format": "format.rgba8",
+            "fps": 15
+          },
+          {
+            "stream": "Color",
+            "width": 640,
+            "height": 360,
+            "format": "format.bgr8",
+            "fps": 15
+          },
+          {
+            "stream": "Color",
+            "width": 640,
+            "height": 360,
+            "format": "format.yuyv",
+            "fps": 15
+          },
+          {
+            "stream": "Color",
+            "width": 640,
+            "height": 480,
+            "format": "format.rgb8",
+            "fps": 6
+          },
+          {
+            "stream": "Color",
+            "width": 640,
+            "height": 480,
+            "format": "format.bgra8",
+            "fps": 6
+          },
+          {
+            "stream": "Color",
+            "width": 640,
+            "height": 480,
+            "format": "format.rgba8",
+            "fps": 6
+          },
+          {
+            "stream": "Color",
+            "width": 640,
+            "height": 480,
+            "format": "format.bgr8",
+            "fps": 6
+          },
+          {
+            "stream": "Color",
+            "width": 640,
+            "height": 480,
+            "format": "format.yuyv",
+            "fps": 6
+          },
+          {
+            "stream": "Color",
+            "width": 640,
+            "height": 360,
+            "format": "format.rgb8",
+            "fps": 6
+          },
+          {
+            "stream": "Color",
+            "width": 640,
+            "height": 360,
+            "format": "format.bgra8",
+            "fps": 6
+          },
+          {
+            "stream": "Color",
+            "width": 640,
+            "height": 360,
+            "format": "format.rgba8",
+            "fps": 6
+          },
+          {
+            "stream": "Color",
+            "width": 640,
+            "height": 360,
+            "format": "format.bgr8",
+            "fps": 6
+          },
+          {
+            "stream": "Color",
+            "width": 640,
+            "height": 360,
+            "format": "format.yuyv",
+            "fps": 6
+          },
+          {
+            "stream": "Color",
+            "width": 424,
+            "height": 240,
+            "format": "format.rgb8",
+            "fps": 60
+          },
+          {
+            "stream": "Color",
+            "width": 424,
+            "height": 240,
+            "format": "format.bgra8",
+            "fps": 60
+          },
+          {
+            "stream": "Color",
+            "width": 424,
+            "height": 240,
+            "format": "format.rgba8",
+            "fps": 60
+          },
+          {
+            "stream": "Color",
+            "width": 424,
+            "height": 240,
+            "format": "format.bgr8",
+            "fps": 60
+          },
+          {
+            "stream": "Color",
+            "width": 424,
+            "height": 240,
+            "format": "format.yuyv",
+            "fps": 60
+          },
+          {
+            "stream": "Color",
+            "width": 424,
+            "height": 240,
+            "format": "format.rgb8",
+            "fps": 30
+          },
+          {
+            "stream": "Color",
+            "width": 424,
+            "height": 240,
+            "format": "format.bgra8",
+            "fps": 30
+          },
+          {
+            "stream": "Color",
+            "width": 424,
+            "height": 240,
+            "format": "format.rgba8",
+            "fps": 30
+          },
+          {
+            "stream": "Color",
+            "width": 424,
+            "height": 240,
+            "format": "format.bgr8",
+            "fps": 30
+          },
+          {
+            "stream": "Color",
+            "width": 424,
+            "height": 240,
+            "format": "format.yuyv",
+            "fps": 30
+          },
+          {
+            "stream": "Color",
+            "width": 424,
+            "height": 240,
+            "format": "format.rgb8",
+            "fps": 15
+          },
+          {
+            "stream": "Color",
+            "width": 424,
+            "height": 240,
+            "format": "format.bgra8",
+            "fps": 15
+          },
+          {
+            "stream": "Color",
+            "width": 424,
+            "height": 240,
+            "format": "format.rgba8",
+            "fps": 15
+          },
+          {
+            "stream": "Color",
+            "width": 424,
+            "height": 240,
+            "format": "format.bgr8",
+            "fps": 15
+          },
+          {
+            "stream": "Color",
+            "width": 424,
+            "height": 240,
+            "format": "format.yuyv",
+            "fps": 15
+          },
+          {
+            "stream": "Color",
+            "width": 424,
+            "height": 240,
+            "format": "format.rgb8",
+            "fps": 6
+          },
+          {
+            "stream": "Color",
+            "width": 424,
+            "height": 240,
+            "format": "format.bgra8",
+            "fps": 6
+          },
+          {
+            "stream": "Color",
+            "width": 424,
+            "height": 240,
+            "format": "format.rgba8",
+            "fps": 6
+          },
+          {
+            "stream": "Color",
+            "width": 424,
+            "height": 240,
+            "format": "format.bgr8",
+            "fps": 6
+          },
+          {
+            "stream": "Color",
+            "width": 424,
+            "height": 240,
+            "format": "format.yuyv",
+            "fps": 6
+          },
+          {
+            "stream": "Color",
+            "width": 320,
+            "height": 240,
+            "format": "format.rgb8",
+            "fps": 60
+          },
+          {
+            "stream": "Color",
+            "width": 320,
+            "height": 240,
+            "format": "format.bgra8",
+            "fps": 60
+          },
+          {
+            "stream": "Color",
+            "width": 320,
+            "height": 240,
+            "format": "format.rgba8",
+            "fps": 60
+          },
+          {
+            "stream": "Color",
+            "width": 320,
+            "height": 240,
+            "format": "format.bgr8",
+            "fps": 60
+          },
+          {
+            "stream": "Color",
+            "width": 320,
+            "height": 240,
+            "format": "format.yuyv",
+            "fps": 60
+          },
+          {
+            "stream": "Color",
+            "width": 320,
+            "height": 180,
+            "format": "format.rgb8",
+            "fps": 60
+          },
+          {
+            "stream": "Color",
+            "width": 320,
+            "height": 180,
+            "format": "format.bgra8",
+            "fps": 60
+          },
+          {
+            "stream": "Color",
+            "width": 320,
+            "height": 180,
+            "format": "format.rgba8",
+            "fps": 60
+          },
+          {
+            "stream": "Color",
+            "width": 320,
+            "height": 180,
+            "format": "format.bgr8",
+            "fps": 60
+          },
+          {
+            "stream": "Color",
+            "width": 320,
+            "height": 180,
+            "format": "format.yuyv",
+            "fps": 60
+          },
+          {
+            "stream": "Color",
+            "width": 320,
+            "height": 240,
+            "format": "format.rgb8",
+            "fps": 30
+          },
+          {
+            "stream": "Color",
+            "width": 320,
+            "height": 240,
+            "format": "format.bgra8",
+            "fps": 30
+          },
+          {
+            "stream": "Color",
+            "width": 320,
+            "height": 240,
+            "format": "format.rgba8",
+            "fps": 30
+          },
+          {
+            "stream": "Color",
+            "width": 320,
+            "height": 240,
+            "format": "format.bgr8",
+            "fps": 30
+          },
+          {
+            "stream": "Color",
+            "width": 320,
+            "height": 240,
+            "format": "format.yuyv",
+            "fps": 30
+          },
+          {
+            "stream": "Color",
+            "width": 320,
+            "height": 180,
+            "format": "format.rgb8",
+            "fps": 30
+          },
+          {
+            "stream": "Color",
+            "width": 320,
+            "height": 180,
+            "format": "format.bgra8",
+            "fps": 30
+          },
+          {
+            "stream": "Color",
+            "width": 320,
+            "height": 180,
+            "format": "format.rgba8",
+            "fps": 30
+          },
+          {
+            "stream": "Color",
+            "width": 320,
+            "height": 180,
+            "format": "format.bgr8",
+            "fps": 30
+          },
+          {
+            "stream": "Color",
+            "width": 320,
+            "height": 180,
+            "format": "format.yuyv",
+            "fps": 30
+          },
+          {
+            "stream": "Color",
+            "width": 320,
+            "height": 240,
+            "format": "format.rgb8",
+            "fps": 6
+          },
+          {
+            "stream": "Color",
+            "width": 320,
+            "height": 240,
+            "format": "format.bgra8",
+            "fps": 6
+          },
+          {
+            "stream": "Color",
+            "width": 320,
+            "height": 240,
+            "format": "format.rgba8",
+            "fps": 6
+          },
+          {
+            "stream": "Color",
+            "width": 320,
+            "height": 240,
+            "format": "format.bgr8",
+            "fps": 6
+          },
+          {
+            "stream": "Color",
+            "width": 320,
+            "height": 240,
+            "format": "format.yuyv",
+            "fps": 6
+          },
+          {
+            "stream": "Color",
+            "width": 320,
+            "height": 180,
+            "format": "format.rgb8",
+            "fps": 6
+          },
+          {
+            "stream": "Color",
+            "width": 320,
+            "height": 180,
+            "format": "format.bgra8",
+            "fps": 6
+          },
+          {
+            "stream": "Color",
+            "width": 320,
+            "height": 180,
+            "format": "format.rgba8",
+            "fps": 6
+          },
+          {
+            "stream": "Color",
+            "width": 320,
+            "height": 180,
+            "format": "format.bgr8",
+            "fps": 6
+          },
+          {
+            "stream": "Color",
+            "width": 320,
+            "height": 180,
+            "format": "format.yuyv",
+            "fps": 6
+          }
+        ]
+      }
+    ],
+    "depth_scale_m_per_unit": 0.0010000000474974513,
+    "depth_scale_mm_per_unit": 1.0000000474974513,
+    "synchronised_profiles": [
+      {
+        "width": 1280,
+        "height": 720,
+        "fps": 30
+      },
+      {
+        "width": 1280,
+        "height": 720,
+        "fps": 15
+      },
+      {
+        "width": 1280,
+        "height": 720,
+        "fps": 6
+      },
+      {
+        "width": 848,
+        "height": 480,
+        "fps": 60
+      },
+      {
+        "width": 848,
+        "height": 480,
+        "fps": 30
+      },
+      {
+        "width": 848,
+        "height": 480,
+        "fps": 15
+      },
+      {
+        "width": 848,
+        "height": 480,
+        "fps": 6
+      },
+      {
+        "width": 640,
+        "height": 480,
+        "fps": 60
+      },
+      {
+        "width": 640,
+        "height": 480,
+        "fps": 30
+      },
+      {
+        "width": 640,
+        "height": 480,
+        "fps": 15
+      },
+      {
+        "width": 640,
+        "height": 480,
+        "fps": 6
+      },
+      {
+        "width": 640,
+        "height": 360,
+        "fps": 60
+      },
+      {
+        "width": 640,
+        "height": 360,
+        "fps": 30
+      },
+      {
+        "width": 640,
+        "height": 360,
+        "fps": 15
+      },
+      {
+        "width": 640,
+        "height": 360,
+        "fps": 6
+      },
+      {
+        "width": 424,
+        "height": 240,
+        "fps": 60
+      },
+      {
+        "width": 424,
+        "height": 240,
+        "fps": 30
+      },
+      {
+        "width": 424,
+        "height": 240,
+        "fps": 15
+      },
+      {
+        "width": 424,
+        "height": 240,
+        "fps": 6
+      }
+    ]
+  },
+  "dataset": "cylinder5-20260810-133408",
+  "model_id": "cylinder5",
+  "perception_method": "foundationpose_rgbd_model_free",
+  "estimator_geometry": "learned_representation",
+  "representation": {
+    "id": "cylinder5-simref-15v",
+    "label": "Cylinder5",
+    "model_id": "cylinder5",
+    "method": "foundationpose_rgbd_model_free",
+    "reference_digest": "9e59f85169e2d07f",
+    "reference_digest_short": "9e59f851",
+    "reference_source": "simulated Isaac views",
+    "reference_view_count": 15,
+    "foundationpose_revision": "a1b694b83e633c2cb6115b9063d940a687759392",
+    "validation_status": "experimental",
+    "validation_summary": "sim + physical transfer demonstrated",
+    "validation_note": "Sim-to-real pose transfer demonstrated at one physical pose; multi-pose physical validation pending.",
+    "validation_evidence": [
+      "Simulated benchmark over 10 object poses and viewpoints \u2014 mean position error 6.650 mm and mean tube-axis-line error 0.676 deg, against CAD at 2.599 mm and 0.528 deg.",
+      "Physical D435, one stationary pose, 12/12 frames registered. Repeatability 2.077 mm mean centre spread and 0.124 deg mean axis spread. Agreement with CAD 7.142 mm mean centre and 0.273 deg mean axis. REPEATABILITY AND AGREEMENT, NOT ACCURACY \u2014 no independently measured physical pose for this object exists."
+    ],
+    "validation_gate": "A second, clearly different physical pose, captured and compared the same way, showing that registration and the CAD/model-free offset are not specific to a single physical pose.",
+    "experimental": true,
+    "physical_ground_truth_available": false,
+    "usable_for_packing_geometry": false,
+    "geometry_note": "Reconstructed for pose estimation only. Principal length approximately 341.5 mm and transverse diameter approximately 26.7 mm; the bore is not represented and the ends are effectively capped, so its volume is not the part's volume. WISEPACK packing continues to use the exact CAD geometry.",
+    "ready": true,
+    "reason": ""
+  },
+  "selected_profile": {
+    "width": 1280,
+    "height": 720,
+    "fps": 30
+  },
+  "acquisition_backend": "realsense",
+  "provenance": "measured",
+  "run_mode": "replay",
+  "run_label": "RECORDED PHYSICAL D435 DATA",
+  "run_note": "Replayed from frames a physical D435 recorded earlier. Real sensor data, NOT simulation, and NOT a live camera.",
+  "operator_roi_px": [
+    255,
+    70,
+    445,
+    719
+  ],
+  "roi_note": "The ROI says WHERE to look. Object identity is model_id, stated by the operator, and is never inferred from it.",
+  "completed_at": "2026-09-11T09:50:49Z",
+  "capture": {},
+  "timing_ms": {
+    "capture_ms": 0.0,
+    "segmentation_ms": 1707.7,
+    "artifacts_ms": 4.2,
+    "inference_passes": 1,
+    "inference_ms": [
+      3496.6
+    ],
+    "inference_total_ms": 3496.6,
+    "estimator_reported_ms": 1235.4,
+    "measurement_frames": 1,
+    "total_ms": 5635.2
+  },
+  "segmentation": {
+    "mask_source": "depth_plane_foreground",
+    "mask_valid": true,
+    "reason": "",
+    "method": "depth_plane_foreground",
+    "image_size": [
+      1280,
+      720
+    ],
+    "settings": {
+      "plane_tolerance_mm": 6.0,
+      "min_height_mm": 8.0,
+      "max_height_mm": 400.0,
+      "roi_radius_mm": null,
+      "roi_px": [
+        255,
+        70,
+        445,
+        719
+      ],
+      "component": "largest"
+    },
+    "plane_detected": true,
+    "plane_residual_mm": 2.3732,
+    "plane_inlier_fraction": 0.7936,
+    "foreground_points": 27253,
+    "mask_pixels": 27304,
+    "components": 1,
+    "selected_component": 1,
+    "valid_depth_pixels": 917546,
+    "plane_normal": [
+      -0.03064,
+      -0.023419,
+      -0.999256
+    ],
+    "roi_px": [
+      255,
+      70,
+      445,
+      719
+    ],
+    "roi_area_px": 123310,
+    "foreground_points_full_frame": 118663,
+    "component_areas_px": [
+      27304
+    ],
+    "mask_centroid_px": [
+      374.86,
+      395.5
+    ],
+    "duration_ms": 1655.62,
+    "mask_median_range_mm": 524.0,
+    "mask_extent_long_mm": 339.8,
+    "mask_extent_across_mm": 26.4,
+    "extent_note": "measured from depth, NOT from any CAD model, and not used to select anything \u2014 a diagnostic for a human",
+    "mask_area_fraction": 0.029627,
+    "valid_depth_fraction_in_mask": 0.9991,
+    "median_height_above_plane_mm": 16.3,
+    "dataset": "cylinder5-20260810-133408",
+    "frame_index": 0,
+    "frame_file": "000000.png",
+    "depth_scale_mm": 1.0,
+    "intrinsics": [
+      [
+        913.1385498046875,
+        0.0,
+        648.3120727539062
+      ],
+      [
+        0.0,
+        911.7343139648438,
+        374.9151306152344
+      ],
+      [
+        0.0,
+        0.0,
+        1.0
+      ]
+    ],
+    "images": [
+      "depth",
+      "mask",
+      "rgb",
+      "segmentation"
+    ],
+    "note": "A mask is not a pose. This route says which pixels would be handed to register(), and nothing about whether the object in them is the one you meant."
+  },
+  "observation": {
+    "observation_id": "physical-cylinder5-1-obj-1",
+    "object_type": "pipe_section",
+    "source": "camera",
+    "frame_id": "camera_color_optical_frame",
+    "pose": {
+      "x_mm": -78.35,
+      "y_mm": 101.847,
+      "z_mm": 594.806,
+      "reference_point": "model_frame_origin",
+      "yaw_deg": 68.012,
+      "orientation": {
+        "x": 0.79884365,
+        "y": 0.495015639,
+        "z": 0.269064555,
+        "w": 0.210742983
+      },
+      "rpy_deg": [
+        141.8,
+        -12.782,
+        68.012
+      ],
+      "valid": true,
+      "workarea_transform_valid": false,
+      "workarea_pose_available": false,
+      "measured_dof": [
+        "x",
+        "y",
+        "z",
+        "orientation_partial"
+      ]
+    },
+    "task": {
+      "object_center_mm": [
+        -162.699,
+        7.214,
+        533.213
+      ],
+      "tube_axis_line": [
+        0.087235,
+        0.996012,
+        -0.018708
+      ],
+      "tube_axis_is_a_line_not_a_direction": true,
+      "diameter_mm": 25,
+      "length_mm": 342,
+      "frame_id": "camera_color_optical_frame",
+      "note": "object_center_mm is the physical body centre and is what a grasp targets. It is NOT pose.model_frame_origin_mm, which is where the CAD model's own origin lands and can be outside the object."
+    },
+    "model_center_mm": [
+      -130.0,
+      -54.44,
+      0.0
+    ],
+    "task_axis_vector": [
+      0.9284,
+      -0.3716,
+      0.0
+    ],
+    "confidence": null,
+    "perception_method": "foundationpose_rgbd_model_free",
+    "object_model_id": "cylinder5",
+    "symmetry": {
+      "type": "discrete",
+      "axis": "z",
+      "fold": 2,
+      "rotation_observable": true,
+      "ambiguous_dof": [
+        "rotation_about_z_modulo_180deg"
+      ]
+    },
+    "orientation_raw": {
+      "x": -0.495015639,
+      "y": 0.79884365,
+      "z": -0.210742983,
+      "w": 0.269064555
+    },
+    "detector": "foundationpose/rgbd-6dof",
+    "model_id": "a1b694b83e633c2cb6115b9063d940a687759392",
+    "detector_class": "",
+    "detector_object_index": null,
+    "captured_at": "2026-09-11T09:50:49Z",
+    "calibration_status": "not_applicable",
+    "calibration_revision": "",
+    "geometry": {
+      "diameter_mm": 25,
+      "length_mm": 342,
+      "inner_diameter_mm": 19,
+      "source": "cad_model"
+    }
+  },
+  "batch": {
+    "batch_id": "physical-cylinder5-1",
+    "source": "camera",
+    "status": "ok",
+    "count": 1,
+    "frame_id": "camera_color_optical_frame",
+    "captured_at": "2026-09-11T09:50:49Z",
+    "requested_at": "2026-09-11T09:50:46Z",
+    "detector": "foundationpose/rgbd-6dof",
+    "perception_method": "foundationpose_rgbd_model_free",
+    "acquisition": "realsense_d435",
+    "model_id": "cylinder5",
+    "calibration_status": "not_applicable",
+    "calibration_revision": "",
+    "error": "",
+    "mean_confidence": null,
+    "observations": [
+      {
+        "observation_id": "physical-cylinder5-1-obj-1",
+        "object_type": "pipe_section",
+        "source": "camera",
+        "frame_id": "camera_color_optical_frame",
+        "pose": {
+          "x_mm": -78.35,
+          "y_mm": 101.847,
+          "z_mm": 594.806,
+          "reference_point": "model_frame_origin",
+          "yaw_deg": 68.012,
+          "orientation": {
+            "x": 0.79884365,
+            "y": 0.495015639,
+            "z": 0.269064555,
+            "w": 0.210742983
+          },
+          "rpy_deg": [
+            141.8,
+            -12.782,
+            68.012
+          ],
+          "valid": true,
+          "workarea_transform_valid": false,
+          "workarea_pose_available": false,
+          "measured_dof": [
+            "x",
+            "y",
+            "z",
+            "orientation_partial"
+          ]
+        },
+        "task": {
+          "object_center_mm": [
+            -162.699,
+            7.214,
+            533.213
+          ],
+          "tube_axis_line": [
+            0.087235,
+            0.996012,
+            -0.018708
+          ],
+          "tube_axis_is_a_line_not_a_direction": true,
+          "diameter_mm": 25,
+          "length_mm": 342,
+          "frame_id": "camera_color_optical_frame",
+          "note": "object_center_mm is the physical body centre and is what a grasp targets. It is NOT pose.model_frame_origin_mm, which is where the CAD model's own origin lands and can be outside the object."
+        },
+        "model_center_mm": [
+          -130.0,
+          -54.44,
+          0.0
+        ],
+        "task_axis_vector": [
+          0.9284,
+          -0.3716,
+          0.0
+        ],
+        "confidence": null,
+        "perception_method": "foundationpose_rgbd_model_free",
+        "object_model_id": "cylinder5",
+        "symmetry": {
+          "type": "discrete",
+          "axis": "z",
+          "fold": 2,
+          "rotation_observable": true,
+          "ambiguous_dof": [
+            "rotation_about_z_modulo_180deg"
+          ]
+        },
+        "orientation_raw": {
+          "x": -0.495015639,
+          "y": 0.79884365,
+          "z": -0.210742983,
+          "w": 0.269064555
+        },
+        "detector": "foundationpose/rgbd-6dof",
+        "model_id": "a1b694b83e633c2cb6115b9063d940a687759392",
+        "detector_class": "",
+        "detector_object_index": null,
+        "captured_at": "2026-09-11T09:50:49Z",
+        "calibration_status": "not_applicable",
+        "calibration_revision": "",
+        "geometry": {
+          "diameter_mm": 25,
+          "length_mm": 342,
+          "inner_diameter_mm": 19,
+          "source": "cad_model"
+        }
+      }
+    ],
+    "detector_status": {
+      "foundationpose_revision": "a1b694b83e633c2cb6115b9063d940a687759392",
+      "duration_ms": 1235.4,
+      "dataset": "cylinder5-20260810-133408",
+      "frame_file": "000000.png",
+      "mesh_path": "/representations/cylinder5/reference/ob_0000001/model/model.obj",
+      "pose_of": "mesh_origin_as_loaded",
+      "intrinsics": [
+        [
+          913.1385498046875,
+          0.0,
+          648.3120727539062
+        ],
+        [
+          0.0,
+          911.7343139648438,
+          374.9151306152344
+        ],
+        [
+          0.0,
+          0.0,
+          1.0
+        ]
+      ],
+      "acquisition": "realsense_d435",
+      "estimator_geometry": "learned_representation",
+      "representation": {
+        "id": "cylinder5-simref-15v",
+        "label": "Cylinder5",
+        "model_id": "cylinder5",
+        "method": "foundationpose_rgbd_model_free",
+        "reference_digest": "9e59f85169e2d07f",
+        "reference_digest_short": "9e59f851",
+        "reference_source": "simulated Isaac views",
+        "reference_view_count": 15,
+        "foundationpose_revision": "a1b694b83e633c2cb6115b9063d940a687759392",
+        "validation_status": "experimental",
+        "validation_summary": "sim + physical transfer demonstrated",
+        "validation_note": "Sim-to-real pose transfer demonstrated at one physical pose; multi-pose physical validation pending.",
+        "validation_evidence": [
+          "Simulated benchmark over 10 object poses and viewpoints \u2014 mean position error 6.650 mm and mean tube-axis-line error 0.676 deg, against CAD at 2.599 mm and 0.528 deg.",
+          "Physical D435, one stationary pose, 12/12 frames registered. Repeatability 2.077 mm mean centre spread and 0.124 deg mean axis spread. Agreement with CAD 7.142 mm mean centre and 0.273 deg mean axis. REPEATABILITY AND AGREEMENT, NOT ACCURACY \u2014 no independently measured physical pose for this object exists."
+        ],
+        "validation_gate": "A second, clearly different physical pose, captured and compared the same way, showing that registration and the CAD/model-free offset are not specific to a single physical pose.",
+        "experimental": true,
+        "physical_ground_truth_available": false,
+        "usable_for_packing_geometry": false,
+        "geometry_note": "Reconstructed for pose estimation only. Principal length approximately 341.5 mm and transverse diameter approximately 26.7 mm; the bore is not represented and the ends are effectively capped, so its volume is not the part's volume. WISEPACK packing continues to use the exact CAD geometry.",
+        "ready": true,
+        "reason": ""
+      },
+      "note": "",
+      "frame_note": "Pose is expressed in the camera optical frame. No validated SE(3) camera-to-work-area extrinsic exists, so this pose is not placed in wisepack_workarea and is not actionable. The planar ArUco homography is a planar map, not a 3-D transform, and is not reused for this.",
+      "segmentation": {
+        "mask_source": "depth_plane_foreground",
+        "mask_valid": true,
+        "reason": "",
+        "method": "depth_plane_foreground",
+        "image_size": [
+          1280,
+          720
+        ],
+        "settings": {
+          "plane_tolerance_mm": 6.0,
+          "min_height_mm": 8.0,
+          "max_height_mm": 400.0,
+          "roi_radius_mm": null,
+          "roi_px": [
+            255,
+            70,
+            445,
+            719
+          ],
+          "component": "largest"
+        },
+        "plane_detected": true,
+        "plane_residual_mm": 2.3732,
+        "plane_inlier_fraction": 0.7936,
+        "foreground_points": 27253,
+        "mask_pixels": 27304,
+        "components": 1,
+        "selected_component": 1,
+        "valid_depth_pixels": 917546,
+        "plane_normal": [
+          -0.03064,
+          -0.023419,
+          -0.999256
+        ],
+        "roi_px": [
+          255,
+          70,
+          445,
+          719
+        ],
+        "roi_area_px": 123310,
+        "foreground_points_full_frame": 118663,
+        "component_areas_px": [
+          27304
+        ],
+        "mask_centroid_px": [
+          374.86,
+          395.5
+        ],
+        "duration_ms": 2026.3,
+        "mask_median_range_mm": 524.0,
+        "mask_extent_long_mm": 339.8,
+        "mask_extent_across_mm": 26.4,
+        "extent_note": "measured from depth, NOT from any CAD model, and not used to select anything \u2014 a diagnostic for a human",
+        "mask_area_fraction": 0.029627,
+        "valid_depth_fraction_in_mask": 0.9991,
+        "median_height_above_plane_mm": 16.3
+      },
+      "accuracy_note": "pose ESTIMATED. No ground truth exists for this dataset, so absolute pose accuracy is NOT measured; repeatability across frames is the only quantity available."
+    }
+  },
+  "repeatability": {
+    "frames": 1,
+    "measured": false,
+    "note": "REPEATABILITY IS NOT MEASURED here and is NOT zero: a single measurement frame has no spread. Measuring it needs several independent frames of the same stationary scene \u2014 run the multi-frame validation, e.g. ./scripts/physical_c5.sh --model <id> --frames 5."
+  },
+  "plausibility": {
+    "pose_origin_z_mm": 594.8,
+    "pose_reference_point": "model_frame_origin",
+    "object_centre_z_mm": 533.2,
+    "centre_depth_expected_mm": 536.5,
+    "centre_depth_error_mm": -3.3,
+    "centre_depth_plausible": true,
+    "cad_centroid_px": [
+      369.7,
+      387.3
+    ],
+    "mask_centroid_px": [
+      374.9,
+      395.5
+    ],
+    "centroid_offset_px": 9.7,
+    "centroid_offset_mm": 5.7,
+    "centroid_plausible": true,
+    "tube_axis_line": [
+      0.0872,
+      0.996,
+      -0.0187
+    ],
+    "depth_plausible": true,
+    "cad_projected_area_px": 25924.4,
+    "mask_pixels": 27304,
+    "mask_to_cad_area_ratio": 1.053,
+    "area_plausible": true
+  },
+  "images": {
+    "rgb": "<repo>/.cache-perception/physical-c5/rgb.jpg",
+    "depth": "<repo>/.cache-perception/physical-c5/depth_aligned.jpg",
+    "mask": "<repo>/.cache-perception/physical-c5/mask.jpg",
+    "segmentation": "<repo>/.cache-perception/physical-c5/mask_overlay.jpg",
+    "overlay": "<repo>/.cache-perception/physical-c5/pose_overlay.jpg"
+  },
+  "accuracy_note": "No ground truth exists for the physical part. Repeatability is reported; accuracy is NOT measured and is not claimed."
+}
