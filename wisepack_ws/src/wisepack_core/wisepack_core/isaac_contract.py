@@ -68,7 +68,7 @@ from typing import Any, Dict, List, Optional, Tuple
 #: 1.1 adds, all OPTIONAL and all ignorable by a 1.0 receiver: a full
 #: orientation on ``Pose``, the ``scene`` payload on the scene commands, and
 #: the scene-source fields on ``SceneAcknowledgement``.
-SCHEMA_VERSION = "wisepack-isaac/1.1"
+SCHEMA_VERSION = "wisepack-isaac/1.2"
 
 
 def schema_major(version: str) -> str:
@@ -104,6 +104,14 @@ class IsaacCommandType(str, Enum):
     RUN_BEGIN = "RUN_BEGIN"
     #: Execute exactly one accepted placement: pick this item, place it there.
     EXECUTE_ITEM = "EXECUTE_ITEM"
+    #: CUT-AND-PLACE (schema 1.2): grip `item_id` with the combined
+    #: gripper+cutter tool on the segment to be retained, shear the tube at
+    #: the planner-selected cut plane, keep the gripped segment in the fingers,
+    #: carry it to `container_id` and place it at `target_pose`; the other
+    #: segment stays where it fell. The cut geometry travels in `cut`. The
+    #: terminal state names the RETAINED SEGMENT, which is the item that was
+    #: placed; the cut itself is reported by CUT_COMPLETED with both segments.
+    EXECUTE_CUT = "EXECUTE_CUT"
     #: The plan is finished. Isaac stops accepting EXECUTE_ITEM for this run.
     RUN_END = "RUN_END"
     #: Stop whatever is in progress and fail the current item. Used when the
@@ -173,6 +181,15 @@ class IsaacState(str, Enum):
     ROBOT_MODEL_INVALID = "ROBOT_MODEL_INVALID"
     MOVING_TO_PICK = "MOVING_TO_PICK"
     GRASPING = "GRASPING"
+    #: The cut-and-place skill (schema 1.2). CUTTING: the tube is gripped and
+    #: the shear is closing on the cut plane. CUT_COMPLETED: the discrete cut
+    #: event happened — the original body is gone, two segment bodies exist,
+    #: the retained one is in the fingers — and `detail` carries the measured
+    #: segment poses and lengths. Neither is terminal for the command: the
+    #: carry continues through LIFTING .. SETTLING to ITEM_COMPLETED for the
+    #: retained segment.
+    CUTTING = "CUTTING"
+    CUT_COMPLETED = "CUT_COMPLETED"
     LIFTING = "LIFTING"
     MOVING_TO_CONTAINER = "MOVING_TO_CONTAINER"
     RELEASING = "RELEASING"
@@ -200,6 +217,8 @@ RESET_STATES = frozenset({IsaacState.RESET_REQUESTED, IsaacState.RESETTING,
 ITEM_PROGRESS_ORDER = (
     IsaacState.MOVING_TO_PICK,
     IsaacState.GRASPING,
+    IsaacState.CUTTING,
+    IsaacState.CUT_COMPLETED,
     IsaacState.LIFTING,
     IsaacState.MOVING_TO_CONTAINER,
     IsaacState.RELEASING,
@@ -635,6 +654,13 @@ class IsaacCommand:
     #: means "this revision's scene consists of exactly these objects" — the
     #: path a physical ObservationBatch takes into the simulator.
     scene: Optional[SceneSpec] = None
+    #: THE CUT GEOMETRY, on EXECUTE_CUT only (schema 1.2). Keys: `proposal_id`,
+    #: `request_id`, `cut_offset_mm` (from the tube's local -Z end to the
+    #: centre of the kerf, along its length), `kerf_mm`, `segment_ids` (the
+    #: -Z-end segment first), `segment_lengths_mm` (same order),
+    #: `retained_segment_id`. Everything the planner decided, nothing the
+    #: simulator may decide for itself.
+    cut: Optional[Dict[str, Any]] = None
     timestamp: str = field(default_factory=utc_now_iso)
     schema_version: str = SCHEMA_VERSION
 
@@ -642,6 +668,32 @@ class IsaacCommand:
         self.command = IsaacCommandType(self.command)
         if isinstance(self.scene, dict):
             self.scene = SceneSpec.from_dict(self.scene)
+        if self.cut is not None and self.command is not IsaacCommandType.EXECUTE_CUT:
+            raise ContractError(
+                f"{self.command.value} does not carry cut geometry; only "
+                "EXECUTE_CUT does")
+        if self.command is IsaacCommandType.EXECUTE_CUT:
+            missing = [name for name, value in (
+                ("item_id", self.item_id), ("dimensions", self.dimensions),
+                ("source_pose", self.source_pose),
+                ("target_pose", self.target_pose), ("cut", self.cut)) if value is None]
+            if missing:
+                raise ContractError(
+                    f"EXECUTE_CUT for {self.item_id!r} is missing {missing}; a "
+                    "cut-and-place cannot be commanded without the tube pose, "
+                    "the cut geometry and the retained segment's target")
+            cut = self.cut
+            needed = ("cut_offset_mm", "kerf_mm", "segment_ids",
+                      "segment_lengths_mm", "retained_segment_id")
+            absent = [k for k in needed if k not in cut]
+            if absent:
+                raise ContractError(f"EXECUTE_CUT cut geometry is missing {absent}")
+            if len(cut["segment_ids"]) != 2 or len(cut["segment_lengths_mm"]) != 2:
+                raise ContractError(
+                    "EXECUTE_CUT describes exactly ONE cut: two segments")
+            if cut["retained_segment_id"] not in cut["segment_ids"]:
+                raise ContractError(
+                    "EXECUTE_CUT retained_segment_id must be one of segment_ids")
         if self.scene is not None and self.command not in (
                 IsaacCommandType.RESET_SCENE, IsaacCommandType.SYNC_SCENE):
             raise ContractError(
@@ -684,6 +736,7 @@ class IsaacCommand:
             "robot_id": self.robot_id,
             "simulator_generation": int(self.simulator_generation),
             "scene": self.scene.to_dict() if self.scene is not None else None,
+            "cut": dict(self.cut) if self.cut is not None else None,
         }
 
     def to_json(self) -> str:
@@ -717,6 +770,7 @@ class IsaacCommand:
             robot_id=str(doc.get("robot_id", "") or ""),
             simulator_generation=int(doc.get("simulator_generation", 0) or 0),
             scene=SceneSpec.from_dict(doc.get("scene")),
+            cut=(dict(doc["cut"]) if isinstance(doc.get("cut"), dict) else None),
             timestamp=str(doc.get("timestamp", utc_now_iso())),
             schema_version=str(doc["schema_version"]),
         )

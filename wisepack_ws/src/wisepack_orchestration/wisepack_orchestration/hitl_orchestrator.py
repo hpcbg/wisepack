@@ -1647,6 +1647,12 @@ class HitLOrchestrator(Node):
                                               request["approval_revision"])
                 self.p_cut_request.publish(String(data=json.dumps(
                     request, default=str)))
+                # THE ISAAC BACKEND EXECUTES THE CUT ITSELF, with the combined
+                # gripper+cutter tool: the same once-only request that goes to
+                # the external skill topic is dispatched to the simulator. The
+                # simulated (logical) backend keeps the operator's simulate_cut.
+                if self.isaac is not None:
+                    self.isaac.request_cut(self.engine, request)
             if cut.get("latest_cut_result"):
                 self.p_cut_result.publish(String(data=json.dumps(
                     cut["latest_cut_result"], default=str)))

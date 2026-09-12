@@ -64,7 +64,7 @@ from wisepack_core.execution import (
 )
 from wisepack_core.isaac_contract import (
     SCENE_SOURCE_GENERATED, ContractError, IsaacCommand, IsaacCommandType,
-    IsaacFeedback, IsaacState, RunGate, SceneAcknowledgement, SceneSpec,
+    IsaacFeedback, IsaacState, Pose, RunGate, SceneAcknowledgement, SceneSpec,
 )
 from wisepack_core.robot_switch import (
     PHASE_FAILED, PHASE_READY, RobotSwitchClient, SwitchRequest, describe_phase,
@@ -100,6 +100,8 @@ _PROGRESS_ACTION = {
     IsaacState.MOVING_TO_CONTAINER: "isaac_moving_to_container",
     IsaacState.RELEASING: "isaac_item_released",
     IsaacState.SETTLING: "isaac_settling",
+    IsaacState.CUTTING: "isaac_cutting",
+    IsaacState.CUT_COMPLETED: "isaac_cut_completed",
     IsaacState.RUN_COMPLETED: "isaac_run_completed",
     IsaacState.RUN_FAILED: "isaac_run_failed",
 }
@@ -149,6 +151,19 @@ class IsaacExecutionBridge:
         self.simulator_ready = False
         self.run_open = False
         self.run_finished = False
+        #: THE CUT SKILL IN FLIGHT, beside (not instead of) the placement in
+        #: flight: a cut is dispatched from the cut approval, before any
+        #: packing approval, and reports outside the placement queue.
+        self._cut_in_flight: Optional[Dict[str, Any]] = None
+        #: Table-frame poses of segments the cut skill left on the table, as
+        #: the simulator measured them at CUT_COMPLETED. A later EXECUTE_ITEM
+        #: for such a segment picks from here, never from a generated row.
+        self.derived_poses: Dict[str, Pose] = {}
+        #: The item order the GENERATED scene was built in. A generated item's
+        #: row slot is its index in that order; after a cut removes the parent
+        #: from the scenario the current order shifts, but the bodies did not
+        #: move, so the slot must come from the order the scene was built with.
+        self._spawn_order: list = []
         #: (placement, sequence_index) currently with the simulator, if any.
         self._in_flight: Optional[Tuple[Placement, int]] = None
         self._in_flight_command: Optional[IsaacCommand] = None
@@ -774,6 +789,8 @@ class IsaacExecutionBridge:
     def _request_scene(self, engine, revision: int, *, rebuild: bool) -> None:
         scenario = engine.scenario
         self.required_revision = int(revision)
+        self._spawn_order = [i.item_id for i in (scenario.items if scenario else [])]
+        self.derived_poses = {}
         self.reset_failed_reason = ""
         self.scene_mismatch = ""
         self.acknowledged = None
@@ -1113,6 +1130,189 @@ class IsaacExecutionBridge:
         self.node.publish_execution()
         return True
 
+    def request_cut(self, engine, request: Dict[str, Any]) -> bool:
+        """Dispatch an APPROVED cut to the gripper+cutter skill in Isaac.
+
+        Called by the orchestrator exactly once per emitted CUTTING_REQUEST —
+        the idempotency is `WholeProcess.build_cut_request`'s, not repeated
+        here. The command carries everything the planner decided: the parent
+        tube's pose, the cut plane, the segment ids and lengths, which segment
+        the fingers keep, and where that segment goes — the placement the
+        VALIDATED cut-aware plan gave it. Nothing is left to the simulator to
+        decide, and nothing is sent when the plan does not place the segment.
+        """
+        wp = getattr(engine, "wp", None)
+        alt = wp._selected_alternative() if wp is not None else None
+        scenario = engine.scenario
+        if alt is None or not alt.proposals or scenario is None:
+            self.node.get_logger().error(f"{LOG} no selected cut alternative to dispatch")
+            return False
+        if self._cut_in_flight is not None:
+            self.node.get_logger().warn(f"{LOG} a cut is already in flight; not dispatching")
+            return False
+        prop = alt.proposals[0]
+        parent = scenario.item(prop.source_item_id)
+        children = list(prop.derived_item_ids_for())
+        if parent is None or len(children) != 2:
+            self.node.get_logger().error(
+                f"{LOG} the cut proposal {prop.proposal_id} is not a single cut "
+                "of an item in the scenario")
+            return False
+        # THE FINGERS KEEP THE SEGMENT THE PLAN PLACES FIRST. It is the segment
+        # whose placement the operator saw validated, and carrying it straight
+        # from the cut is the whole point of a combined tool.
+        order = [p.item_id for p in alt.plan.ordered_placements]
+        retained = next((c for c in order if c in children), children[0])
+        placement = alt.plan.placement_for_item(retained)
+        container = alt.plan.container(placement.container_id) if placement else None
+        if placement is None or container is None:
+            self.node.get_logger().error(
+                f"{LOG} the cut-aware plan does not place {retained}; no cut is dispatched")
+            return False
+        opened_now = not self.run_open or self.gate.run_id != engine.run_id
+        if opened_now:
+            self.open_run(engine)
+        try:
+            spawn_index = [i.item_id for i in scenario.items].index(parent.item_id)
+        except ValueError:
+            spawn_index = 0
+        try:
+            source_pose = source_pose_for(self.scene_spec, spawn_index, parent, self.layout)
+        except SourcePoseUnavailable as exc:
+            self.node.get_logger().error(f"{LOG} refusing to dispatch the cut: {exc}")
+            return False
+        cut_offset_mm = float(prop.cut_positions_mm[0]) + float(prop.kerf_mm) / 2.0
+        command = IsaacCommand(
+            command=IsaacCommandType.EXECUTE_CUT,
+            run_id=engine.run_id,
+            sequence_index=-1,             # not a placement of the standing plan
+            attempt=0,
+            item_id=parent.item_id,
+            dimensions=dimensions_for(parent),
+            source_pose=source_pose,
+            target_pose=placement_pose(placement),
+            container_id=container.container_id,
+            container_inner_mm=container.inner_size.to_dict(),
+            plan_id=alt.plan.plan_id,
+            preset=scenario.preset,
+            seed=int(scenario.seed),
+            total_items=len(scenario.items),
+            scenario_revision=self.required_revision,
+            robot_id=self.robot_id,
+            simulator_generation=self.expected_generation,
+            cut={
+                "proposal_id": prop.proposal_id,
+                "request_id": str(request.get("request_id", "")),
+                "cut_offset_mm": cut_offset_mm,
+                "kerf_mm": int(prop.kerf_mm),
+                "segment_ids": children,
+                "segment_lengths_mm": [int(v) for v in prop.segment_lengths_mm],
+                "retained_segment_id": retained,
+            })
+        self._cut_in_flight = {
+            "request_id": command.cut["request_id"], "parent": parent.item_id,
+            "children": children, "retained": retained,
+            "dispatched_at": time.monotonic(), "command": command,
+            "deferred": None,
+        }
+        if opened_now and not self.simulator_ready:
+            # NOT BACK TO BACK WITH RUN_BEGIN. The command topic is a latched
+            # keep-last-one topic: a second sample published before the
+            # simulator has taken the first REPLACES it, and the run is never
+            # opened on that side — measured as a cut executed under an empty
+            # run id whose every report was then rejected. The cut goes out
+            # when the simulator answers READY for this run.
+            self._cut_in_flight["deferred"] = command
+            self.node.get_logger().info(
+                f"{LOG} cut of {parent.item_id} waits for the simulator to "
+                f"adopt run {engine.run_id}")
+        else:
+            self._publish(command)
+        engine.note_physical_progress(
+            None, "isaac_cut_dispatched", parent.item_id, container.container_id,
+            f"cut-and-place dispatched to Isaac Sim: shear {parent.item_id} at "
+            f"{cut_offset_mm:.0f} mm from its end, keep {retained}, place it in "
+            f"{container.container_id}",
+            details={"cut": dict(command.cut), "target_pose": command.target_pose.to_dict(),
+                     "backend": ExecutionBackend.ISAAC.value})
+        self.node.publish_execution()
+        return True
+
+    def _flush_deferred_cut(self) -> None:
+        """Publish a cut that waited for the simulator to adopt the run."""
+        cut = self._cut_in_flight
+        if cut is None or cut.get("deferred") is None:
+            return
+        command = cut["deferred"]
+        cut["deferred"] = None
+        cut["dispatched_at"] = time.monotonic()
+        self._publish(command)
+        self.node.get_logger().info(
+            f"{LOG} -> EXECUTE_CUT {command.item_id} (released after READY)")
+
+    def _is_cut_feedback(self, feedback: IsaacFeedback) -> bool:
+        cut = self._cut_in_flight
+        if cut is None:
+            return False
+        if feedback.sequence_index >= 0:
+            return False
+        return feedback.item_id in (cut["parent"], cut["retained"]) \
+            or "cut" in feedback.detail
+
+    def _on_cut_feedback(self, engine, feedback: IsaacFeedback) -> None:
+        cut = self._cut_in_flight
+        wp = engine.wp
+        state = feedback.state
+        details = {**feedback.detail, "isaac_state": state.value,
+                   "robot_id": feedback.robot_id or self.robot_id,
+                   "request_id": cut["request_id"]}
+        if state in (IsaacState.MOVING_TO_PICK, IsaacState.GRASPING, IsaacState.CUTTING):
+            wp.isaac_cut_begun(cut["request_id"], {"parent": cut["parent"],
+                                                    "retained": cut["retained"]})
+            wp.note_isaac_cut_progress(
+                f"isaac_cut_{state.value.lower()}",
+                feedback.message or f"Isaac Sim cut skill: {state.value}", details)
+        elif state is IsaacState.CUT_COMPLETED:
+            payload = dict(feedback.detail.get("cut") or {})
+            wp.complete_isaac_cut(payload)
+            # THE SIMULATOR'S SCENE NOW HOLDS THE DERIVED SEGMENTS, and it says
+            # so for the revision the registration just created: the parent is
+            # gone, two bodies exist, one in the fingers. That is the world the
+            # bumped revision describes, so it is acknowledged here rather than
+            # rebuilt from (preset, seed) — which would resurrect the tube.
+            self.required_revision = int(engine.scenario_revision)
+            self.scene_revision = int(engine.scenario_revision)
+            self.scene_requested_for_run = engine.run_id
+            self.scene_mismatch = ""
+            for seg in payload.get("segments") or []:
+                pose = seg.get("pose")
+                if isinstance(pose, dict):
+                    self.derived_poses[str(seg["item_id"])] = Pose.from_dict(pose)
+        elif state in (IsaacState.LIFTING, IsaacState.MOVING_TO_CONTAINER,
+                       IsaacState.RELEASING, IsaacState.SETTLING):
+            wp.note_isaac_cut_progress(
+                f"isaac_cut_carry_{state.value.lower()}",
+                feedback.message or f"Isaac Sim carrying {cut['retained']}: {state.value}",
+                details, carrying=True)
+        elif state is IsaacState.ITEM_COMPLETED:
+            outcome = {
+                "item_id": feedback.item_id, "sequence_index": -1,
+                "state": state.value, "robot_id": feedback.robot_id or self.robot_id,
+                "target_pose": feedback.target_pose.to_dict() if feedback.target_pose else None,
+                "actual_pose": feedback.actual_pose.to_dict() if feedback.actual_pose else None,
+                "position_error_mm": feedback.position_error_mm,
+                "message": feedback.message, "cut_request_id": cut["request_id"],
+                **feedback.detail,
+            }
+            self.results.append(outcome)
+            self._cut_in_flight = None
+            wp.retained_segment_placed(feedback.item_id or cut["retained"], outcome)
+        elif state is IsaacState.ITEM_FAILED:
+            self._cut_in_flight = None
+            wp.isaac_cut_failed(feedback.message or "the cut-and-place skill failed",
+                                details)
+        self.node.publish_execution()
+
     def _build_command(self, engine, placement: Placement, item: WasteItem,
                        container: Container, index: int,
                        attempt: int = 0) -> IsaacCommand:
@@ -1124,7 +1324,8 @@ class IsaacExecutionBridge:
         """
         scenario = engine.scenario
         try:
-            spawn_index = [i.item_id for i in scenario.items].index(item.item_id)
+            order = self._spawn_order or [i.item_id for i in scenario.items]
+            spawn_index = order.index(item.item_id)
         except (AttributeError, ValueError):
             # An item injected by a dynamic event after the scene was built has
             # no spawned body. Send it anyway with a best-effort slot: Isaac
@@ -1140,6 +1341,9 @@ class IsaacExecutionBridge:
         # numbers the simulator spawned the body at — and never a generated row
         # slot. For a generated scene it is the row slot, exactly as before.
         # `source_pose_for` raises rather than substitute; see _dispatch_next.
+        # A SEGMENT LEFT BY THE CUT SKILL lies where the simulator reported it
+        # at CUT_COMPLETED, in the table frame — never at a generated row slot.
+        derived = self.derived_poses.get(item.item_id)
         return IsaacCommand(
             command=IsaacCommandType.EXECUTE_ITEM,
             run_id=engine.run_id,
@@ -1147,8 +1351,9 @@ class IsaacExecutionBridge:
             attempt=attempt,
             item_id=item.item_id,
             dimensions=dimensions_for(item),
-            source_pose=source_pose_for(self.scene_spec, spawn_index, item,
-                                        self.layout),
+            source_pose=(derived if derived is not None else
+                         source_pose_for(self.scene_spec, spawn_index, item,
+                                         self.layout)),
             target_pose=placement_pose(placement),
             container_id=container.container_id,
             container_inner_mm=container.inner_size.to_dict(),
@@ -1294,6 +1499,7 @@ class IsaacExecutionBridge:
                     f"{LOG} Isaac Sim reported {state.value} for run "
                     f"{feedback.run_id} — simulator up; scene not yet "
                     "acknowledged for this run")
+                self._flush_deferred_cut()
                 engine.note_physical_progress(
                     None, _PROGRESS_ACTION[IsaacState.READY], None, None,
                     "Isaac Sim process and ROS bridge ready — the scene is not "
@@ -1321,6 +1527,14 @@ class IsaacExecutionBridge:
 
         if feedback.is_run_terminal:
             self._on_run_terminal(engine, feedback)
+            return
+
+        # THE CUT SKILL reports through the same states but outside the
+        # placement queue (sequence_index -1): its progress, its discrete cut
+        # event and the placement of the retained segment go to the whole-
+        # process layer, not to a placement in flight.
+        if self._is_cut_feedback(feedback):
+            self._on_cut_feedback(engine, feedback)
             return
 
         if feedback.is_item_terminal:

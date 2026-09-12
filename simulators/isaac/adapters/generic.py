@@ -446,6 +446,10 @@ class GenericArticulationAdapter(IsaacRobotAdapter):
     def holding(self) -> Optional[str]:
         return self.grasp.attached_item
 
+    @property
+    def held_offset_m(self) -> np.ndarray:
+        return np.asarray(self.grasp.offset_in_hand_m, dtype=float)
+
     # ------------------------------------------------------------------ #
     # Reset
     # ------------------------------------------------------------------ #

@@ -103,9 +103,16 @@ def test_every_profile_is_completely_and_consistently_described(registry):
 
 
 def test_the_whole_first_iteration_skill_set_is_claimed_by_both(registry):
-    """HOME .. VERIFY. A robot that cannot do all of it is not selectable."""
+    """HOME .. VERIFY. A robot that cannot do all of it is not selectable.
+
+    CUT is the one skill a profile may add beyond the base set, and only when
+    it declares the combined gripper+cutter tool that performs it."""
+    from wisepack_core.robots import BASE_SKILLS
     for profile in registry.ordered:
-        assert list(profile.supported_skills) == list(KNOWN_SKILLS)
+        assert list(profile.supported_skills)[:len(BASE_SKILLS)] == list(BASE_SKILLS)
+        extra = set(profile.supported_skills) - set(BASE_SKILLS)
+        assert extra <= {"CUT"}
+        assert ("CUT" in extra) == profile.has_cutter
 
 
 def test_exactly_one_default_and_it_is_runnable(registry):

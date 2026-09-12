@@ -22,17 +22,89 @@ is. Validation stage E re-runs a physical pick to show that.
 
 from __future__ import annotations
 
-from typing import List
+from typing import Any, Dict, List, Optional, Sequence
 
+
+
+from ..tool import GripperCutterTool, ToolSpec
 from .base import RobotModelError
 from .generic import GenericArticulationAdapter
 
 
 class PandaRobotAdapter(GenericArticulationAdapter):
-    """Franka Emika Panda: 7-DOF arm, two-finger parallel gripper."""
+    """Franka Emika Panda: 7-DOF arm, two-finger parallel gripper.
+
+    WITH THE COMBINED END EFFECTOR when the profile declares one: the stock
+    parallel-jaw gripper stays the grasp mechanism, and a shear is authored on
+    the same hand at the profile's fixed grasp->cut offset (`simulators/isaac/
+    tool.py`). Both are actuated independently through this adapter — the
+    fingers as articulation joints, the blades as their own drives — and the
+    sequence in `robot.py` never learns which prim is which.
+    """
+
+    def __init__(self, profile) -> None:
+        super().__init__(profile)
+        self.tool: Optional[GripperCutterTool] = None
+
+    def load(self, *, base_position: Sequence[float],
+             base_orientation: Sequence[float]) -> None:
+        super().load(base_position=base_position, base_orientation=base_orientation)
+        if not self.profile.has_cutter:
+            return
+        # AUTHORED BEFORE PLAY as VISUAL geometry under the hand link: no rigid
+        # body, no collider, no joint — PhysX never sees the tool (tool.py
+        # explains why, with the measurement that forced it).
+        spec = ToolSpec.from_dict(self.profile.end_effector_tool,
+                                  tcp_m=self.profile.tool_centre_point_m)
+        self.tool = GripperCutterTool(spec)
+        self.tool.build(self.profile.end_effector_prim)
+
+    # -- the combined tool ------------------------------------------------ #
+
+    @property
+    def has_cutter(self) -> bool:
+        return self.tool is not None and self.tool.built
+
+    @property
+    def grasp_to_cut_offset_m(self) -> float:
+        return float(self.tool.spec.cut_offset_m[0]) if self.tool is not None else 0.0
+
+    def open_cutter(self) -> None:
+        if self.tool is None:
+            raise RobotModelError(f"{self.profile.display_name} carries no cutter")
+        self.tool.open_cutter()
+
+    def close_cutter(self) -> None:
+        if self.tool is None:
+            raise RobotModelError(f"{self.profile.display_name} carries no cutter")
+        self.tool.close_cutter()
+
+    def cutter_closed(self) -> bool:
+        return bool(self.tool is not None and self.tool.cutter_closed())
+
+    def tool_diagnostics(self) -> Dict[str, Any]:
+        return self.tool.diagnostics() if self.tool is not None else {}
+
+    def tick_tool(self) -> None:
+        if self.tool is not None:
+            self.tool.tick()
+
+    def reset(self) -> None:
+        super().reset()
+        if self.tool is not None:
+            self.tool.open_cutter()
 
     def validate_model(self, *, preset: str = "") -> None:
         super().validate_model(preset=preset)
+        if self.profile.has_cutter and not self.has_cutter:
+            self._model_valid = False
+            self._last_error = "the profile declares a gripper+cutter tool but none was built"
+            raise RobotModelError(self._last_error, {"robot_id": self.profile.robot_id})
+        if self.tool is not None and not self.tool.physics_free():
+            self._model_valid = False
+            self._last_error = ("the gripper+cutter tool carries a physics schema; "
+                                "it must be visual-only (see tool.py)")
+            raise RobotModelError(self._last_error, {"robot_id": self.profile.robot_id})
 
         # THE TWO FINGERS MUST BE COMMANDED AS A PAIR. The Panda's fingers are
         # two independently driven prismatic joints with no mimic relationship,

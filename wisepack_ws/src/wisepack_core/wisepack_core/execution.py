@@ -209,6 +209,12 @@ ISAAC_STATE_STAGE: Dict[IsaacState, Optional[Stage]] = {
 
     IsaacState.MOVING_TO_PICK: Stage.PICK_ITEM,
     IsaacState.GRASPING: Stage.PICK_ITEM,
+    # The cut-and-place skill: the shear closing on the gripped tube IS the
+    # cut in progress, and the discrete cut event is the cut completed —
+    # the same two stages the simulated cutting skill already reports through,
+    # so the timeline and FIWARE vocabulary gain no new words.
+    IsaacState.CUTTING: Stage.CUT_IN_PROGRESS,
+    IsaacState.CUT_COMPLETED: Stage.CUT_COMPLETED,
     # The lift is the physical evidence that the grasp actually holds, which is
     # exactly what VERIFY_PICK means in the simulated backend.
     IsaacState.LIFTING: Stage.VERIFY_PICK,
@@ -239,6 +245,8 @@ def stage_for_isaac_state(state: IsaacState) -> Optional[Stage]:
 _ROBOT_STATE = {
     IsaacState.MOVING_TO_PICK: "picking",
     IsaacState.GRASPING: "picking",
+    IsaacState.CUTTING: "cutting",
+    IsaacState.CUT_COMPLETED: "cutting",
     IsaacState.LIFTING: "picking",
     IsaacState.MOVING_TO_CONTAINER: "placing",
     IsaacState.RELEASING: "placing",

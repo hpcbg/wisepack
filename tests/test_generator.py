@@ -78,6 +78,14 @@ def test_every_item_fits_its_container_in_some_orientation(preset):
             and item.size_for_axis(axis).y <= inner.y
             and item.size_for_axis(axis).z <= inner.z
             for axis in item.permitted_axes)
+        if not fits and item.is_cuttable:
+            # THE ONE ALLOWED EXCEPTION: a CUTTABLE item that fits nowhere whole
+            # is the premise of the cut-and-place demonstration, and it must
+            # still fit once cut at its minimum segment length.
+            shortest = item.effective_minimum_segment_mm
+            assert shortest <= max(inner.x, inner.y), \
+                f"{item.item_id} could not fit even after cutting"
+            continue
         assert fits, f"{item.item_id} ({item.length_mm}x{item.outer_diameter_mm}) " \
                      f"fits no orientation of {inner.as_tuple()}"
 

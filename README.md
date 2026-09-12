@@ -93,6 +93,26 @@ what remains manual, and in
 
 ---
 
+### And when a part fits nowhere whole: the robot cuts it, then packs it
+
+The same Panda carries a **combined gripper + cutter** end effector in Isaac
+Sim. When the cut-aware planner finds that a 420 mm tube fits the container
+nowhere whole, it proposes one cut; the operator approves the cut; the robot
+grips the segment it will keep, shears at the planned plane, places that
+segment straight from the cut, leaves the remainder on the bench, registers
+both new items, re-plans, asks for packing approval **again**, and then packs
+everything that is left — the remainder included. 4 of 4 placed, 0 failed.
+
+<p align="center">
+  <img src="images/generated/scene-sync/isaac-cut-and-place.gif" width="720"
+       alt="The Panda with the combined gripper and cutter: the cut is proposed and approved, the tool approaches the tube, the gripper closes, the cutter closes, the tube becomes two segments, the retained segment is carried and placed, the remainder is packed afterwards">
+</p>
+
+*Cut-aware plan → cut approval → grip → shear (visual blades; the cut is a
+discrete scene event, not fracture physics) → two rigid segments → retained
+segment placed → re-plan → packing approval → every remaining tube packed. Live
+Isaac Sim run; details and limits in [§15b](#15b-cutting-skill-in-isaac-sim-grip-cut-place).*
+
 ## Physical RGB-D 6-DoF perception — Intel RealSense D435
 
 **WISEPACK now locates a real workpiece with a real depth camera.** A physical
@@ -1697,10 +1717,11 @@ in the comparison at net benefit 0, so cutting is recommended only when a saved
 container out-earns its process cost.
 
 Human-in-the-Loop cutting is a **separate approval** from packing approval
-(`WAIT_FOR_CUT_APPROVAL` → `CUT_REQUESTED` → simulated external cutting skill →
-`REGISTER_DERIVED_ITEMS` from the *actual* segment sizes → `REPLAN_AFTER_CUT` →
-packing approval **again**). Approving a cut never approves the resulting packing
-plan. Operator controls: compare no-cut vs cut-aware, select an alternative, limit
+(`WAIT_FOR_CUT_APPROVAL` → `CUT_REQUESTED` → the cutting skill (simulated
+external station, or the Isaac Sim gripper+cutter of [§15b](#15b-cutting-skill-in-isaac-sim-grip-cut-place))
+→ `REGISTER_DERIVED_ITEMS` from the *actual* segment sizes → `REPLAN_AFTER_CUT`
+→ packing approval **again**). Approving a cut never approves the resulting
+packing plan. Operator controls: compare no-cut vs cut-aware, select an alternative, limit
 cuts, change the minimum segment, prefer no cutting, approve/reject cutting,
 simulate a completed (or deviated, or failed) cut.
 
@@ -1810,6 +1831,7 @@ and Logistics status panels alongside the ROS topic and FIWARE mapping diagnosti
 | Simulated RGB-D camera (quantitative pose error) | **live — Isaac-rendered D435-compatible RGB-D + FoundationPose, acquired from the dashboard** | estimate is **real**; the frame is **simulated**. Pose error **measured against simulator ground truth**, read only after the estimate | no |
 | Physical `ObservationBatch` → Isaac scene synchronization | **live — configured demo camera→work-area transform** ([§15a](#physical-d435-to-isaac-to-robot-pick-demonstrated)) | **demonstrated**, for one object in 6-DoF and for a whole bench of 18 objects picked one by one ([whole scene](#whole-scene-physical-to-isaac-demonstrated)); the transform is a stated assumption, not a measured calibration | no |
 | Whole-scene RGB-D perception (`rgbd_scene_depth_plane`) | **live — physical D435, every workpiece on the work plane** | **measured footprints and planar poses; identity assigned by size** against a configured class table, not recognised | no |
+| Cutting skill: combined gripper+cutter on the Panda, cut-and-place in the physics simulator | **live — Isaac Sim 6.0.1, generated bench scene** ([§15b](#15b-cutting-skill-in-isaac-sim-grip-cut-place)) | discrete cut event on the planner's plane (no fracture physics); segment and remainder poses measured; 4 of 4 placed after the cut | cut result, derived items, placement errors |
 | Measured camera→robot/work-area calibration (physical) | future | not implemented — the demo transform stands in for it; no physical accuracy is claimed | no |
 | MoveIt2 execution | future | not implemented | no |
 
@@ -4508,6 +4530,73 @@ into one region); not physical robot execution. Raw JSON for the run —
 the scene document, the execution state after synchronization and after the
 picks, the pick outcomes and the pick log — is in
 `simulators/isaac/scene_sync_evidence/scene-run-*`.
+
+## 15b. Cutting skill in Isaac Sim: grip, cut, place
+
+The cut-aware planner of [§13d](#13d-whole-process-optimization-cut-aware)
+decides *whether* and *where* a pipe is cut. This section is the skill that
+**executes** that decision in the physics simulator, on the same Panda that
+does the picking, and hands the result back to the same workflow.
+
+<p align="center">
+  <img src="images/generated/scene-sync/isaac-cut-and-place.gif" width="720"
+       alt="Cut proposed and approved; the tool approaches; gripper closes; cutter closes; two segments; the retained segment is carried and placed; the remainder is picked later">
+</p>
+
+**The end effector.** One tool, two mechanisms: the Panda's parallel-jaw
+gripper (the *grasp frame*, between the fingertips) and a shear on a bracket
+bolted beside it (the *cut frame*), 60 mm along the direction a gripped tube
+lies, blades closing across the tube exactly as the fingers do. The transform
+grasp frame → cut frame is fixed and declared in the robot profile
+(`config/isaac_robots.yaml`, `end_effector_tool`), so a sequence that puts the
+cut frame on the planned cut plane knows the fingers are on the retained side
+by construction. No tool changer: the gripper and the shear are actuated
+independently on the same hand. The Panda + adapter architecture is unchanged
+(`simulators/isaac/tool.py`, authored by the Panda adapter's `load()`).
+
+**The sequence** (`simulators/isaac/robot.py`, state `CUT` between `GRASP` and
+`LIFT`): approach → fingers close on the segment that will be retained, one
+grasp-to-cut offset from the plane → blades close → **`CUT_COMPLETE`**: the
+tube body is deactivated and two rigid segment bodies are spawned where its
+material lies, kerf between them; the retained one is welded to the hand in
+place of the tube, the other is left to PhysX → the retained segment is
+retracted straight up, carried and placed with the TCP offset by the grasp
+offset so the *segment's centre* reaches the planned pose → the cut is reported
+(`CUT_COMPLETED`, contract `wisepack-isaac/1.2`, command `EXECUTE_CUT`) with
+both segments' measured poses → the workflow registers the derived items,
+validates the plan against them, and asks for packing approval again → the
+remainder is picked later like any other item, from where the cut left it.
+
+**What it is not.** The blades are *visual*: plain geometry under the hand,
+animated, carrying no rigid body, collider or joint. The cut is a discrete,
+authoritative scene event on the planner's plane, not a fracture model, and
+the demonstrator says so wherever it reports it. Nothing moves a segment back
+after physics has acted on it.
+
+**Measured, on the run in `simulators/isaac/CUT_SKILL_EVIDENCE.md`** (generated
+preset `isaac_cut_demo`: one 420 mm tube that fits the 300 × 220 × 150 mm bin
+nowhere whole, two short tubes; cut 150 + 267 mm, kerf 3 mm; live Isaac Sim):
+
+| Step | Result |
+|---|---|
+| Cut proposal | `cut:tube-long:150-267:max_density` recommended; no-cut leaves the tube unplaced |
+| Cut approval | separate from packing approval; authorises the cut-and-place only |
+| Grip + cut | fingers 60 mm from the plane on the retained side; blades close; `CUT_COMPLETED` after 0.8 s |
+| Retained segment (267 mm) placed from the cut | 20 mm from plan, no regrasp |
+| Remainder (150 mm) left on the bench | 1.9 mm from its cut-side pose, at rest |
+| Derived items → re-plan → packing approval | measured lengths match the proposal, so the validated plan stands; approval required again |
+| Remaining picks after approval | short tube 107 mm (rolled off the placed segment), **remainder 11 mm**, short tube 23 mm |
+| Run | **4 of 4 placed, 0 failed**, `COMPLETE` 63 s after the run began |
+
+Three physical defects were found and fixed on the way, each by measurement
+and none by moving a body back: rigid-body blades with collision "disabled"
+still pushed bodies (Isaac 6.0.1; the tool is now physics-free), the first IK
+step of the lift closed the 3 mm kerf and kicked the remainder (ramped
+straight-up retract), and PhysX's default contact offset made the two cut
+faces count as touching across the kerf (1 mm contact offset on every item
+collider). The standalone check `simulators/isaac/tool_check.py` pins all
+three with numbers. Limits: generated scene, no fracture physics, one
+demonstrated cut geometry.
 
 ## 16. Tests and evidence
 

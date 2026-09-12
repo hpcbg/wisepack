@@ -63,7 +63,16 @@ DEFAULT_REGISTRY_RELPATH = os.path.join("config", "isaac_robots.yaml")
 #: outside this set is rejected at load: an unimplemented skill in a config file
 #: reads as a capability and is a promise nothing keeps.
 KNOWN_SKILLS = ("HOME", "MOVE_TO_PICK", "GRASP", "LIFT", "MOVE_TO_CONTAINER",
-                "RELEASE", "SETTLE", "VERIFY")
+                "RELEASE", "SETTLE", "VERIFY",
+                # CUT: grip a tube with the combined gripper+cutter end effector,
+                # shear it at the planner's cut plane, retain the gripped
+                # segment. Only a profile that declares `end_effector_tool`
+                # may claim it.
+                "CUT")
+
+#: The core placement skills every selectable robot must implement.
+BASE_SKILLS = ("HOME", "MOVE_TO_PICK", "GRASP", "LIFT", "MOVE_TO_CONTAINER",
+               "RELEASE", "SETTLE", "VERIFY")
 
 #: Implementation maturity, in the operator's words. `validated` means a full
 #: smoke run has been measured with this profile; `experimental` means it loads
@@ -235,6 +244,11 @@ class RobotProfile:
     supported_presets: List[str]
     workcell: WorkcellOverrides
     notes: str
+    #: THE COMBINED END EFFECTOR, when the robot carries one. Empty means the
+    #: stock gripper alone. Keys: `kind` (`gripper_cutter`), `cut_offset_m`
+    #: (grasp_frame -> cut_frame in the hand frame), blade travel. The tool is
+    #: part of the profile, so its geometry is in the profile revision.
+    end_effector_tool: Dict[str, Any] = field(default_factory=dict)
 
     # -- derived ---------------------------------------------------------- #
 
@@ -303,7 +317,13 @@ class RobotProfile:
             "supported_presets": list(self.supported_presets),
             "workcell": self.workcell.to_dict(),
             "notes": self.notes,
+            "end_effector_tool": dict(self.end_effector_tool),
         }
+
+    @property
+    def has_cutter(self) -> bool:
+        """Does this profile carry the combined gripper+cutter tool?"""
+        return str(self.end_effector_tool.get("kind", "")) == "gripper_cutter"
 
     def to_public_dict(self) -> Dict[str, Any]:
         """What the web API may publish. No asset URLs, no prim paths.
@@ -329,6 +349,8 @@ class RobotProfile:
             "skills": list(self.supported_skills),
             "profile_revision": self.revision,
             "notes": self.notes,
+            "end_effector_tool": (str(self.end_effector_tool.get("kind"))
+                                  if self.end_effector_tool else ""),
         }
 
     @property
@@ -383,7 +405,7 @@ class RobotProfile:
             "closed_gripper_positions", "grasp_yaw_offset_deg",
             "home_tolerance_rad", "kinematics", "kinematics_options",
             "nominal_reach_m", "supported_skills", "supported_presets",
-            "workcell", "notes",
+            "workcell", "notes", "end_effector_tool",
         }
         unknown = set(doc) - known
         if unknown:
@@ -410,6 +432,17 @@ class RobotProfile:
             raise RobotConfigError(
                 f"{where}: supported_skills {bad} are not implemented; "
                 f"available: {list(KNOWN_SKILLS)}")
+        tool = doc.get("end_effector_tool") or {}
+        if not isinstance(tool, dict):
+            raise RobotConfigError(f"{where}: end_effector_tool must be a mapping")
+        if tool and str(tool.get("kind", "")) != "gripper_cutter":
+            raise RobotConfigError(
+                f"{where}: end_effector_tool kind {tool.get('kind')!r} is not "
+                "implemented; available: ['gripper_cutter']")
+        if "CUT" in skills and not tool:
+            raise RobotConfigError(
+                f"{where}: the CUT skill needs an end_effector_tool that carries "
+                "a cutter; a bare gripper cannot cut")
 
         arm = _list("arm_joint_names")
         grip = _list("gripper_joint_names")
@@ -492,6 +525,7 @@ class RobotProfile:
             workcell=WorkcellOverrides.from_dict(
                 doc.get("workcell"), where=where),
             notes=str(doc.get("notes", "")),
+            end_effector_tool=dict(doc.get("end_effector_tool") or {}),
         )
 
 

@@ -29,7 +29,8 @@ from .cut_validator import validate_result
 from .cutting import (
     CutApprovalState, CutResult, CutState, derive_segments,
 )
-from .domain import Container, Scenario, Source, Strategy, WasteItem
+from .domain import (ApprovalState, Container, ItemStatus, Scenario, Source,
+                     Strategy, Vec3, WasteItem)
 from .events import Actor, Result, Stage, utc_now_iso
 from .inventory import (
     ContainerInventory, ContainerLifecycleState, LOCATION_CELL,
@@ -70,6 +71,14 @@ class WholeProcess:
         self._request_seq = 0
         self.cut_skill_state = CutState.PROPOSED
         self.cut_request: Optional[Dict[str, Any]] = None
+        #: THE ISAAC CUT-AND-PLACE SKILL. Which derived segment the combined
+        #: tool keeps in its fingers after the cut, and whether that segment is
+        #: still on its way to the container. While it is, the re-plan waits:
+        #: a plan generated while the arm still holds the segment would place
+        #: an item that is neither on the table nor in the bin.
+        self.retained_segment_id: Optional[str] = None
+        self.cut_awaiting_placement = False
+        self.cut_backend = ""
 
         self.plan_container_status = "ok"        # ok | waiting_for_container
         self.planning_result: Dict[str, Any] = {}
@@ -341,8 +350,190 @@ class WholeProcess:
             eng.request_approval()
         return result
 
-    def _register_derived_items(self, results: List[CutResult]) -> None:
-        """Replace each cut parent with its ACTUAL derived segments (brief §6)."""
+    # -- the ISAAC gripper+cutter skill ---------------------------------- #
+    #
+    # One physical skill, authorised by the CUT approval: grip the segment the
+    # planner will place first, shear at the planner's cut plane, keep that
+    # segment in the fingers, carry it to the bin and place it. The remainder
+    # is left where it fell and REGISTERED with its measured pose. Packing
+    # approval is then required again for everything still on the table — the
+    # retained segment is frozen as an executed placement of the validated
+    # cut-aware plan, exactly as a dynamic re-plan freezes what is already in a
+    # container. What the cut approval does NOT authorise is any pick of any
+    # other item: `step_execution` still raises until packing is approved.
+
+    def isaac_cut_begun(self, request_id: str,
+                        details: Optional[Dict[str, Any]] = None) -> None:
+        """The simulator started executing the approved cut. Idempotent."""
+        if self.cut_skill_state is not CutState.REQUESTED:
+            return
+        eng = self.engine
+        self.cut_backend = "isaac_sim"
+        self.cut_skill_state = CutState.IN_PROGRESS
+        eng._set_stage(Stage.CUT_IN_PROGRESS)
+        self._emit(Stage.CUT_IN_PROGRESS, "CUT_REQUESTED", Actor.ISAAC_SIM,
+                   source=Source.SIMULATED,
+                   message="Isaac Sim gripper+cutter skill: REQUESTED -> "
+                           "IN_PROGRESS (grip, then shear at the cut plane)",
+                   details={"request_id": request_id, **dict(details or {})})
+
+    def note_isaac_cut_progress(self, action: str, message: str,
+                                details: Optional[Dict[str, Any]] = None,
+                                *, carrying: bool = False) -> None:
+        """One intermediate state of the cut skill, on the audit trail."""
+        stage = Stage.CUT_COMPLETED if carrying else Stage.CUT_IN_PROGRESS
+        self.engine.note_physical_progress(
+            stage, action, self.retained_segment_id if carrying else None, None,
+            message, robot_state="cutting" if not carrying else "placing",
+            details=dict(details or {}))
+
+    def complete_isaac_cut(self, payload: Dict[str, Any]) -> CutResult:
+        """The discrete cut happened in Isaac: register the MEASURED segments.
+
+        ``payload`` is the simulator's `detail["cut"]`: the two segments with
+        their measured lengths and table-frame poses, the kerf, and which
+        segment the fingers retained. Lineage is validated against the ACTUAL
+        lengths, the derived items get their measured source poses, the
+        scenario revision bumps — and the re-plan WAITS for the retained
+        segment to be placed (see `retained_segment_placed`).
+        """
+        alt = self._selected_alternative()
+        if alt is None or self.cut_approval_state is not CutApprovalState.APPROVED:
+            raise WholeProcessError("complete_isaac_cut before an approved cut")
+        eng = self.engine
+        prop = alt.proposals[0]
+        segments = list(payload.get("segments") or [])
+        if len(segments) != 2:
+            raise WholeProcessError(
+                f"the simulator reported {len(segments)} segment(s) for one cut")
+        result = CutResult(
+            proposal_id=prop.proposal_id, source_item_id=prop.source_item_id,
+            actual_segment_lengths_mm=[int(round(float(s["length_mm"])))
+                                       for s in segments],
+            resulting_child_ids=[str(s["item_id"]) for s in segments],
+            actual_kerf_mm=int(payload.get("kerf_mm", prop.kerf_mm)),
+            completion_status=CutState.COMPLETED, quality_check_state="passed")
+        self.cut_results = [result]
+        self.cut_backend = "isaac_sim"
+        eng._set_stage(Stage.CUT_COMPLETED)
+        self.cut_skill_state = CutState.COMPLETED
+        parent = eng.scenario.item(result.source_item_id)
+        verdict = validate_result(result, parent) if parent else {"valid": False}
+        self.latest_cut_result = {**result.to_dict(), "validation": verdict,
+                                  "backend": "isaac_sim",
+                                  "retained_segment_id": payload.get("retained_segment_id"),
+                                  "segments": segments}
+        self._emit(Stage.CUT_COMPLETED, "CUT_COMPLETED", Actor.ISAAC_SIM,
+                   Result.OK if verdict.get("valid") else Result.FAILED,
+                   source=Source.SIMULATED,
+                   message=(f"Isaac Sim cut {result.source_item_id} -> "
+                            f"{result.actual_segment_lengths_mm} mm; "
+                            f"{payload.get('retained_segment_id')} retained in "
+                            "the gripper, the other segment left on the table"),
+                   details=self.latest_cut_result)
+        self._register_derived_items([result], poses={
+            str(s["item_id"]): s.get("pose") for s in segments})
+        self.retained_segment_id = str(payload.get("retained_segment_id") or "")
+        self.cut_awaiting_placement = True
+        return result
+
+    def retained_segment_placed(self, child_id: str,
+                                details: Optional[Dict[str, Any]] = None) -> None:
+        """The retained segment is in the container: freeze it, re-plan the rest."""
+        eng = self.engine
+        alt = self._selected_alternative()
+        item = eng.scenario.item(child_id) if eng.scenario else None
+        placement = alt.plan.placement_for_item(child_id) if alt is not None else None
+        if item is None or placement is None:
+            raise WholeProcessError(
+                f"{child_id} is not a derived segment with a placement in the "
+                "approved cut-aware plan")
+        item.status = ItemStatus.PLACED
+        placement.executed = True
+        eng.stats.pick_successes += 1
+        eng.stats.cycles_attempted += 1
+        eng.stats.cycles_completed += 1
+        self._emit(Stage.CUT_COMPLETED, "isaac_retained_segment_placed",
+                   Actor.ISAAC_SIM, source=Source.SIMULATED, item_id=child_id,
+                   container_id=placement.container_id,
+                   message=f"{child_id} placed in {placement.container_id} "
+                           "straight from the cut, without a regrasp",
+                   details=dict(details or {}))
+        self.cut_awaiting_placement = False
+        eng._set_stage(Stage.REPLAN_AFTER_CUT)
+
+        # THE VALIDATED CUT-AWARE PLAN IS THE PLAN. It already places every
+        # segment and every other item in the ONE bin the retained segment now
+        # lies in, and the Digital Twin validated it before the cut was
+        # approved. Re-packing the remainder from scratch would open a fresh
+        # container id for it — a second bin the workcell does not have. So the
+        # plan stands, its placed segment executed, and packing approval is
+        # asked for AGAIN: cut approval never approved the packing. Only a cut
+        # whose MEASURED lengths deviate from the proposal invalidates the plan
+        # geometry, and only then is the remainder re-planned.
+        prop = alt.proposals[0]
+        actual = list(self.cut_results[0].actual_segment_lengths_mm) if self.cut_results else []
+        deviated = actual != list(prop.segment_lengths_mm)
+        eng.selected = alt.plan
+        eng.selected.approval_state = ApprovalState.PENDING
+        if deviated:
+            self._emit(Stage.REPLAN_AFTER_CUT, "REPLAN_AFTER_CUT", Actor.OPTIMIZER,
+                       message=f"actual segments {actual} mm differ from the proposal "
+                               f"{list(prop.segment_lengths_mm)} mm; re-planning the "
+                               "remaining items around the placed segment")
+            eng.replan("cut result deviated from the proposal")
+            return
+        report = eng.validator.validate_plan(alt.plan, eng.scenario)
+        self._emit(Stage.REPLAN_AFTER_CUT, "REPLAN_AFTER_CUT", Actor.OPTIMIZER,
+                   message="the validated cut-aware plan stands with the placed "
+                           "segment executed; packing approval required again "
+                           "(cut approval did NOT approve packing)",
+                   details={"placements_valid": getattr(report, "placements_valid", None),
+                            "pending": [p.item_id for p in alt.plan.placements
+                                        if not p.executed]})
+        eng.cursor.reset()
+        eng.request_approval()
+
+    def isaac_cut_failed(self, reason: str,
+                         details: Optional[Dict[str, Any]] = None) -> None:
+        """The skill failed. Before the cut: the pipe stays whole. After it:
+        both segments are on the table and the remainder is re-planned."""
+        eng = self.engine
+        if self.cut_skill_state in (CutState.REQUESTED, CutState.IN_PROGRESS,
+                                    CutState.PROPOSED):
+            alt = self._selected_alternative()
+            prop = alt.proposals[0] if alt else None
+            if prop is not None:
+                self.latest_cut_result = CutResult(
+                    proposal_id=prop.proposal_id, source_item_id=prop.source_item_id,
+                    actual_segment_lengths_mm=[], resulting_child_ids=[],
+                    actual_kerf_mm=prop.kerf_mm, completion_status=CutState.FAILED,
+                    failure_reason=reason).to_dict()
+            self.cut_skill_state = CutState.FAILED
+            self.cut_approval_state = CutApprovalState.PENDING
+            self.selected_cut_label = "no_cut"
+            eng._set_stage(Stage.CUT_COMPLETED)
+            self._emit(Stage.CUT_COMPLETED, "CUT_FAILED", Actor.ISAAC_SIM,
+                       Result.FAILED, source=Source.SIMULATED, message=reason,
+                       details=dict(details or {}))
+            if eng.selected is not None:
+                eng.request_approval()
+            return
+        # The cut happened; the carry did not. Both segments lie on the table.
+        self.cut_awaiting_placement = False
+        self._emit(Stage.CUT_COMPLETED, "isaac_cut_carry_failed", Actor.ISAAC_SIM,
+                   Result.FAILED, source=Source.SIMULATED, message=reason,
+                   details=dict(details or {}))
+        self._replan_after_cut()
+
+    def _register_derived_items(self, results: List[CutResult],
+                                poses: Optional[Dict[str, Any]] = None) -> None:
+        """Replace each cut parent with its ACTUAL derived segments (brief §6).
+
+        ``poses`` — measured table-frame poses per child id, when a physical
+        backend reports where the segments actually lie; a child without one
+        keeps the default source position, exactly as before.
+        """
         eng = self.engine
         scenario = eng.scenario
         remove: set = set()
@@ -355,6 +546,18 @@ class WholeProcess:
                 parent, result.actual_segment_lengths_mm,
                 kerf_mm=result.actual_kerf_mm,
                 child_ids=result.resulting_child_ids or None)
+            for child in children:
+                pose = (poses or {}).get(child.item_id)
+                # The simulator reports a contract `Pose` (position_mm nested);
+                # a flat x_mm/y_mm/z_mm record is accepted as well.
+                point = (pose.get("position_mm") if isinstance(pose, dict)
+                         and isinstance(pose.get("position_mm"), dict) else pose)
+                if isinstance(point, dict) and point.get("x_mm", point.get("x")) is not None:
+                    child.source_position = Vec3(
+                        int(round(float(point.get("x_mm", point.get("x"))))),
+                        int(round(float(point.get("y_mm", point.get("y"))))),
+                        int(round(float(point.get("z_mm", point.get("z", 0))))))
+                    child.cut_history[-1]["source_pose"] = dict(pose)
             parent.derived_item_ids = [c.item_id for c in children]
             remove.add(parent.item_id)
             add.extend(children)
@@ -565,6 +768,9 @@ class WholeProcess:
             "cut_request": self.cut_request,
             "latest_cut_result": self.latest_cut_result,
             "cut_results": [r.to_dict() for r in self.cut_results],
+            "cut_backend": self.cut_backend,
+            "retained_segment_id": self.retained_segment_id,
+            "cut_awaiting_placement": self.cut_awaiting_placement,
         }
 
     def snapshot(self) -> Dict[str, Any]:

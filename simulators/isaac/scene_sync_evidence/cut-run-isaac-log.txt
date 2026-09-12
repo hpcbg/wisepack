@@ -1,0 +1,100 @@
+1789230959.346678009 [isaac-bridge] <- RESET_SCENE run=run-87be8253
+1789230959.347132600 [isaac-bridge] -> RESETTING (rebuilding the scene for isaac_cut_demo seed 7 (revision 1))
+[isaac-app] RESET_SCENE -> isaac_cut_demo seed 7 rev 1 (generated)
+[isaac-scene] removed 3 item(s) from the previous scenario
+[isaac-scene] item tube-long: 420x40 mm, 1.15 kg at (0.48, -0.32, 0.42) m
+[isaac-scene] item tube-short-a: 160x40 mm, 0.438 kg at (0.48, -0.21, 0.42) m
+[isaac-scene] item tube-short-b: 150x40 mm, 0.411 kg at (0.48, -0.1, 0.42) m
+1789230961.305017895 [isaac-bridge] -> SCENE_READY (scene rebuilt for isaac_cut_demo (3 items))
+[isaac-app] SCENE_READY revision 1: 3 items, container empty
+1789230970.282238141 [isaac-bridge] <- RUN_BEGIN run=run-87be8253
+1789230970.283154389 [isaac-bridge] -> READY (Isaac Sim scene built; physical execution may begin)
+1789230970.298673849 [isaac-bridge] <- EXECUTE_CUT tube-long #-1
+[isaac-robot] item tube-long #-1: pick [ 0.48 -0.32  0.42] -> place [0.248 0.358 0.428] (axis x, release moved 19 mm inward for wall clearance)
+[isaac-robot] cut tube-long: shear at [ 0.421 -0.321  0.42 ] (152 mm from the end), fingers at [ 0.481 -0.321  0.42 ] on tube-long-s2, yaw -180.0 deg
+1789230972.727619342 [isaac-bridge] -> MOVING_TO_PICK tube-long (PRE_GRASP)
+1789230973.707293692 [isaac-bridge] -> GRASPING tube-long (GRASP)
+[isaac-robot] attached tube-long to panda_hand (secure-grasp approximation; offset (0.0003, -0.0003, 0.1042) m)
+1789230975.138210500 [isaac-bridge] -> CUTTING tube-long (CUT)
+[isaac-robot] detached tube-long — the drop and settling from here are PhysX, not this code
+[isaac-scene] cut segment tube-long-s1: 150x40 mm, 0.4107 kg at (0.345, -0.315, 0.42) m
+[isaac-scene] cut segment tube-long-s2: 267x40 mm, 0.7311 kg at (0.557, -0.315, 0.42) m
+[isaac-scene] tube-long cut at 152 mm from its end (kerf 3 mm): deactivated; tube-long-s1 and tube-long-s2 spawned in its place
+[isaac-robot] remainder tube-long-s1 after_creation: [0.3451, -0.3152, 0.42]
+[isaac-robot] attached tube-long-s2 to panda_hand (secure-grasp approximation; offset (-0.0763, 0.0005, 0.1036) m)
+[isaac-robot] remainder tube-long-s1 after_retained_weld: [0.3451, -0.3152, 0.42]
+[isaac-robot] tube-long-s2 held 76 mm from its centre along the tube; the place motion offsets the TCP by that much so the segment's centre reaches [0.242 0.358 0.428]
+[isaac-app] scene revision advanced to 2 by the cut of tube-long: ['tube-long-s1', 'tube-long-s2'] registered
+1789230975.932378979 [isaac-bridge] -> CUT_COMPLETED tube-long-s2 (cut tube-long -> tube-long-s1 + tube-long-s2; tube-long-s2 retained in the gripper)
+1789230975.932784056 [isaac-bridge] -> LIFTING tube-long-s2 (LIFT)
+[isaac-robot] remainder tube-long-s1 lift_frame_1: [0.3451, -0.3152, 0.42]
+[isaac-robot] bounds panda_hand: x [0.4079, 0.5138] y [-0.4231, -0.2143] z [0.3959, 0.5539]
+[isaac-robot] bounds panda_leftfinger: x [0.4700, 0.4917] y [-0.2953, -0.2641] z [0.4122, 0.4675]
+[isaac-robot] bounds panda_rightfinger: x [0.4691, 0.4907] y [-0.3650, -0.3336] z [0.4095, 0.4646]
+[isaac-robot] bounds tube_long_s1: x [0.2701, 0.4202] y [-0.3390, -0.2914] z [0.3965, 0.4435]
+[isaac-robot] bounds tube_long_s2: x [0.4231, 0.6902] y [-0.3377, -0.2903] z [0.3964, 0.4436]
+[isaac-robot] lift-forensics frame 1: remainder [0.3451, -0.3152, 0.42] v [0.0, -0.001, 0.006] w [0.03, 0.0, 0.0]; hand [0.4808, -0.3178, 0.5238] q [-0.003, 0.006, 1.0, 0.02] fingers [0.0207, 0.0208]; held tube-long-s2 at [0.5566, -0.314, 0.42]
+[isaac-robot] lift-forensics frame 15: remainder [0.3451, -0.3159, 0.42] v [0.0, -0.006, 0.006] w [0.3, 0.0, 0.0]; hand [0.4808, -0.3152, 0.5307] q [-0.004, 0.004, 1.0, 0.027] fingers [0.0205, 0.0208]; held tube-long-s2 at [0.5564, -0.31, 0.4266]
+[isaac-robot] lift-forensics frame 23: remainder [0.3451, -0.317, 0.42] v [0.0, -0.009, 0.005] w [0.47, 0.0, 0.0]; hand [0.4808, -0.3145, 0.5395] q [-0.004, 0.003, 1.0, 0.029] fingers [0.0205, 0.0209]; held tube-long-s2 at [0.5563, -0.3087, 0.4354]
+[isaac-robot] bounds panda_hand: x [0.4079, 0.5131] y [-0.4198, -0.2097] z [0.4187, 0.5809]
+[isaac-robot] bounds panda_leftfinger: x [0.4695, 0.4911] y [-0.2904, -0.2584] z [0.4375, 0.4934]
+[isaac-robot] bounds panda_rightfinger: x [0.4691, 0.4907] y [-0.3600, -0.3276] z [0.4332, 0.4889]
+[isaac-robot] bounds tube_long_s1: x [0.2701, 0.4202] y [-0.3393, -0.2950] z [0.3981, 0.4419]
+[isaac-robot] bounds tube_long_s2: x [0.4227, 0.6898] y [-0.3313, -0.2849] z [0.4208, 0.4681]
+[isaac-robot] lift-forensics frame 30: remainder [0.3451, -0.3171, 0.42] v [0.0, 0.0, 0.0] w [0.0, 0.0, 0.0]; hand [0.4808, -0.3143, 0.5485] q [-0.004, 0.003, 1.0, 0.031] fingers [0.0205, 0.0208]; held tube-long-s2 at [0.5563, -0.3081, 0.4444]
+[isaac-robot] remainder tube-long-s1 lift_frame_45: [0.3451, -0.3171, 0.42]
+[isaac-robot] lift-forensics frame 45: remainder [0.3451, -0.3171, 0.42] v [0.0, 0.0, 0.0] w [0.0, 0.0, 0.0]; hand [0.4809, -0.3141, 0.5697] q [-0.005, 0.002, 0.999, 0.033] fingers [0.0205, 0.0208]; held tube-long-s2 at [0.5563, -0.3073, 0.4656]
+[isaac-robot] lift-forensics frame 60: remainder [0.3451, -0.3171, 0.42] v [0.0, 0.0, 0.0] w [0.0, 0.0, 0.0]; hand [0.4791, -0.314, 0.6033] q [-0.007, 0.003, 0.999, 0.039] fingers [0.0204, 0.0209]; held tube-long-s2 at [0.5539, -0.307, 0.4988]
+1789230979.062614306 [isaac-bridge] -> MOVING_TO_CONTAINER tube-long-s2 (PRE_PLACE)
+[isaac-robot] remainder tube-long-s1 carry_start: [0.3451, -0.3171, 0.42]
+1789230983.310289201 [isaac-bridge] -> RELEASING tube-long-s2 (RELEASE)
+[isaac-robot] remainder tube-long-s1 at_release: [0.3451, -0.3171, 0.42]
+[isaac-robot] detached tube-long-s2 — the drop and settling from here are PhysX, not this code
+[isaac-robot] released tube-long-s2 frame 2: at [0.2478, 0.3344, 0.5771] m, speed 0.048 m/s (v [0.033, 0.022, -0.028]), spin 1.91 rad/s
+[isaac-robot] released tube-long-s2 frame 12: at [0.2417, 0.3664, 0.5148] m, speed 1.006 m/s (v [-0.07, 0.251, -0.972]), spin 15.49 rad/s
+1789230985.974239036 [isaac-bridge] -> SETTLING tube-long-s2 (WAIT_FOR_SETTLE)
+[isaac-robot] remainder tube-long-s1 retained_settled: [0.3451, -0.3171, 0.42]
+[isaac-robot] tube-long-s2: settled inside the container, 20 mm from the planned pose, axis off by 7 deg
+1789230987.122899746 [isaac-bridge] -> ITEM_COMPLETED tube-long-s2 (settled inside the container, 20 mm from the planned pose, axis off by 7 deg)
+1789230989.133358570 [isaac-bridge] <- EXECUTE_ITEM tube-short-a #0
+[isaac-robot] item tube-short-a #0: pick [ 0.48 -0.21  0.42] -> place [0.188 0.388 0.428] (axis x, release moved 10 mm inward for wall clearance)
+1789230991.100690892 [isaac-bridge] -> MOVING_TO_PICK tube-short-a (PRE_GRASP)
+1789230992.412486565 [isaac-bridge] -> GRASPING tube-short-a (GRASP)
+[isaac-robot] attached tube-short-a to panda_hand (secure-grasp approximation; offset (0.0022, -0.0003, 0.1048) m)
+1789230993.898497731 [isaac-bridge] -> LIFTING tube-short-a (LIFT)
+1789230995.478006782 [isaac-bridge] -> MOVING_TO_CONTAINER tube-short-a (PRE_PLACE)
+1789231000.119667132 [isaac-bridge] -> RELEASING tube-short-a (RELEASE)
+[isaac-robot] detached tube-short-a — the drop and settling from here are PhysX, not this code
+[isaac-robot] released tube-short-a frame 2: at [0.1915, 0.3833, 0.5674] m, speed 0.327 m/s (v [0.0, 0.0, -0.327]), spin 0.00 rad/s
+[isaac-robot] released tube-short-a frame 12: at [0.1916, 0.4003, 0.4283] m, speed 0.212 m/s (v [-0.042, 0.206, -0.024]), spin 4.97 rad/s
+1789231002.893359553 [isaac-bridge] -> SETTLING tube-short-a (WAIT_FOR_SETTLE)
+[isaac-robot] tube-short-a: settled inside the container, 107 mm from the planned pose, axis off by 7 deg
+1789231004.364244913 [isaac-bridge] -> ITEM_COMPLETED tube-short-a (settled inside the container, 107 mm from the planned pose, axis off by 7 deg)
+1789231004.534702772 [isaac-bridge] <- EXECUTE_ITEM tube-long-s1 #1
+[isaac-robot] item tube-long-s1 #1: pick [ 0.345 -0.315  0.42 ] -> place [0.183 0.436 0.428] (axis x, release moved 13 mm inward for wall clearance)
+1789231006.339650044 [isaac-bridge] -> MOVING_TO_PICK tube-long-s1 (PRE_GRASP)
+1789231007.461938845 [isaac-bridge] -> GRASPING tube-long-s1 (GRASP)
+[isaac-robot] attached tube-long-s1 to panda_hand (secure-grasp approximation; offset (0.0004, -0.0003, 0.1053) m)
+1789231008.824126809 [isaac-bridge] -> LIFTING tube-long-s1 (LIFT)
+1789231010.318645501 [isaac-bridge] -> MOVING_TO_CONTAINER tube-long-s1 (PRE_PLACE)
+1789231014.482351197 [isaac-bridge] -> RELEASING tube-long-s1 (RELEASE)
+[isaac-robot] detached tube-long-s1 — the drop and settling from here are PhysX, not this code
+[isaac-robot] released tube-long-s1 frame 2: at [0.1794, 0.4352, 0.5665] m, speed 0.327 m/s (v [0.0, 0.0, -0.327]), spin 0.00 rad/s
+[isaac-robot] released tube-long-s1 frame 12: at [0.1795, 0.4353, 0.428] m, speed 0.004 m/s (v [0.0, 0.001, 0.003]), spin 0.08 rad/s
+1789231017.162293143 [isaac-bridge] -> SETTLING tube-long-s1 (WAIT_FOR_SETTLE)
+[isaac-robot] tube-long-s1: settled inside the container, 11 mm from the planned pose, axis off by 0 deg
+1789231017.880002165 [isaac-bridge] -> ITEM_COMPLETED tube-long-s1 (settled inside the container, 11 mm from the planned pose, axis off by 0 deg)
+1789231018.545762882 [isaac-bridge] <- EXECUTE_ITEM tube-short-b #2
+[isaac-robot] item tube-short-b #2: pick [ 0.48 -0.1   0.42] -> place [0.183 0.484 0.428] (axis x, release moved 19 mm inward for wall clearance)
+1789231020.254868382 [isaac-bridge] -> MOVING_TO_PICK tube-short-b (PRE_GRASP)
+1789231021.496221551 [isaac-bridge] -> GRASPING tube-short-b (GRASP)
+[isaac-robot] attached tube-short-b to panda_hand (secure-grasp approximation; offset (0.0022, -0.0003, 0.1055) m)
+1789231022.953811308 [isaac-bridge] -> LIFTING tube-short-b (LIFT)
+1789231024.766026098 [isaac-bridge] -> MOVING_TO_CONTAINER tube-short-b (PRE_PLACE)
+1789231028.934027362 [isaac-bridge] -> RELEASING tube-short-b (RELEASE)
+[isaac-robot] detached tube-short-b — the drop and settling from here are PhysX, not this code
+[isaac-robot] released tube-short-b frame 2: at [0.1787, 0.4825, 0.566] m, speed 0.327 m/s (v [0.0, 0.0, -0.327]), spin 0.00 rad/s
+[isaac-robot] released tube-short-b frame 12: at [0.1782, 0.4699, 0.4392] m, speed 0.130 m/s (v [-0.125, 0.01, -0.036]), spin 4.00 rad/s
+1789231031.827527031 [isaac-bridge] -> SETTLING tube-short-b (WAIT_FOR_SETTLE)
+[isaac-robot] tube-short-b: settled inside the container, 23 mm from the planned pose, axis off by 9 deg
+1789231033.241548063 [isaac-bridge] -> ITEM_COMPLETED tube-short-b (settled inside the container, 23 mm from the planned pose, axis off by 9 deg)

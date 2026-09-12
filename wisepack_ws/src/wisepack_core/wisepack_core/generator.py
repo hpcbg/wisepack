@@ -377,6 +377,13 @@ _PRESET_DESCRIPTIONS = {
         "CURATED CUT-AWARE DATASET — the saving geometry, used to demonstrate an "
         "ACTUAL cut result that deviates from the proposal: lineage is updated "
         "from the real segment sizes, packing is re-planned and re-approved."),
+    "isaac_cut_demo": (
+        "PHYSICAL CUT-AND-PLACE DEMONSTRATION for the Isaac Sim backend: one "
+        "bench-scale tube too long for the bin in any orientation beside two "
+        "short ones that fit. The cut-aware planner selects the cut plane; the "
+        "combined gripper+cutter tool grips the retained segment, cuts, carries "
+        "it to the bin and leaves the remainder on the table. NOT a packing "
+        "benchmark, and NOT a cutting-physics model."),
 }
 
 
@@ -513,6 +520,12 @@ PRESETS: Dict[str, Dict[str, Any]] = {
         item_count=1, container_spec="standard_box", max_containers=8),
     "cut_result_deviation": dict(
         item_count=1, container_spec="standard_box", max_containers=8),
+    # Hand-built as well — see build_cut_scenario(). The registry entry carries
+    # the REAL bench-scale bounds so preset_physical_compatibility can judge it.
+    "isaac_cut_demo": dict(
+        item_count=3, length_range_mm=(150, 420), diameter_range_mm=(40, 40),
+        container_spec="isaac_smoke_bin", permitted_axes=("x", "y"),
+        max_containers=1),
 }
 
 
@@ -598,7 +611,8 @@ def build_curated_scenario(seed: int = 7,
 
 
 _CUT_SCENARIOS = frozenset({
-    "cut_avoids_extra_container", "cut_not_worthwhile", "cut_result_deviation"})
+    "cut_avoids_extra_container", "cut_not_worthwhile", "cut_result_deviation",
+    "isaac_cut_demo"})
 
 
 def build_cut_scenario(preset: str, seed: int = 7,
@@ -630,6 +644,35 @@ def build_cut_scenario(preset: str, seed: int = 7,
             source_position=Vec3(x=80, y=60, z=40), priority=1, dose_class="LLW",
             cut_allowed=cut, maximum_number_of_cuts=mc,
             minimum_segment_length_mm=minseg, protected_end_length_mm=20)
+
+    if preset == "isaac_cut_demo":
+        # THE BENCH-SCALE CUT. One 420 mm tube cannot enter the 300 x 220 x 150 mm
+        # smoke bin in any horizontal orientation, so the no-cut plan leaves it
+        # on the table; cut once into two segments of about 208 mm it fits
+        # beside the two short tubes. Every dimension is within the Panda's
+        # 80 mm gripper and the bin the Isaac workcell already holds. The tube
+        # lies along the pick row; the cut plane and the retained segment are
+        # the planner's to choose.
+        def bench(item_id, length, *, cut=False, mc=0, minseg=None):
+            od, wall = 40, 3
+            density = 7850.0
+            volume = (math.pi / 4.0) * (od ** 2 - (od - 2 * wall) ** 2) * length
+            return WasteItem(
+                item_id=item_id, length_mm=length, outer_diameter_mm=od,
+                inner_diameter_mm=od - 2 * wall, geometry_type=GeometryType.TUBE,
+                material="carbon_steel", segregation_group="A",
+                weight_kg=round(volume * 1e-9 * density, 3),
+                source_position=Vec3(x=80, y=60, z=40), priority=1,
+                dose_class="LLW", permitted_axes=(Axis.X, Axis.Y),
+                cut_allowed=cut, maximum_number_of_cuts=mc,
+                minimum_segment_length_mm=minseg, protected_end_length_mm=20)
+        items = [bench("tube-long", 420, cut=True, mc=1, minseg=150),
+                 bench("tube-short-a", 160), bench("tube-short-b", 150)]
+        return Scenario(
+            scenario_id=scenario_id or preset, preset=preset, seed=seed,
+            items=items, container_template=make_container("isaac_smoke_bin", "CNT"),
+            max_containers=1, description=_PRESET_DESCRIPTIONS[preset],
+            curated=True)
 
     template = make_container("standard_box", "CNT")
     if preset == "cut_not_worthwhile":

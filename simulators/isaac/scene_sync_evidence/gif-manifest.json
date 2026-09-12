@@ -1,442 +1,703 @@
 {
-  "_about": [
-    "Frame lists for the scene-synchronization GIFs in images/generated/scene-sync/.",
-    "Assembled by: python3 scripts/generate_readme_gifs.py --scene-sync-gifs",
-    "Every frame named here is a TRACKED capture from a physical D435 -> Isaac run;",
-    "the assembler never records anything itself and refuses a frame it cannot find,",
-    "so re-running the generator cannot replace this evidence with a generated-scenario",
-    "capture. `hold` is how many GIF frames the still is shown for at `fps`."
-  ],
-  "physical-to-isaac-pick.gif": {
-    "source": "run 3: LIVE D435 acquisition on 2026-09-12 of placement 1 (same physical placement as 2026-09-11), synchronized into Isaac through the configured demo transform and picked by the existing Panda backend; DemoCamera frames captured with WISEPACK_ISAAC_CAPTURE_DIR",
-    "run_mode": "live",
-    "fps": 3,
-    "width": 800,
-    "footer": "Physical D435 -> FoundationPose (model-free) -> synchronized Isaac workcell -> Panda pick-and-place",
-    "frames": [
-      {
-        "file": "run3-isaac-seq-01.jpg",
-        "hold": 5,
-        "label": "Before: the Digital Twin holds a generated placeholder"
-      },
-      {
-        "file": "run3-isaac-seq-02.jpg",
-        "hold": 7,
-        "label": "Synchronized: the observed Cylinder5 is instantiated in the Isaac workcell at its measured pose"
-      },
-      {
-        "file": "run3-isaac-seq-03.jpg",
-        "hold": 3,
-        "label": "Operator approval -> the Panda executes the WISEPACK plan"
-      },
-      {
-        "file": "run3-isaac-seq-04.jpg",
-        "hold": 1,
-        "label": "Approach to the observed object"
-      },
-      {
-        "file": "run3-isaac-seq-05.jpg",
-        "hold": 1,
-        "label": "Approach to the observed object"
-      },
-      {
-        "file": "run3-isaac-seq-06.jpg",
-        "hold": 1,
-        "label": "Approach to the observed object"
-      },
-      {
-        "file": "run3-isaac-seq-07.jpg",
-        "hold": 1,
-        "label": "Gripper aligned to the observed tube heading"
-      },
-      {
-        "file": "run3-isaac-seq-08.jpg",
-        "hold": 3,
-        "label": "Grasp"
-      },
-      {
-        "file": "run3-isaac-seq-09.jpg",
-        "hold": 1,
-        "label": "Lift"
-      },
-      {
-        "file": "run3-isaac-seq-10.jpg",
-        "hold": 1,
-        "label": "Lift"
-      },
-      {
-        "file": "run3-isaac-seq-11.jpg",
-        "hold": 1,
-        "label": "Transport to the WISEPACK container"
-      },
-      {
-        "file": "run3-isaac-seq-12.jpg",
-        "hold": 1,
-        "label": "Transport to the WISEPACK container"
-      },
-      {
-        "file": "run3-isaac-seq-13.jpg",
-        "hold": 1,
-        "label": "Transport to the WISEPACK container"
-      },
-      {
-        "file": "run3-isaac-seq-14.jpg",
-        "hold": 1,
-        "label": "Transport to the WISEPACK container"
-      },
-      {
-        "file": "run3-isaac-seq-15.jpg",
-        "hold": 3,
-        "label": "Release: PhysX resolves the final settling pose (47 mm from the planned pose, reported as measured)"
-      },
-      {
-        "file": "run3-isaac-seq-16.jpg",
-        "hold": 1,
-        "label": "Retreat"
-      },
-      {
-        "file": "run3-isaac-seq-17.jpg",
-        "hold": 1,
-        "label": "Retreat"
-      },
-      {
-        "file": "run3-isaac-seq-18.jpg",
-        "hold": 6,
-        "label": "Placed: the observed tube rests inside container CNT-01"
-      }
-    ]
-  },
-  "physical-scene-to-isaac-picks.gif": {
-    "source": "whole-scene run: LIVE D435 acquisition on 2026-09-12 (capture scene-20260912-091535), 18 workpieces classified by footprint, synchronized into Isaac through the configured demo transform and picked one by one into the single bin by the existing Panda backend; DemoCamera frames captured with WISEPACK_ISAAC_CAPTURE_DIR, per-object markers off (WISEPACK_ISAAC_OBJECT_MARKERS=0)",
-    "run_mode": "live",
-    "fps": 3,
-    "width": 640,
-    "footer": "Physical D435 -> whole-scene RGB-D perception -> synchronized Isaac workcell -> Panda picks 18 of 18 into one container",
-    "frames": [
-      {
-        "file": "scene-isaac-seq-01.jpg",
-        "hold": 5,
-        "label": "Before: the Digital Twin holds one generated placeholder",
-        "source_frame": 186
-      },
-      {
-        "file": "scene-isaac-seq-02.jpg",
-        "hold": 7,
-        "label": "Synchronized: 18 workpieces observed by the D435 are instantiated in the Isaac workcell at their measured poses",
-        "source_frame": 196
-      },
-      {
-        "file": "scene-isaac-seq-03.jpg",
-        "hold": 1,
-        "label": "Pick 1 of 18: approach",
-        "source_frame": 209
-      },
-      {
-        "file": "scene-isaac-seq-04.jpg",
-        "hold": 1,
-        "label": "Pick 1 of 18: approach",
-        "source_frame": 211
-      },
-      {
-        "file": "scene-isaac-seq-05.jpg",
-        "hold": 1,
-        "label": "Pick 1 of 18: grasp",
-        "source_frame": 213
-      },
-      {
-        "file": "scene-isaac-seq-06.jpg",
-        "hold": 1,
-        "label": "Pick 1 of 18: grasp",
-        "source_frame": 215
-      },
-      {
-        "file": "scene-isaac-seq-07.jpg",
-        "hold": 1,
-        "label": "Pick 1 of 18: transport to the container",
-        "source_frame": 217
-      },
-      {
-        "file": "scene-isaac-seq-08.jpg",
-        "hold": 1,
-        "label": "Pick 1 of 18: transport to the container",
-        "source_frame": 219
-      },
-      {
-        "file": "scene-isaac-seq-09.jpg",
-        "hold": 1,
-        "label": "Pick 1 of 18: transport to the container",
-        "source_frame": 221
-      },
-      {
-        "file": "scene-isaac-seq-10.jpg",
-        "hold": 1,
-        "label": "Pick 1 of 18: PhysX settles the part",
-        "source_frame": 223
-      },
-      {
-        "file": "scene-isaac-seq-11.jpg",
-        "hold": 1,
-        "label": "Pick 1 of 18: PhysX settles the part",
-        "source_frame": 225
-      },
-      {
-        "file": "scene-isaac-seq-12.jpg",
-        "hold": 1,
-        "label": "Pick 1 of 18: PhysX settles the part",
-        "source_frame": 227
-      },
-      {
-        "file": "scene-isaac-seq-13.jpg",
-        "hold": 1,
-        "label": "Pick 2 of 18: grasp",
-        "source_frame": 229
-      },
-      {
-        "file": "scene-isaac-seq-14.jpg",
-        "hold": 1,
-        "label": "Pick 2 of 18: grasp",
-        "source_frame": 231
-      },
-      {
-        "file": "scene-isaac-seq-15.jpg",
-        "hold": 1,
-        "label": "Pick 2 of 18: grasp",
-        "source_frame": 233
-      },
-      {
-        "file": "scene-isaac-seq-16.jpg",
-        "hold": 1,
-        "label": "Pick 2 of 18: grasp",
-        "source_frame": 235
-      },
-      {
-        "file": "scene-isaac-seq-17.jpg",
-        "hold": 1,
-        "label": "Pick 2 of 18: grasp",
-        "source_frame": 237
-      },
-      {
-        "file": "scene-isaac-seq-18.jpg",
-        "hold": 1,
-        "label": "Pick 2 of 18: grasp",
-        "source_frame": 239
-      },
-      {
-        "file": "scene-isaac-seq-19.jpg",
-        "hold": 1,
-        "label": "Pick 2 of 18: grasp",
-        "source_frame": 241
-      },
-      {
-        "file": "scene-isaac-seq-20.jpg",
-        "hold": 1,
-        "label": "Pick 2 of 18: lift",
-        "source_frame": 243
-      },
-      {
-        "file": "scene-isaac-seq-21.jpg",
-        "hold": 1,
-        "label": "Pick 2 of 18: lift",
-        "source_frame": 245
-      },
-      {
-        "file": "scene-isaac-seq-22.jpg",
-        "hold": 1,
-        "label": "Pick 2 of 18: transport to the container",
-        "source_frame": 247
-      },
-      {
-        "file": "scene-isaac-seq-23.jpg",
-        "hold": 1,
-        "label": "Pick 2 of 18: release",
-        "source_frame": 249
-      },
-      {
-        "file": "scene-isaac-seq-24.jpg",
-        "hold": 1,
-        "label": "Pick 2 of 18: release",
-        "source_frame": 251
-      },
-      {
-        "file": "scene-isaac-seq-25.jpg",
-        "hold": 1,
-        "label": "Pick 3 of 18: next pick",
-        "source_frame": 253
-      },
-      {
-        "file": "scene-isaac-seq-26.jpg",
-        "hold": 1,
-        "label": "Pick 3 of 18: next pick",
-        "source_frame": 255
-      },
-      {
-        "file": "scene-isaac-seq-27.jpg",
-        "hold": 1,
-        "label": "Pick 3 of 18: grasp",
-        "source_frame": 257
-      },
-      {
-        "file": "scene-isaac-seq-28.jpg",
-        "hold": 1,
-        "label": "Pick 3 of 18: lift",
-        "source_frame": 259
-      },
-      {
-        "file": "scene-isaac-seq-29.jpg",
-        "hold": 1,
-        "label": "Pick 3 of 18: lift",
-        "source_frame": 261
-      },
-      {
-        "file": "scene-isaac-seq-30.jpg",
-        "hold": 1,
-        "label": "Pick 3 of 18: release",
-        "source_frame": 263
-      },
-      {
-        "file": "scene-isaac-seq-31.jpg",
-        "hold": 1,
-        "label": "Pick 3 of 18: release",
-        "source_frame": 265
-      },
-      {
-        "file": "scene-isaac-seq-32.jpg",
-        "hold": 1,
-        "label": "Pick 3 of 18: release",
-        "source_frame": 267
-      },
-      {
-        "file": "scene-isaac-seq-33.jpg",
-        "hold": 1,
-        "label": "Sequential picks, time-lapse: item 4 of 18 \u2014 next pick",
-        "source_frame": 272
-      },
-      {
-        "file": "scene-isaac-seq-34.jpg",
-        "hold": 1,
-        "label": "Sequential picks, time-lapse: item 5 of 18 \u2014 next pick",
-        "source_frame": 286
-      },
-      {
-        "file": "scene-isaac-seq-35.jpg",
-        "hold": 1,
-        "label": "Sequential picks, time-lapse: item 5 of 18 \u2014 transport to the container",
-        "source_frame": 300
-      },
-      {
-        "file": "scene-isaac-seq-36.jpg",
-        "hold": 1,
-        "label": "Sequential picks, time-lapse: item 5 of 18 \u2014 transport to the container",
-        "source_frame": 314
-      },
-      {
-        "file": "scene-isaac-seq-37.jpg",
-        "hold": 1,
-        "label": "Sequential picks, time-lapse: item 6 of 18 \u2014 approach",
-        "source_frame": 328
-      },
-      {
-        "file": "scene-isaac-seq-38.jpg",
-        "hold": 1,
-        "label": "Sequential picks, time-lapse: item 6 of 18 \u2014 grasp",
-        "source_frame": 342
-      },
-      {
-        "file": "scene-isaac-seq-39.jpg",
-        "hold": 1,
-        "label": "Sequential picks, time-lapse: item 7 of 18 \u2014 next pick",
-        "source_frame": 356
-      },
-      {
-        "file": "scene-isaac-seq-40.jpg",
-        "hold": 1,
-        "label": "Sequential picks, time-lapse: item 8 of 18 \u2014 next pick",
-        "source_frame": 370
-      },
-      {
-        "file": "scene-isaac-seq-41.jpg",
-        "hold": 1,
-        "label": "Sequential picks, time-lapse: item 8 of 18 \u2014 release",
-        "source_frame": 384
-      },
-      {
-        "file": "scene-isaac-seq-42.jpg",
-        "hold": 1,
-        "label": "Sequential picks, time-lapse: item 9 of 18 \u2014 release",
-        "source_frame": 398
-      },
-      {
-        "file": "scene-isaac-seq-43.jpg",
-        "hold": 1,
-        "label": "Sequential picks, time-lapse: item - of 18 \u2014 placed",
-        "source_frame": 412
-      },
-      {
-        "file": "scene-isaac-seq-44.jpg",
-        "hold": 1,
-        "label": "Sequential picks, time-lapse: item 12 of 18 \u2014 next pick",
-        "source_frame": 426
-      },
-      {
-        "file": "scene-isaac-seq-45.jpg",
-        "hold": 1,
-        "label": "Sequential picks, time-lapse: item 12 of 18 \u2014 transport to the container",
-        "source_frame": 440
-      },
-      {
-        "file": "scene-isaac-seq-46.jpg",
-        "hold": 1,
-        "label": "Sequential picks, time-lapse: item 13 of 18 \u2014 transport to the container",
-        "source_frame": 454
-      },
-      {
-        "file": "scene-isaac-seq-47.jpg",
-        "hold": 1,
-        "label": "Sequential picks, time-lapse: item 14 of 18 \u2014 grasp",
-        "source_frame": 468
-      },
-      {
-        "file": "scene-isaac-seq-48.jpg",
-        "hold": 1,
-        "label": "Sequential picks, time-lapse: item 15 of 18 \u2014 approach",
-        "source_frame": 482
-      },
-      {
-        "file": "scene-isaac-seq-49.jpg",
-        "hold": 1,
-        "label": "Sequential picks, time-lapse: item 16 of 18 \u2014 grasp",
-        "source_frame": 496
-      },
-      {
-        "file": "scene-isaac-seq-50.jpg",
-        "hold": 1,
-        "label": "Sequential picks, time-lapse: item 16 of 18 \u2014 release",
-        "source_frame": 510
-      },
-      {
-        "file": "scene-isaac-seq-51.jpg",
-        "hold": 1,
-        "label": "Sequential picks, time-lapse: item 17 of 18 \u2014 release",
-        "source_frame": 524
-      },
-      {
-        "file": "scene-isaac-seq-52.jpg",
-        "hold": 1,
-        "label": "Sequential picks, time-lapse: item 18 of 18 \u2014 release",
-        "source_frame": 538
-      },
-      {
-        "file": "scene-isaac-seq-53.jpg",
-        "hold": 2,
-        "label": "Placed: all 18 observed workpieces are in the WISEPACK container (0 failed)",
-        "source_frame": 556
-      },
-      {
-        "file": "scene-isaac-seq-54.jpg",
-        "hold": 7,
-        "label": "Placed: all 18 observed workpieces are in the WISEPACK container (0 failed)",
-        "source_frame": 560
-      }
-    ]
-  }
+ "_about": [
+  "Frame lists for the scene-synchronization GIFs in images/generated/scene-sync/.",
+  "Assembled by: python3 scripts/generate_readme_gifs.py --scene-sync-gifs",
+  "Every frame named here is a TRACKED capture from a physical D435 -> Isaac run;",
+  "the assembler never records anything itself and refuses a frame it cannot find,",
+  "so re-running the generator cannot replace this evidence with a generated-scenario",
+  "capture. `hold` is how many GIF frames the still is shown for at `fps`."
+ ],
+ "physical-to-isaac-pick.gif": {
+  "source": "run 3: LIVE D435 acquisition on 2026-09-12 of placement 1 (same physical placement as 2026-09-11), synchronized into Isaac through the configured demo transform and picked by the existing Panda backend; DemoCamera frames captured with WISEPACK_ISAAC_CAPTURE_DIR",
+  "run_mode": "live",
+  "fps": 3,
+  "width": 800,
+  "footer": "Physical D435 -> FoundationPose (model-free) -> synchronized Isaac workcell -> Panda pick-and-place",
+  "frames": [
+   {
+    "file": "run3-isaac-seq-01.jpg",
+    "hold": 5,
+    "label": "Before: the Digital Twin holds a generated placeholder"
+   },
+   {
+    "file": "run3-isaac-seq-02.jpg",
+    "hold": 7,
+    "label": "Synchronized: the observed Cylinder5 is instantiated in the Isaac workcell at its measured pose"
+   },
+   {
+    "file": "run3-isaac-seq-03.jpg",
+    "hold": 3,
+    "label": "Operator approval -> the Panda executes the WISEPACK plan"
+   },
+   {
+    "file": "run3-isaac-seq-04.jpg",
+    "hold": 1,
+    "label": "Approach to the observed object"
+   },
+   {
+    "file": "run3-isaac-seq-05.jpg",
+    "hold": 1,
+    "label": "Approach to the observed object"
+   },
+   {
+    "file": "run3-isaac-seq-06.jpg",
+    "hold": 1,
+    "label": "Approach to the observed object"
+   },
+   {
+    "file": "run3-isaac-seq-07.jpg",
+    "hold": 1,
+    "label": "Gripper aligned to the observed tube heading"
+   },
+   {
+    "file": "run3-isaac-seq-08.jpg",
+    "hold": 3,
+    "label": "Grasp"
+   },
+   {
+    "file": "run3-isaac-seq-09.jpg",
+    "hold": 1,
+    "label": "Lift"
+   },
+   {
+    "file": "run3-isaac-seq-10.jpg",
+    "hold": 1,
+    "label": "Lift"
+   },
+   {
+    "file": "run3-isaac-seq-11.jpg",
+    "hold": 1,
+    "label": "Transport to the WISEPACK container"
+   },
+   {
+    "file": "run3-isaac-seq-12.jpg",
+    "hold": 1,
+    "label": "Transport to the WISEPACK container"
+   },
+   {
+    "file": "run3-isaac-seq-13.jpg",
+    "hold": 1,
+    "label": "Transport to the WISEPACK container"
+   },
+   {
+    "file": "run3-isaac-seq-14.jpg",
+    "hold": 1,
+    "label": "Transport to the WISEPACK container"
+   },
+   {
+    "file": "run3-isaac-seq-15.jpg",
+    "hold": 3,
+    "label": "Release: PhysX resolves the final settling pose (47 mm from the planned pose, reported as measured)"
+   },
+   {
+    "file": "run3-isaac-seq-16.jpg",
+    "hold": 1,
+    "label": "Retreat"
+   },
+   {
+    "file": "run3-isaac-seq-17.jpg",
+    "hold": 1,
+    "label": "Retreat"
+   },
+   {
+    "file": "run3-isaac-seq-18.jpg",
+    "hold": 6,
+    "label": "Placed: the observed tube rests inside container CNT-01"
+   }
+  ]
+ },
+ "physical-scene-to-isaac-picks.gif": {
+  "source": "whole-scene run: LIVE D435 acquisition on 2026-09-12 (capture scene-20260912-091535), 18 workpieces classified by footprint, synchronized into Isaac through the configured demo transform and picked one by one into the single bin by the existing Panda backend; DemoCamera frames captured with WISEPACK_ISAAC_CAPTURE_DIR, per-object markers off (WISEPACK_ISAAC_OBJECT_MARKERS=0)",
+  "run_mode": "live",
+  "fps": 3,
+  "width": 640,
+  "footer": "Physical D435 -> whole-scene RGB-D perception -> synchronized Isaac workcell -> Panda picks 18 of 18 into one container",
+  "frames": [
+   {
+    "file": "scene-isaac-seq-01.jpg",
+    "hold": 5,
+    "label": "Before: the Digital Twin holds one generated placeholder",
+    "source_frame": 186
+   },
+   {
+    "file": "scene-isaac-seq-02.jpg",
+    "hold": 7,
+    "label": "Synchronized: 18 workpieces observed by the D435 are instantiated in the Isaac workcell at their measured poses",
+    "source_frame": 196
+   },
+   {
+    "file": "scene-isaac-seq-03.jpg",
+    "hold": 1,
+    "label": "Pick 1 of 18: approach",
+    "source_frame": 209
+   },
+   {
+    "file": "scene-isaac-seq-04.jpg",
+    "hold": 1,
+    "label": "Pick 1 of 18: approach",
+    "source_frame": 211
+   },
+   {
+    "file": "scene-isaac-seq-05.jpg",
+    "hold": 1,
+    "label": "Pick 1 of 18: grasp",
+    "source_frame": 213
+   },
+   {
+    "file": "scene-isaac-seq-06.jpg",
+    "hold": 1,
+    "label": "Pick 1 of 18: grasp",
+    "source_frame": 215
+   },
+   {
+    "file": "scene-isaac-seq-07.jpg",
+    "hold": 1,
+    "label": "Pick 1 of 18: transport to the container",
+    "source_frame": 217
+   },
+   {
+    "file": "scene-isaac-seq-08.jpg",
+    "hold": 1,
+    "label": "Pick 1 of 18: transport to the container",
+    "source_frame": 219
+   },
+   {
+    "file": "scene-isaac-seq-09.jpg",
+    "hold": 1,
+    "label": "Pick 1 of 18: transport to the container",
+    "source_frame": 221
+   },
+   {
+    "file": "scene-isaac-seq-10.jpg",
+    "hold": 1,
+    "label": "Pick 1 of 18: PhysX settles the part",
+    "source_frame": 223
+   },
+   {
+    "file": "scene-isaac-seq-11.jpg",
+    "hold": 1,
+    "label": "Pick 1 of 18: PhysX settles the part",
+    "source_frame": 225
+   },
+   {
+    "file": "scene-isaac-seq-12.jpg",
+    "hold": 1,
+    "label": "Pick 1 of 18: PhysX settles the part",
+    "source_frame": 227
+   },
+   {
+    "file": "scene-isaac-seq-13.jpg",
+    "hold": 1,
+    "label": "Pick 2 of 18: grasp",
+    "source_frame": 229
+   },
+   {
+    "file": "scene-isaac-seq-14.jpg",
+    "hold": 1,
+    "label": "Pick 2 of 18: grasp",
+    "source_frame": 231
+   },
+   {
+    "file": "scene-isaac-seq-15.jpg",
+    "hold": 1,
+    "label": "Pick 2 of 18: grasp",
+    "source_frame": 233
+   },
+   {
+    "file": "scene-isaac-seq-16.jpg",
+    "hold": 1,
+    "label": "Pick 2 of 18: grasp",
+    "source_frame": 235
+   },
+   {
+    "file": "scene-isaac-seq-17.jpg",
+    "hold": 1,
+    "label": "Pick 2 of 18: grasp",
+    "source_frame": 237
+   },
+   {
+    "file": "scene-isaac-seq-18.jpg",
+    "hold": 1,
+    "label": "Pick 2 of 18: grasp",
+    "source_frame": 239
+   },
+   {
+    "file": "scene-isaac-seq-19.jpg",
+    "hold": 1,
+    "label": "Pick 2 of 18: grasp",
+    "source_frame": 241
+   },
+   {
+    "file": "scene-isaac-seq-20.jpg",
+    "hold": 1,
+    "label": "Pick 2 of 18: lift",
+    "source_frame": 243
+   },
+   {
+    "file": "scene-isaac-seq-21.jpg",
+    "hold": 1,
+    "label": "Pick 2 of 18: lift",
+    "source_frame": 245
+   },
+   {
+    "file": "scene-isaac-seq-22.jpg",
+    "hold": 1,
+    "label": "Pick 2 of 18: transport to the container",
+    "source_frame": 247
+   },
+   {
+    "file": "scene-isaac-seq-23.jpg",
+    "hold": 1,
+    "label": "Pick 2 of 18: release",
+    "source_frame": 249
+   },
+   {
+    "file": "scene-isaac-seq-24.jpg",
+    "hold": 1,
+    "label": "Pick 2 of 18: release",
+    "source_frame": 251
+   },
+   {
+    "file": "scene-isaac-seq-25.jpg",
+    "hold": 1,
+    "label": "Pick 3 of 18: next pick",
+    "source_frame": 253
+   },
+   {
+    "file": "scene-isaac-seq-26.jpg",
+    "hold": 1,
+    "label": "Pick 3 of 18: next pick",
+    "source_frame": 255
+   },
+   {
+    "file": "scene-isaac-seq-27.jpg",
+    "hold": 1,
+    "label": "Pick 3 of 18: grasp",
+    "source_frame": 257
+   },
+   {
+    "file": "scene-isaac-seq-28.jpg",
+    "hold": 1,
+    "label": "Pick 3 of 18: lift",
+    "source_frame": 259
+   },
+   {
+    "file": "scene-isaac-seq-29.jpg",
+    "hold": 1,
+    "label": "Pick 3 of 18: lift",
+    "source_frame": 261
+   },
+   {
+    "file": "scene-isaac-seq-30.jpg",
+    "hold": 1,
+    "label": "Pick 3 of 18: release",
+    "source_frame": 263
+   },
+   {
+    "file": "scene-isaac-seq-31.jpg",
+    "hold": 1,
+    "label": "Pick 3 of 18: release",
+    "source_frame": 265
+   },
+   {
+    "file": "scene-isaac-seq-32.jpg",
+    "hold": 1,
+    "label": "Pick 3 of 18: release",
+    "source_frame": 267
+   },
+   {
+    "file": "scene-isaac-seq-33.jpg",
+    "hold": 1,
+    "label": "Sequential picks, time-lapse: item 4 of 18 \u2014 next pick",
+    "source_frame": 272
+   },
+   {
+    "file": "scene-isaac-seq-34.jpg",
+    "hold": 1,
+    "label": "Sequential picks, time-lapse: item 5 of 18 \u2014 next pick",
+    "source_frame": 286
+   },
+   {
+    "file": "scene-isaac-seq-35.jpg",
+    "hold": 1,
+    "label": "Sequential picks, time-lapse: item 5 of 18 \u2014 transport to the container",
+    "source_frame": 300
+   },
+   {
+    "file": "scene-isaac-seq-36.jpg",
+    "hold": 1,
+    "label": "Sequential picks, time-lapse: item 5 of 18 \u2014 transport to the container",
+    "source_frame": 314
+   },
+   {
+    "file": "scene-isaac-seq-37.jpg",
+    "hold": 1,
+    "label": "Sequential picks, time-lapse: item 6 of 18 \u2014 approach",
+    "source_frame": 328
+   },
+   {
+    "file": "scene-isaac-seq-38.jpg",
+    "hold": 1,
+    "label": "Sequential picks, time-lapse: item 6 of 18 \u2014 grasp",
+    "source_frame": 342
+   },
+   {
+    "file": "scene-isaac-seq-39.jpg",
+    "hold": 1,
+    "label": "Sequential picks, time-lapse: item 7 of 18 \u2014 next pick",
+    "source_frame": 356
+   },
+   {
+    "file": "scene-isaac-seq-40.jpg",
+    "hold": 1,
+    "label": "Sequential picks, time-lapse: item 8 of 18 \u2014 next pick",
+    "source_frame": 370
+   },
+   {
+    "file": "scene-isaac-seq-41.jpg",
+    "hold": 1,
+    "label": "Sequential picks, time-lapse: item 8 of 18 \u2014 release",
+    "source_frame": 384
+   },
+   {
+    "file": "scene-isaac-seq-42.jpg",
+    "hold": 1,
+    "label": "Sequential picks, time-lapse: item 9 of 18 \u2014 release",
+    "source_frame": 398
+   },
+   {
+    "file": "scene-isaac-seq-43.jpg",
+    "hold": 1,
+    "label": "Sequential picks, time-lapse: item - of 18 \u2014 placed",
+    "source_frame": 412
+   },
+   {
+    "file": "scene-isaac-seq-44.jpg",
+    "hold": 1,
+    "label": "Sequential picks, time-lapse: item 12 of 18 \u2014 next pick",
+    "source_frame": 426
+   },
+   {
+    "file": "scene-isaac-seq-45.jpg",
+    "hold": 1,
+    "label": "Sequential picks, time-lapse: item 12 of 18 \u2014 transport to the container",
+    "source_frame": 440
+   },
+   {
+    "file": "scene-isaac-seq-46.jpg",
+    "hold": 1,
+    "label": "Sequential picks, time-lapse: item 13 of 18 \u2014 transport to the container",
+    "source_frame": 454
+   },
+   {
+    "file": "scene-isaac-seq-47.jpg",
+    "hold": 1,
+    "label": "Sequential picks, time-lapse: item 14 of 18 \u2014 grasp",
+    "source_frame": 468
+   },
+   {
+    "file": "scene-isaac-seq-48.jpg",
+    "hold": 1,
+    "label": "Sequential picks, time-lapse: item 15 of 18 \u2014 approach",
+    "source_frame": 482
+   },
+   {
+    "file": "scene-isaac-seq-49.jpg",
+    "hold": 1,
+    "label": "Sequential picks, time-lapse: item 16 of 18 \u2014 grasp",
+    "source_frame": 496
+   },
+   {
+    "file": "scene-isaac-seq-50.jpg",
+    "hold": 1,
+    "label": "Sequential picks, time-lapse: item 16 of 18 \u2014 release",
+    "source_frame": 510
+   },
+   {
+    "file": "scene-isaac-seq-51.jpg",
+    "hold": 1,
+    "label": "Sequential picks, time-lapse: item 17 of 18 \u2014 release",
+    "source_frame": 524
+   },
+   {
+    "file": "scene-isaac-seq-52.jpg",
+    "hold": 1,
+    "label": "Sequential picks, time-lapse: item 18 of 18 \u2014 release",
+    "source_frame": 538
+   },
+   {
+    "file": "scene-isaac-seq-53.jpg",
+    "hold": 2,
+    "label": "Placed: all 18 observed workpieces are in the WISEPACK container (0 failed)",
+    "source_frame": 556
+   },
+   {
+    "file": "scene-isaac-seq-54.jpg",
+    "hold": 7,
+    "label": "Placed: all 18 observed workpieces are in the WISEPACK container (0 failed)",
+    "source_frame": 560
+   }
+  ]
+ },
+ "isaac-cut-and-place.gif": {
+  "source": "Isaac Sim cut-and-place run: generated preset isaac_cut_demo (seed 7), LIVE Isaac Sim 6.0.1 execution on 2026-09-12 driven through the dashboard API (reset -> compare_cut_aware -> select_cut_alternative -> approve_cut -> approve); DemoCamera frames captured with WISEPACK_ISAAC_CAPTURE_DIR and WISEPACK_ISAAC_CAPTURE_EVERY=8; close-ups are crops of the same frames",
+  "run_mode": "live_isaac_generated_scene",
+  "footer": "Cut-aware plan -> cut approval -> Panda grips, shears (visual blades, discrete cut), places the retained segment -> re-plan -> packing approval -> all remaining tubes packed",
+  "fps": 3,
+  "width": 720,
+  "frames": [
+   {
+    "file": "cut-isaac-seq-01.jpg",
+    "label": "Before: three steel tubes on the bench; the 420 mm tube fits the 300 mm bin nowhere whole",
+    "hold": 6,
+    "source_frame": 58
+   },
+   {
+    "file": "cut-isaac-seq-02.jpg",
+    "label": "Cut-aware planner: cut the long tube 150 + 267 mm (kerf 3 mm); the operator approves the CUT",
+    "hold": 6,
+    "source_frame": 92
+   },
+   {
+    "file": "cut-isaac-seq-03.jpg",
+    "label": "Approach: the fingers go to the retained side, the cut frame 60 mm along the tube on the planned cut plane (close-up)",
+    "hold": 1,
+    "source_frame": 103
+   },
+   {
+    "file": "cut-isaac-seq-04.jpg",
+    "label": "Approach: the fingers go to the retained side, the cut frame 60 mm along the tube on the planned cut plane (close-up)",
+    "hold": 1,
+    "source_frame": 105
+   },
+   {
+    "file": "cut-isaac-seq-05.jpg",
+    "label": "Approach: the fingers go to the retained side, the cut frame 60 mm along the tube on the planned cut plane (close-up)",
+    "hold": 1,
+    "source_frame": 107
+   },
+   {
+    "file": "cut-isaac-seq-06.jpg",
+    "label": "Grip: the parallel-jaw gripper closes on the segment that will be retained (close-up)",
+    "hold": 2,
+    "source_frame": 107
+   },
+   {
+    "file": "cut-isaac-seq-07.jpg",
+    "label": "Grip: the parallel-jaw gripper closes on the segment that will be retained (close-up)",
+    "hold": 2,
+    "source_frame": 110
+   },
+   {
+    "file": "cut-isaac-seq-08.jpg",
+    "label": "Grip: the parallel-jaw gripper closes on the segment that will be retained (close-up)",
+    "hold": 2,
+    "source_frame": 113
+   },
+   {
+    "file": "cut-isaac-seq-09.jpg",
+    "label": "Cut: the shear blades close on the cut plane (visual, animated); at CUT_COMPLETE the tube becomes two rigid segments (close-up)",
+    "hold": 2,
+    "source_frame": 113
+   },
+   {
+    "file": "cut-isaac-seq-10.jpg",
+    "label": "Cut: the shear blades close on the cut plane (visual, animated); at CUT_COMPLETE the tube becomes two rigid segments (close-up)",
+    "hold": 2,
+    "source_frame": 114
+   },
+   {
+    "file": "cut-isaac-seq-11.jpg",
+    "label": "Cut: the shear blades close on the cut plane (visual, animated); at CUT_COMPLETE the tube becomes two rigid segments (close-up)",
+    "hold": 2,
+    "source_frame": 115
+   },
+   {
+    "file": "cut-isaac-seq-12.jpg",
+    "label": "Cut: the shear blades close on the cut plane (visual, animated); at CUT_COMPLETE the tube becomes two rigid segments (close-up)",
+    "hold": 2,
+    "source_frame": 116
+   },
+   {
+    "file": "cut-isaac-seq-13.jpg",
+    "label": "Two segments: the retained 267 mm piece stays in the gripper, the 150 mm remainder stays on the table (close-up)",
+    "hold": 1,
+    "source_frame": 116
+   },
+   {
+    "file": "cut-isaac-seq-14.jpg",
+    "label": "Two segments: the retained 267 mm piece stays in the gripper, the 150 mm remainder stays on the table (close-up)",
+    "hold": 1,
+    "source_frame": 120
+   },
+   {
+    "file": "cut-isaac-seq-15.jpg",
+    "label": "Two segments: the retained 267 mm piece stays in the gripper, the 150 mm remainder stays on the table (close-up)",
+    "hold": 1,
+    "source_frame": 124
+   },
+   {
+    "file": "cut-isaac-seq-16.jpg",
+    "label": "Two segments: the retained 267 mm piece stays in the gripper, the 150 mm remainder stays on the table (close-up)",
+    "hold": 1,
+    "source_frame": 128
+   },
+   {
+    "file": "cut-isaac-seq-17.jpg",
+    "label": "Carry: the retained segment goes straight to the bin, held 76 mm off-centre and placed centre-true",
+    "hold": 1,
+    "source_frame": 128
+   },
+   {
+    "file": "cut-isaac-seq-18.jpg",
+    "label": "Carry: the retained segment goes straight to the bin, held 76 mm off-centre and placed centre-true",
+    "hold": 1,
+    "source_frame": 133
+   },
+   {
+    "file": "cut-isaac-seq-19.jpg",
+    "label": "Carry: the retained segment goes straight to the bin, held 76 mm off-centre and placed centre-true",
+    "hold": 1,
+    "source_frame": 138
+   },
+   {
+    "file": "cut-isaac-seq-20.jpg",
+    "label": "Carry: the retained segment goes straight to the bin, held 76 mm off-centre and placed centre-true",
+    "hold": 1,
+    "source_frame": 143
+   },
+   {
+    "file": "cut-isaac-seq-21.jpg",
+    "label": "Place: released above the bin, PhysX settles it; derived items registered, re-plan, packing approval AGAIN",
+    "hold": 2,
+    "source_frame": 145
+   },
+   {
+    "file": "cut-isaac-seq-22.jpg",
+    "label": "Place: released above the bin, PhysX settles it; derived items registered, re-plan, packing approval AGAIN",
+    "hold": 2,
+    "source_frame": 153
+   },
+   {
+    "file": "cut-isaac-seq-23.jpg",
+    "label": "Place: released above the bin, PhysX settles it; derived items registered, re-plan, packing approval AGAIN",
+    "hold": 2,
+    "source_frame": 161
+   },
+   {
+    "file": "cut-isaac-seq-24.jpg",
+    "label": "Pick 1 of 3 after the cut: short tube \u2014 grasp",
+    "hold": 1,
+    "source_frame": 183
+   },
+   {
+    "file": "cut-isaac-seq-25.jpg",
+    "label": "Pick 1 of 3 after the cut: short tube \u2014 grasp",
+    "hold": 1,
+    "source_frame": 189
+   },
+   {
+    "file": "cut-isaac-seq-26.jpg",
+    "label": "Pick 1 of 3 after the cut: short tube \u2014 carry",
+    "hold": 1,
+    "source_frame": 195
+   },
+   {
+    "file": "cut-isaac-seq-27.jpg",
+    "label": "Pick 1 of 3 after the cut: short tube \u2014 carry",
+    "hold": 1,
+    "source_frame": 213
+   },
+   {
+    "file": "cut-isaac-seq-28.jpg",
+    "label": "Pick 1 of 3 after the cut: short tube \u2014 release",
+    "hold": 1,
+    "source_frame": 213
+   },
+   {
+    "file": "cut-isaac-seq-29.jpg",
+    "label": "Pick 1 of 3 after the cut: short tube \u2014 release",
+    "hold": 1,
+    "source_frame": 230
+   },
+   {
+    "file": "cut-isaac-seq-30.jpg",
+    "label": "Pick 2 of 3: the REMAINDER of the cut, from where it lay \u2014 grasp (close-up)",
+    "hold": 1,
+    "source_frame": 243
+   },
+   {
+    "file": "cut-isaac-seq-31.jpg",
+    "label": "Pick 2 of 3: the REMAINDER of the cut, from where it lay \u2014 grasp (close-up)",
+    "hold": 1,
+    "source_frame": 248
+   },
+   {
+    "file": "cut-isaac-seq-32.jpg",
+    "label": "Pick 2 of 3: the REMAINDER of the cut, from where it lay \u2014 carry",
+    "hold": 1,
+    "source_frame": 254
+   },
+   {
+    "file": "cut-isaac-seq-33.jpg",
+    "label": "Pick 2 of 3: the REMAINDER of the cut, from where it lay \u2014 carry",
+    "hold": 1,
+    "source_frame": 271
+   },
+   {
+    "file": "cut-isaac-seq-34.jpg",
+    "label": "Pick 2 of 3: the REMAINDER of the cut, from where it lay \u2014 release",
+    "hold": 1,
+    "source_frame": 271
+   },
+   {
+    "file": "cut-isaac-seq-35.jpg",
+    "label": "Pick 2 of 3: the REMAINDER of the cut, from where it lay \u2014 release",
+    "hold": 1,
+    "source_frame": 285
+   },
+   {
+    "file": "cut-isaac-seq-36.jpg",
+    "label": "Pick 3 of 3: last tube \u2014 grasp",
+    "hold": 1,
+    "source_frame": 300
+   },
+   {
+    "file": "cut-isaac-seq-37.jpg",
+    "label": "Pick 3 of 3: last tube \u2014 grasp",
+    "hold": 1,
+    "source_frame": 306
+   },
+   {
+    "file": "cut-isaac-seq-38.jpg",
+    "label": "Pick 3 of 3: last tube \u2014 carry",
+    "hold": 1,
+    "source_frame": 313
+   },
+   {
+    "file": "cut-isaac-seq-39.jpg",
+    "label": "Pick 3 of 3: last tube \u2014 carry",
+    "hold": 1,
+    "source_frame": 329
+   },
+   {
+    "file": "cut-isaac-seq-40.jpg",
+    "label": "Pick 3 of 3: last tube \u2014 release",
+    "hold": 1,
+    "source_frame": 329
+   },
+   {
+    "file": "cut-isaac-seq-41.jpg",
+    "label": "Pick 3 of 3: last tube \u2014 release",
+    "hold": 1,
+    "source_frame": 346
+   },
+   {
+    "file": "cut-isaac-seq-42.jpg",
+    "label": "Done: retained segment, remainder and both short tubes in the one bin; 4 of 4 placed, 0 failed",
+    "hold": 8,
+    "source_frame": 355
+   }
+  ]
+ }
 }

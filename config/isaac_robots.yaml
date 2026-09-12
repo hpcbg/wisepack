@@ -213,8 +213,23 @@ robots:
     nominal_reach_m: 0.78
 
     supported_skills: [HOME, MOVE_TO_PICK, GRASP, LIFT, MOVE_TO_CONTAINER,
-                       RELEASE, SETTLE, VERIFY]
-    supported_presets: [isaac_cylinders_smoke, isaac_cylinder5_physical, isaac_scene_physical]
+                       RELEASE, SETTLE, VERIFY, CUT]
+    supported_presets: [isaac_cylinders_smoke, isaac_cylinder5_physical, isaac_scene_physical,
+                        isaac_cut_demo]
+
+    # THE COMBINED END EFFECTOR: the stock parallel-jaw gripper plus a shear
+    # mounted on the same hand, independently actuated. `cut_offset_m` is the
+    # FIXED transform from the grasp frame (between the fingertips) to the cut
+    # frame (between the blades), in the hand frame: 60 mm along the hand's X,
+    # which is the direction a tube lies when the fingers hold it across. The
+    # cut frame therefore sits 60 mm along the tube from the fingers, on the
+    # side the fingers are NOT holding. Authored by simulators/isaac/tool.py;
+    # the blades pass through the tube and the cut is a discrete scene event.
+    end_effector_tool:
+      kind: gripper_cutter
+      cut_offset_m: [0.06, 0.0, 0.0]
+      blade_open_half_gap_m: 0.035
+      blade_closed_half_gap_m: 0.0
 
     # None. The default SceneLayout IS the Panda layout — it was written for
     # this arm — so declaring overrides here would be two sources for one set of

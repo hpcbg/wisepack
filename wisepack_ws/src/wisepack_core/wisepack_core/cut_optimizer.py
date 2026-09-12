@@ -79,6 +79,11 @@ class CutPlannerConfig:
     kerf_loss_cost_per_cm3: float = 0.5
     #: Fixed operational-complexity charge for any plan that cuts at all.
     complexity_cost_per_cut_plan: float = 15.0
+    #: What an item the plan could NOT place costs. A pipe left on the floor is
+    #: at least a container's worth of failure — it is not packaged at all — so
+    #: an alternative that places it earns that back. Charged identically to
+    #: the no-cut reference and to every cut alternative; no special case.
+    unplaced_item_cost: float = 1000.0
     #: A cut alternative must beat no-cut by at least this net margin to be
     #: recommended, so a rounding-scale gain never flips the recommendation.
     recommendation_margin: float = 1.0
@@ -319,7 +324,8 @@ def _derived_scenario(scenario: Scenario, cuts: List[Tuple[WasteItem, List[int]]
 def _score_alternative(label: str, strategy: Strategy, is_cut: bool,
                        plan: PackingPlan, proposals: List[CutProposal],
                        no_cut_containers: int, no_cut_util: float,
-                       cfg: CutPlannerConfig, valid: bool) -> CutAlternative:
+                       cfg: CutPlannerConfig, valid: bool,
+                       no_cut_unplaced: int = 0) -> CutAlternative:
     n_cuts = sum(p.n_cuts for p in proposals)
     cutting_time = sum(p.estimated_cutting_time_s for p in proposals)
     handling_time = sum(p.estimated_handling_time_s for p in proposals)
@@ -330,7 +336,9 @@ def _score_alternative(label: str, strategy: Strategy, is_cut: bool,
 
     container_savings = no_cut_containers - containers
     util_gain = util - no_cut_util
+    unplaced_saved = no_cut_unplaced - len(plan.unplaced_item_ids)
     value = (container_savings * cfg.container_cost_proxy
+             + unplaced_saved * cfg.unplaced_item_cost
              + max(0.0, util_gain) * cfg.utilization_weight)
     process_cost = 0.0
     if is_cut:
@@ -367,10 +375,11 @@ def plan_cut_aware(scenario: Scenario, *,
     base_opt = replace(opt, strategy=Strategy.MAX_DENSITY)
     no_cut_plan = pack_optimized(scenario, config=base_opt,
                                  plan_id=f"nocut-{scenario.scenario_id}")
+    no_cut_unplaced = len(no_cut_plan.unplaced_item_ids)
     no_cut = _score_alternative(
         "no_cut", Strategy.MAX_DENSITY, False, no_cut_plan, [],
         no_cut_plan.containers_required, no_cut_plan.utilization_pct, cfg,
-        valid=no_cut_plan.is_valid)
+        valid=no_cut_plan.is_valid, no_cut_unplaced=no_cut_unplaced)
 
     # (2,3) marginal pipes + residual cavities.
     residuals = _residual_axis_lengths(no_cut_plan)
@@ -408,7 +417,8 @@ def plan_cut_aware(scenario: Scenario, *,
                 alt = _score_alternative(
                     f"cut:{pipe.item_id}:{'-'.join(map(str, segs))}:{strategy.value}",
                     strategy, True, plan, proposals,
-                    no_cut.containers, no_cut.utilization_pct, cfg, valid)
+                    no_cut.containers, no_cut.utilization_pct, cfg, valid,
+                    no_cut_unplaced=no_cut_unplaced)
                 alternatives.append(alt)
         if candidates_evaluated >= cfg.max_cut_aware_plans or timed_out:
             break
@@ -421,8 +431,11 @@ def plan_cut_aware(scenario: Scenario, *,
     if recommend_cut:
         recommended_label = best.label
         saved = no_cut.containers - best.containers
-        reason = (f"Cutting saves {saved} container(s) for "
-                  f"{best.n_cuts} cut(s); net whole-process benefit "
+        placed = no_cut_unplaced - len(best.plan.unplaced_item_ids)
+        reason = (f"Cutting saves {saved} container(s)"
+                  + (f" and places {placed} item(s) the whole pipe could not"
+                     if placed > 0 else "")
+                  + f" for {best.n_cuts} cut(s); net whole-process benefit "
                   f"{best.whole_process_score:.0f} > 0.")
     else:
         recommended_label = no_cut.label

@@ -204,6 +204,51 @@ class IsaacRobotAdapter(abc.ABC):
     def holding(self) -> Optional[str]:
         """The item id currently welded to the hand, or None."""
 
+    @property
+    def held_offset_m(self) -> np.ndarray:
+        """The held item's origin in the hand frame (metres); zeros if none.
+
+        The place motion subtracts this (rotated by the hand's yaw) from the
+        item's target so the ITEM'S CENTRE, not the fingertips, arrives at the
+        planned pose. For a centred grasp it is ~0 and changes nothing.
+        """
+        return np.zeros(3)
+
+    # ------------------------------------------------------------------ #
+    # Combined end effector: gripper + cutter (defaults: a bare gripper)
+    # ------------------------------------------------------------------ #
+
+    @property
+    def has_cutter(self) -> bool:
+        """Does this arm carry the combined gripper+cutter tool?"""
+        return False
+
+    @property
+    def grasp_to_cut_offset_m(self) -> float:
+        """Distance from the grasp frame to the cut frame along a held tube.
+
+        The FIXED transform between the two frames of the combined tool, as
+        the profile declares it. 0.0 for a bare gripper, which cannot cut.
+        """
+        return 0.0
+
+    def open_cutter(self) -> None:
+        raise RobotModelError(f"{self.profile.display_name} carries no cutter")
+
+    def close_cutter(self) -> None:
+        raise RobotModelError(f"{self.profile.display_name} carries no cutter")
+
+    def cutter_closed(self) -> bool:
+        """MEASURED: have the blades met? Always False without a cutter."""
+        return False
+
+    def tool_diagnostics(self) -> Dict[str, Any]:
+        return {}
+
+    def tick_tool(self) -> None:
+        """Advance the tool's animation by one frame. No-op without a cutter."""
+        return None
+
     # ------------------------------------------------------------------ #
     # Diagnostics
     # ------------------------------------------------------------------ #
@@ -247,6 +292,7 @@ class IsaacRobotAdapter(abc.ABC):
             "kinematics_ready": bool(self._model_valid),
             "motion_planning": profile.is_motion_planner,
             "tool_centre_point_m": profile.tool_centre_point_m,
+            "end_effector_tool": self.tool_diagnostics(),
             "model_valid": self._model_valid,
             "last_robot_error": self._last_error,
         }

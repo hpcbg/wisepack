@@ -30,7 +30,7 @@ before it ships. Verified against the shipped standalone examples under
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import os
 
@@ -40,7 +40,7 @@ import isaacsim.core.experimental.utils.stage as stage_utils
 from isaacsim.core.experimental.materials import RigidBodyMaterial
 from isaacsim.core.experimental.objects import Cube, Cylinder, DomeLight, GroundPlane
 from isaacsim.core.experimental.prims import GeomPrim, RigidPrim
-from pxr import Gf, UsdGeom, UsdLux
+from pxr import Gf, UsdGeom, UsdLux, UsdPhysics
 
 from wisepack_core.domain import (GEOMETRY_SOURCE_CAD_MESH, Scenario, Vec3,
                                   WasteItem)
@@ -306,6 +306,7 @@ class WisepackScene:
                     colors="orange")
             geom = GeomPrim(paths=path, apply_collision_apis=True)
             geom.apply_physics_materials(self._item_material)
+            self._tune_item_collider(path)
 
             body = RigidPrim(paths=path)
             body.set_masses(np.array([max(item.weight_kg, 0.05)]))
@@ -334,6 +335,30 @@ class WisepackScene:
                   f"{tuple(round(v, 3) for v in position)} m"
                   + (f" q(wxyz)={tuple(round(float(v), 4) for v in orientation)}"
                      " [synchronized physical observation]" if physical else ""))
+
+    #: PhysX contact offset for every item collider, metres. MUST BE LESS THAN
+    #: HALF THE CUT KERF (3 mm): PhysX generates contacts between two shapes
+    #: closer than the SUM of their contact offsets, and with the default
+    #: offsets the two cut faces of a split tube — the kerf apart — counted as
+    #: touching. Measured (tool_check.py, `kerf_wider_than_contact_offset...`):
+    #: a segment moved slowly past its neighbour rolled it 14.7 mm with the
+    #: defaults and 0.0 mm at 1 mm; on the live cut the remainder rolled 4-6 cm
+    #: off its pose while the retained segment was lifted beside it. 1 mm is
+    #: ample for bodies that move at centimetres per second.
+    ITEM_CONTACT_OFFSET_M = 0.001
+
+    def _tune_item_collider(self, path: str) -> None:
+        """Author the item collider's contact/rest offsets on every collision prim under `path`."""
+        from pxr import PhysxSchema, Usd                               # noqa: PLC0415
+        stage = stage_utils.get_current_stage(backend="usd")
+        root = stage.GetPrimAtPath(path)
+        if not root:
+            return
+        for prim in Usd.PrimRange(root):
+            if prim.HasAPI(UsdPhysics.CollisionAPI):
+                api = PhysxSchema.PhysxCollisionAPI.Apply(prim)
+                api.CreateContactOffsetAttr(float(self.ITEM_CONTACT_OFFSET_M))
+                api.CreateRestOffsetAttr(0.0)
 
     def _build_cad_item(self, item: WasteItem, path: str,
                         position: Any, orientation: Any) -> None:
@@ -681,6 +706,108 @@ class WisepackScene:
             print(f"{LOG_SCENE} WARNING: could not wake {item_id} on release: "
                   f"{exc!r} — if it does not fall, this is why")
             return False
+
+    def split_item(self, parent_id: str, *, cut_offset_m: float, kerf_m: float,
+                   segment_ids: Sequence[str], segment_lengths_m: Sequence[float]
+                   ) -> Dict[str, Any]:
+        """THE DISCRETE CUT EVENT: one tube body becomes two segment bodies.
+
+        Geometry: the parent lies along its local +Z; `cut_offset_m` is the
+        distance from its -Z end to the centre of the kerf; `segment_ids[0]`
+        is the -Z-end segment. Each segment is spawned exactly where that part
+        of the tube IS right now (from the parent's live pose), with the
+        parent's diameter, material and a mass pro-rated by length, so nothing
+        visibly jumps at the moment of the cut.
+
+        WHAT HAPPENS TO THE PARENT. It is DEACTIVATED, never deleted: hidden,
+        its collision switched off, parked below the table. Deleting a rigid
+        body while physics plays invalidates the simulation views the arm is
+        read through (measured — see `_reset_scene`), so the cut must not.
+
+        NOT A FRACTURE MODEL. No force, no blade contact and no material law
+        decides this; the planner's cut plane does. Steel is not simulated
+        breaking, and the caller reports the event as what it is.
+
+        Returns the world poses of both segments and of the parent before the
+        cut. The caller owns the welds: detach the parent before calling this
+        and attach the retained segment after.
+        """
+        from wisepack_core.cutting import derive_segments               # noqa: PLC0415
+        from .grasp import _quat_rotate                                  # noqa: PLC0415
+
+        if parent_id not in self.items:
+            raise KeyError(f"{parent_id} is not in the scene")
+        if len(segment_ids) != 2 or len(segment_lengths_m) != 2:
+            raise ValueError("split_item describes exactly one cut: two segments")
+        spec = self.item_specs[parent_id]
+        pose = self.item_world_pose(parent_id)
+        if pose is None:
+            raise RuntimeError(f"{parent_id} has no readable pose")
+        centre, quaternion = pose
+        axis = _quat_rotate(quaternion, np.array([0.0, 0.0, 1.0]))
+        length = mm_to_m(spec.length_mm)
+        start = centre - axis * (length / 2.0)
+        l1, l2 = (float(v) for v in segment_lengths_m)
+        centres = {
+            segment_ids[0]: start + axis * (l1 / 2.0),
+            segment_ids[1]: start + axis * (length - l2 / 2.0),
+        }
+        children = derive_segments(
+            spec, [int(round(l1 * 1000.0)), int(round(l2 * 1000.0))],
+            kerf_mm=int(round(kerf_m * 1000.0)), child_ids=list(segment_ids))
+
+        # 1. Deactivate the parent: hidden, no collision, parked, out of the
+        #    bookkeeping. Its prim stays in the stage.
+        stage = stage_utils.get_current_stage(backend="usd")
+        parent_body = self.items.pop(parent_id)
+        self.item_specs.pop(parent_id, None)
+        self.item_index.pop(parent_id, None)
+        prim = stage.GetPrimAtPath(item_path(parent_id))
+        try:
+            UsdGeom.Imageable(prim).MakeInvisible()
+            if prim.HasAPI(UsdPhysics.CollisionAPI):
+                UsdPhysics.CollisionAPI(prim).GetCollisionEnabledAttr().Set(False)
+            parent_body.set_world_poses(
+                positions=np.array([[0.0, 0.0, -2.0]]),
+                orientations=np.array([[1.0, 0.0, 0.0, 0.0]]))
+            parent_body.set_velocities(np.zeros((1, 3)), np.zeros((1, 3)))
+        except Exception as exc:                          # noqa: BLE001
+            print(f"{LOG_SCENE} WARNING: could not fully deactivate {parent_id}: {exc!r}")
+
+        # 2. Spawn the two segments where the tube's material actually is.
+        next_index = (max(self.item_index.values()) + 1) if self.item_index else 0
+        poses: Dict[str, Any] = {"parent": (centre, quaternion)}
+        for child, seg_length in zip(children, (l1, l2)):
+            path = item_path(child.item_id)
+            if stage.GetPrimAtPath(path):
+                stage.RemovePrim(path)
+            position = centres[child.item_id]
+            Cylinder(
+                paths=path,
+                radii=mm_to_m(child.outer_diameter_mm) / 2.0,
+                heights=seg_length,
+                axes="Z",
+                positions=np.array([position]),
+                orientations=np.array([quaternion]),
+                colors="orange")
+            geom = GeomPrim(paths=path, apply_collision_apis=True)
+            geom.apply_physics_materials(self._item_material)
+            self._tune_item_collider(path)
+            body = RigidPrim(paths=path)
+            body.set_masses(np.array([max(child.weight_kg, 0.02)]))
+            self.items[child.item_id] = body
+            self.item_specs[child.item_id] = child
+            self.item_index[child.item_id] = next_index
+            next_index += 1
+            poses[child.item_id] = (np.asarray(position, dtype=float),
+                                    np.asarray(quaternion, dtype=float))
+            print(f"{LOG_SCENE} cut segment {child.item_id}: "
+                  f"{child.length_mm}x{child.outer_diameter_mm} mm, "
+                  f"{child.weight_kg} kg at {tuple(round(float(v), 3) for v in position)} m")
+        print(f"{LOG_SCENE} {parent_id} cut at {cut_offset_m * 1000:.0f} mm from its "
+              f"end (kerf {kerf_m * 1000:.0f} mm): deactivated; "
+              f"{segment_ids[0]} and {segment_ids[1]} spawned in its place")
+        return poses
 
     def item_velocities(self, item_id: str
                         ) -> Optional[Tuple[np.ndarray, np.ndarray]]:

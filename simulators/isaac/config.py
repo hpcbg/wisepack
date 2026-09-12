@@ -50,6 +50,20 @@ class MotionConfig:
     #: motion. Must clear the neighbouring items in the pick row, or the held
     #: item sweeps them off the table.
     lift_height: float = 0.25
+    #: After a CUT the retained segment leaves the cut with only the kerf (3 mm)
+    #: between its cut face and the remainder's. The first differential-IK step
+    #: towards a far lift goal carries a lateral transient of a few millimetres
+    #: — measured 3.6 mm along the tube on the live run, enough to close the
+    #: kerf and kick the remainder 6 cm across the table. So the retained
+    #: segment is first RETRACTED STRAIGHT UP along a ramped goal (this many
+    #: metres higher every frame) until it has risen `cut_retract_clearance`,
+    #: and only then does the ordinary lift run. A ramped goal keeps the IK's
+    #: lateral coupling well under a millimetre per frame; 1.5 mm per frame
+    #: clears the 60 mm in about a second.
+    cut_retract_step: float = 0.0015
+    #: How far the retained segment rises before the normal lift: one tube
+    #: diameter (its cut face is then entirely above the remainder) plus margin.
+    cut_retract_clearance: float = 0.06
     #: Vertical clearance kept above the container RIM while moving laterally.
     #: This is what stops a held cylinder being dragged through a wall — the
     #: single most likely way to produce a physically impossible "success".

@@ -54,13 +54,15 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 import numpy as np
 
 from wisepack_core.domain import Axis, Vec3
-from wisepack_core.isaac_contract import IsaacCommand, IsaacState, Pose
+from wisepack_core.isaac_contract import (Dimensions, IsaacCommand,
+                                          IsaacCommandType, IsaacState, Pose)
 from wisepack_core.isaac_transform import (
     SceneLayout, mm_to_m, pick_yaw_deg, pose_to_world, world_to_pose,
     safe_release_pose,
 )
 
 from .config import LOG_ROBOT, MotionConfig
+from .grasp import _quat_rotate
 from .result import PlacementOutcome, SettleMonitor, evaluate_placement
 from .scene import WisepackScene, item_path
 
@@ -73,6 +75,10 @@ class SequenceState(str, Enum):
     PRE_GRASP = "PRE_GRASP"
     GRASP = "GRASP"
     ATTACH = "ATTACH"
+    #: The combined tool's shear closes on the planner's cut plane while the
+    #: fingers hold the segment to be retained; the discrete cut event then
+    #: replaces the tube by two segment bodies and the held one stays held.
+    CUT = "CUT"
     LIFT = "LIFT"
     PRE_PLACE = "PRE_PLACE"
     PLACE_ORIENTATION = "PLACE_ORIENTATION"
@@ -93,6 +99,7 @@ _REPORTED: Dict[SequenceState, Optional[IsaacState]] = {
     SequenceState.PRE_GRASP: IsaacState.MOVING_TO_PICK,
     SequenceState.GRASP: IsaacState.GRASPING,
     SequenceState.ATTACH: None,                       # still GRASPING
+    SequenceState.CUT: IsaacState.CUTTING,
     SequenceState.LIFT: IsaacState.LIFTING,
     SequenceState.PRE_PLACE: IsaacState.MOVING_TO_CONTAINER,
     SequenceState.PLACE_ORIENTATION: None,            # still MOVING_TO_CONTAINER
@@ -170,6 +177,16 @@ class PlacementSequence:
         #: Release footprints already used in this run, so two objects are not
         #: dropped onto the same spot.
         self._released_xy: List[Tuple[float, float]] = []
+        #: THE CUT IN PROGRESS, for an EXECUTE_CUT command: the planner's cut
+        #: geometry, the grip point the fingers were sent to and the heading
+        #: that put the shear on the cut plane. None for an ordinary pick.
+        self._cut: Optional[Dict[str, Any]] = None
+        self._grip_world: Optional[np.ndarray] = None
+        self._cut_yaw: Optional[float] = None
+        #: The segment the cut left on the table, watched through the carry so
+        #: a displacement can be attributed to the state it happened in.
+        self._cut_remainder: Optional[str] = None
+        self._remainder_trace: List[Dict[str, Any]] = []
 
     # ------------------------------------------------------------------ #
     # Wiring
@@ -219,6 +236,130 @@ class PlacementSequence:
             return self.motion.grasp_yaw_offset_deg
         return 0.0 if self.robot is None else self.robot.grasp_yaw_offset_deg
 
+    @property
+    def is_cut(self) -> bool:
+        return self._cut is not None
+
+    def _cut_geometry(self) -> Optional[Dict[str, Any]]:
+        """Where the fingers and the shear must go, from the tube AS IT LIES.
+
+        The tube's local +Z is its length. `cut_offset_mm` measures the cut
+        plane from the -Z end; the retained segment is on one side of that
+        plane and the fingers go on THAT side, one grasp->cut offset away, so
+        that the shear — a fixed distance along the hand's X — sits on the
+        plane. The hand's X must therefore point from the fingers TOWARDS the
+        cut, which fixes the yaw without folding: the tool is not symmetric.
+        """
+        assert self.command is not None and self._cut is not None
+        pose = self.scene.item_world_pose(self.command.item_id or "")
+        if pose is None or self.command.dimensions is None:
+            return None
+        centre, quaternion = pose
+        w, x, y, z = (float(v) for v in quaternion)
+        axis = np.array([2.0 * (x * z + w * y), 2.0 * (y * z - w * x),
+                         1.0 - 2.0 * (x * x + y * y)], dtype=float)
+        length = mm_to_m(self.command.dimensions.length_mm)
+        cut_point = centre - axis * (length / 2.0) \
+            + axis * mm_to_m(float(self._cut["cut_offset_mm"]))
+        segments = list(self._cut["segment_ids"])
+        # +1 when the retained segment is on the +Z side of the cut plane.
+        side = 1.0 if self._cut["retained_segment_id"] == segments[1] else -1.0
+        offset = float(self.robot.grasp_to_cut_offset_m) if self.robot else 0.0
+        grip = cut_point + axis * (side * offset)
+        towards_cut = -side * axis
+        yaw = math.degrees(math.atan2(towards_cut[1], towards_cut[0]))
+        return {"grip": grip, "cut": cut_point, "yaw": yaw + self._yaw_offset(),
+                "axis": axis, "side": side}
+
+    def _trace_remainder(self, tag: str) -> None:
+        """Record where the cut's remainder is NOW, labelled by the moment."""
+        if self._cut_remainder is None:
+            return
+        pose = self.scene.item_world_pose(self._cut_remainder)
+        if pose is None:
+            return
+        entry = {"at": tag, "frame": self._frames_in_state,
+                 "position_m": [round(float(v), 4) for v in pose[0]]}
+        self._remainder_trace.append(entry)
+        print(f"{LOG_ROBOT} remainder {self._cut_remainder} {tag}: "
+              f"{entry['position_m']}")
+
+    def _trace_lift_contact(self) -> None:
+        """Per-frame forensics for the lift after a cut: WHO moves the remainder?
+
+        Prints the remainder's pose and velocity, the hand pose and the finger
+        joints whenever the remainder has moved more than a millimetre since
+        the previous print (and on a few fixed frames), so a push is pinned to
+        the frame it happens in and to what was next to the segment then.
+        """
+        assert self._cut_remainder is not None
+        pose = self.scene.item_world_pose(self._cut_remainder)
+        vel = self.scene.item_velocities(self._cut_remainder)
+        if pose is None or vel is None:
+            return
+        last = getattr(self, "_lift_trace_last", None)
+        moved = last is None or float(np.linalg.norm(pose[0] - last)) > 0.001
+        if not moved and self._frames_in_state not in (1, 15, 30, 45, 60):
+            return
+        self._lift_trace_last = np.asarray(pose[0], dtype=float).copy()
+        hand_p, hand_q = self.robot.get_tcp_pose()
+        try:
+            dof = self.robot.get_joint_state()
+            fingers = np.round(dof[-2:], 4).tolist()
+        except Exception:                                   # noqa: BLE001
+            fingers = None
+        held = self.robot.holding
+        held_pose = self.scene.item_world_pose(held) if held else None
+        if self._frames_in_state in (1, 30):
+            self._print_world_bounds([self._cut_remainder] + ([held] if held else []))
+        print(f"{LOG_ROBOT} lift-forensics frame {self._frames_in_state}: remainder "
+              f"{np.round(pose[0], 4).tolist()} v {np.round(vel[0], 3).tolist()} "
+              f"w {np.round(vel[1], 2).tolist()}; hand {np.round(hand_p, 4).tolist()} "
+              f"q {np.round(hand_q, 3).tolist()} fingers {fingers}; held {held} at "
+              f"{None if held_pose is None else np.round(held_pose[0], 4).tolist()}")
+
+    def _print_world_bounds(self, item_ids: List[str]) -> None:
+        """World AABBs of the hand, its fingers and the given items — what could touch what."""
+        try:
+            import isaacsim.core.experimental.utils.stage as stage_utils   # noqa: PLC0415
+            from pxr import Usd, UsdGeom, UsdPhysics                       # noqa: PLC0415
+            stage = stage_utils.get_current_stage(backend="usd")
+            cache = UsdGeom.BBoxCache(Usd.TimeCode.Default(),
+                                      ["default", "render", "guide", "proxy"],
+                                      useExtentsHint=False)
+            # The end-effector link and every rigid link of the arm within
+            # 20 cm of it (the fingers, whatever the robot calls them), then
+            # the items — no link is named here, the profile owns the names.
+            hand = self.robot.profile.end_effector_prim
+            tcp, _ = self.robot.get_tcp_pose()
+            robot_root = stage.GetPrimAtPath(hand.rsplit("/", 1)[0])
+            prims = [stage.GetPrimAtPath(hand)]
+            for prim in Usd.PrimRange(robot_root):
+                if prim.GetPath().pathString != hand and prim.HasAPI(UsdPhysics.RigidBodyAPI):
+                    box = cache.ComputeWorldBound(prim).ComputeAlignedRange()
+                    mid = (np.asarray(box.GetMin()) + np.asarray(box.GetMax())) / 2.0
+                    if np.linalg.norm(mid - np.asarray(tcp)) < 0.2:
+                        prims.append(prim)
+            prims += [stage.GetPrimAtPath(item_path(i)) for i in item_ids]
+            for prim in prims:
+                if not prim:
+                    continue
+                path = prim.GetPath().pathString
+                box = cache.ComputeWorldBound(prim).ComputeAlignedRange()
+                lo, hi = box.GetMin(), box.GetMax()
+                print(f"{LOG_ROBOT} bounds {path.rsplit('/', 1)[-1]}: "
+                      f"x [{lo[0]:.4f}, {hi[0]:.4f}] y [{lo[1]:.4f}, {hi[1]:.4f}] "
+                      f"z [{lo[2]:.4f}, {hi[2]:.4f}]")
+        except Exception as exc:                                   # noqa: BLE001
+            print(f"{LOG_ROBOT} bounds unavailable: {exc!r}")
+
+    def _approach_point(self) -> Optional[np.ndarray]:
+        """Where the fingers close: the tube centre, or the cut's grip point."""
+        if self._cut is not None:
+            geometry = self._cut_geometry()
+            return None if geometry is None else geometry["grip"]
+        return self._live_item_world()
+
     def _grasp_yaw(self) -> float:
         """Yaw that aims the fingers ACROSS the cylinder AS IT ACTUALLY LIES.
 
@@ -229,6 +370,13 @@ class PlacementSequence:
         synchronized physical tube lies wherever the camera saw it, and the
         hand turns to it rather than closing along it.
         """
+        if self._cut is not None:
+            if self._cut_yaw is None:
+                geometry = self._cut_geometry()
+                if geometry is not None:
+                    self._cut_yaw = float(geometry["yaw"])
+            if self._cut_yaw is not None:
+                return self._cut_yaw
         heading = 0.0
         if self.command is not None and self.command.source_pose is not None:
             heading = pick_yaw_deg(self.command.source_pose)
@@ -290,6 +438,25 @@ class PlacementSequence:
         position, _ = pose_to_world(pose, self.layout)
         return np.array(position, dtype=float)
 
+    def _tcp_goal_for_item(self, item_target: np.ndarray, yaw_deg: float) -> np.ndarray:
+        """Where the TCP must be for the HELD ITEM'S CENTRE to sit at `item_target`.
+
+        The weld records the item's origin in the hand frame (`held_offset_m`).
+        For an ordinary centred grasp that is ~0 in the table plane and this is
+        the identity. For the retained segment of a cut the fingers hold the
+        tube `cut_offset` from its cut end, i.e. tens of millimetres from its
+        centre, and sending the TCP to the item's target would put the SEGMENT
+        that far off — measured on the live run as the 267 mm segment released
+        with 60 mm overhanging the bin wall and settling on the rim. Only the
+        in-plane components are compensated: the descent height is governed by
+        the rim clearance rule, not by where along the tube it is held.
+        """
+        offset = np.asarray(self.robot.held_offset_m, dtype=float) if self.robot is not None \
+            else np.zeros(3)
+        planar = _quat_rotate(down_orientation(yaw_deg), np.array([offset[0], offset[1], 0.0]))
+        return np.array([item_target[0] - planar[0], item_target[1] - planar[1],
+                         item_target[2]], dtype=float)
+
     def _live_item_world(self) -> Optional[np.ndarray]:
         """Where the item actually is right now, rather than where it was spawned.
 
@@ -319,16 +486,19 @@ class PlacementSequence:
         self._release()
         self._release_pose = None
         self._release_offset_mm = 0.0
-        inner = command.container_inner_mm or {}
-        if (command.target_pose is not None and command.dimensions is not None
-                and inner.get("x") and inner.get("y")):
-            self._release_pose, self._release_offset_mm = safe_release_pose(
-                command.target_pose, command.dimensions,
-                Vec3(int(inner["x"]), int(inner["y"]), int(inner.get("z", 0))),
-                clearance=self.motion.release_clearance,
-                occupied=list(self._released_xy))
-            self._released_xy.append(
-                (self._release_pose.x_mm, self._release_pose.y_mm))
+        self._cut = None
+        self._grip_world = None
+        self._cut_yaw = None
+        self._cut_remainder = None
+        self._remainder_trace = []
+        if command.command is IsaacCommandType.EXECUTE_CUT:
+            if self.robot is None or not self.robot.has_cutter:
+                self._failure = "this arm carries no cutter; EXECUTE_CUT refused"
+                print(f"{LOG_ROBOT} cannot start {command.item_id}: {self._failure}")
+                self.command = None
+                return False
+            self._cut = dict(command.cut or {})
+        self._compute_release_pose(command)
         self._enter(SequenceState.HOME)
         moved = (f", release moved {self._release_offset_mm:.0f} mm inward for "
                  "wall clearance" if self._release_offset_mm > 0.5 else "")
@@ -336,7 +506,31 @@ class PlacementSequence:
               f"pick {self._source_world().round(3)} -> place "
               f"{self._target_world().round(3)} (axis "
               f"{command.target_pose.axis if command.target_pose else '?'}{moved})")
+        if self._cut is not None:
+            geometry = self._cut_geometry()
+            if geometry is not None:
+                print(f"{LOG_ROBOT} cut {command.item_id}: shear at "
+                      f"{geometry['cut'].round(3)} ({self._cut['cut_offset_mm']:.0f} mm "
+                      f"from the end), fingers at {geometry['grip'].round(3)} on "
+                      f"{self._cut['retained_segment_id']}, yaw {geometry['yaw']:.1f} deg")
         return True
+
+    def _compute_release_pose(self, command: IsaacCommand) -> None:
+        """The clearance-aware release point for the item the command NOW describes."""
+        inner = command.container_inner_mm or {}
+        if (command.target_pose is not None and command.dimensions is not None
+                and inner.get("x") and inner.get("y")):
+            if self._release_pose is not None:
+                previous = (self._release_pose.x_mm, self._release_pose.y_mm)
+                if previous in self._released_xy:
+                    self._released_xy.remove(previous)
+            self._release_pose, self._release_offset_mm = safe_release_pose(
+                command.target_pose, command.dimensions,
+                Vec3(int(inner["x"]), int(inner["y"]), int(inner.get("z", 0))),
+                clearance=self.motion.release_clearance,
+                occupied=list(self._released_xy))
+            self._released_xy.append(
+                (self._release_pose.x_mm, self._release_pose.y_mm))
 
     def abort(self, reason: str) -> None:
         """Stop immediately, dropping whatever is held."""
@@ -420,6 +614,10 @@ class PlacementSequence:
     def step(self) -> None:
         """Advance one physics frame. Safe to call when idle."""
         self.sim_time += self.physics_dt
+        if self.robot is not None:
+            # The cutter is VISUAL: its blades are animated here, every frame,
+            # whether or not an item is in progress (tool.py).
+            self.robot.tick_tool()
         if self.state in (SequenceState.IDLE, SequenceState.NEXT_ITEM,
                           SequenceState.FAILED):
             return
@@ -437,7 +635,7 @@ class PlacementSequence:
         Not a joint-space reset: teleporting the arm home between items would
         also teleport a held object, and would look nothing like a robot.
         """
-        live = self._live_item_world()
+        live = self._approach_point()
         if live is None:
             self._fail("the item disappeared from the scene before the approach")
             return
@@ -448,7 +646,7 @@ class PlacementSequence:
             self._enter(SequenceState.PRE_GRASP)
 
     def _step_pre_grasp(self) -> None:
-        live = self._live_item_world()
+        live = self._approach_point()
         if live is None:
             self._fail("the item disappeared from the scene before the approach")
             return
@@ -477,10 +675,11 @@ class PlacementSequence:
         The descent and the close are one state because they are one physical
         act; splitting them would add a state whose only job is to wait.
         """
-        live = self._live_item_world()
+        live = self._approach_point()
         if live is None:
             self._fail("the item disappeared during the grasp")
             return
+        self._grip_world = np.array(live, dtype=float)
         descended = self._servo(np.array(live, dtype=float), self._grasp_yaw())
         if descended or self._frames_in_state > self.motion.max_frames_per_goal // 2:
             self.robot.close_gripper()
@@ -502,11 +701,122 @@ class PlacementSequence:
         self.robot.attach_object(
             item_path=item_path(item), item_id=item,
             item_position=item_pose[0], item_orientation=item_pose[1])
+        self._enter(SequenceState.CUT if self._cut is not None else SequenceState.LIFT)
+
+    def _step_cut(self) -> None:
+        """Close the shear on the cut plane, then perform the discrete cut.
+
+        The fingers already hold the tube on the retained side. The blades —
+        VISUAL geometry, animated, never in contact (tool.py) — close; when the
+        animation has them met, or the actuation budget has run, the scene
+        replaces the tube by two segment bodies exactly where its material
+        lies (the discrete, authoritative cut event), the retained segment is
+        welded to the hand in place of the tube, the other is woken and left
+        to PhysX, and the cut is reported with both segments' poses. Then the
+        blades open and the carry continues like any pick.
+        """
+        assert self._cut is not None
+        if self._frames_in_state == 1:
+            self.robot.close_cutter()
+        closed = self.robot.cutter_closed()
+        if not closed and self._frames_in_state < self.motion.gripper_frames * 2:
+            return
+        parent = self.command.item_id or ""
+        segments = list(self._cut["segment_ids"])
+        lengths_mm = [float(v) for v in self._cut["segment_lengths_mm"]]
+        retained = str(self._cut["retained_segment_id"])
+        other = segments[1] if retained == segments[0] else segments[0]
+        try:
+            before = self.scene.item_world_pose(parent)
+            self.robot.release_object()
+            poses = self.scene.split_item(
+                parent, cut_offset_m=mm_to_m(float(self._cut["cut_offset_mm"])),
+                kerf_m=mm_to_m(float(self._cut["kerf_mm"])),
+                segment_ids=segments, segment_lengths_m=[mm_to_m(v) for v in lengths_mm])
+            self._cut_remainder = other
+            self._remainder_trace = [{
+                "at": "parent_before_cut", "frame": self._frames_in_state,
+                "position_m": ([round(float(v), 4) for v in before[0]]
+                               if before is not None else None)},
+                {"at": "remainder_spawn_pose", "frame": self._frames_in_state,
+                 "position_m": [round(float(v), 4) for v in poses[other][0]]}]
+            self._trace_remainder("after_creation")
+            self.robot.attach_object(
+                item_path=item_path(retained), item_id=retained,
+                item_position=poses[retained][0], item_orientation=poses[retained][1])
+            self.scene.wake_item(other)
+            self._trace_remainder("after_retained_weld")
+        except Exception as exc:                          # noqa: BLE001
+            self.robot.open_cutter()
+            self._fail(f"the cut could not be performed: {type(exc).__name__}: {exc}")
+            return
+        # From here the command describes the RETAINED segment: it is what the
+        # carry places and what the terminal state names.
+        dims = self.command.dimensions
+        index = segments.index(retained)
+        self.command.item_id = retained
+        self.command.dimensions = Dimensions(
+            length_mm=int(round(lengths_mm[index])),
+            outer_diameter_mm=dims.outer_diameter_mm if dims else 0,
+            inner_diameter_mm=dims.inner_diameter_mm if dims else None)
+        self._compute_release_pose(self.command)
+        held = np.asarray(self.robot.held_offset_m, dtype=float)
+        print(f"{LOG_ROBOT} {retained} held {abs(held[0]) * 1000:.0f} mm from its centre "
+              f"along the tube; the place motion offsets the TCP by that much so the "
+              f"segment's centre reaches {self._target_world().round(3)}")
+        detail = {
+            "sequence_state": SequenceState.CUT.value,
+            "cutter_closed_animated": bool(closed),
+            "cut": {
+                "proposal_id": self._cut.get("proposal_id", ""),
+                "request_id": self._cut.get("request_id", ""),
+                "source_item_id": parent,
+                "kerf_mm": float(self._cut["kerf_mm"]),
+                "cut_offset_mm": float(self._cut["cut_offset_mm"]),
+                "retained_segment_id": retained,
+                "segments": [
+                    {"item_id": seg, "length_mm": lengths_mm[i],
+                     "pose": world_to_pose(poses[seg][0], poses[seg][1], "table",
+                                           self.layout).to_dict(),
+                     "world_position_m": [round(float(v), 4) for v in poses[seg][0]],
+                     "retained": seg == retained}
+                    for i, seg in enumerate(segments)],
+                "note": ("discrete cut event: the tube body is deactivated and "
+                         "two segment bodies are spawned where its material "
+                         "lay; no fracture physics"),
+            },
+        }
+        self.on_state(IsaacState.CUT_COMPLETED,
+                      f"cut {parent} -> {segments[0]} + {segments[1]}; "
+                      f"{retained} retained in the gripper", detail)
+        self.robot.open_cutter()
         self._enter(SequenceState.LIFT)
 
     def _step_lift(self) -> None:
         """Raise vertically before any lateral motion, clearing the pick row."""
-        source = self._source_world()
+        if self._frames_in_state in (1, self.motion.gripper_frames):
+            self._trace_remainder(f"lift_frame_{self._frames_in_state}")
+        if self._cut_remainder is not None and self._frames_in_state <= 60:
+            self._trace_lift_contact()
+        source = self._grip_world if self._grip_world is not None else self._source_world()
+        if self._cut_remainder is not None and self._grip_world is not None:
+            # RETRACT OUT OF THE CUT FIRST, slowly and straight up (see
+            # MotionConfig.cut_retract_step): the retained segment must clear
+            # the remainder's cut face before the arm makes any fast move.
+            current, _ = self.robot.get_tcp_pose()
+            risen = float(current[2] - self.robot.tool_centre_point_m - self._grip_world[2])
+            if risen < self.motion.cut_retract_clearance:
+                # A RAMPED goal: this frame's target is a small, fixed step
+                # above the previous frame's, so the IK never sees a far goal
+                # (that is what produced the lateral transient), yet the arm
+                # does not stall behind a goal pinned to its own position.
+                ramp = min(self._frames_in_state * self.motion.cut_retract_step,
+                           self.motion.cut_retract_clearance + 0.01)
+                creep = np.array([source[0], source[1], self._grip_world[2] + ramp])
+                self._servo(creep, self._grasp_yaw())
+                if self._budget_exceeded():
+                    self._enter(SequenceState.PRE_PLACE)
+                return
         goal = np.array([source[0], source[1],
                          self.layout.table_top_z_m + self.motion.lift_height])
         if self._servo(goal, self._grasp_yaw()) or self._budget_exceeded():
@@ -518,10 +828,13 @@ class PlacementSequence:
         The lateral move happens at rim + clearance, which is the rule that keeps
         the held cylinder from being dragged through a container wall.
         """
+        if self._frames_in_state == 1:
+            self._trace_remainder("carry_start")
         target = self._target_world()
         safe_z = self._container_rim_z() + self.motion.container_clearance
-        goal = np.array([target[0], target[1], safe_z])
-        if self._servo(goal, self._grasp_yaw()):
+        yaw = self._grasp_yaw()
+        goal = self._tcp_goal_for_item(np.array([target[0], target[1], safe_z]), yaw)
+        if self._servo(goal, yaw):
             self._enter(SequenceState.PLACE_ORIENTATION)
         elif self._budget_exceeded():
             self._fail("could not reach the pre-place pose above the container")
@@ -543,7 +856,8 @@ class PlacementSequence:
         # error does not appear in the servo's POSITION tolerance at all — the
         # arm would report "arrived" with the item still crosswise.
         if self._frames_in_state <= self.motion.dwell_frames * 4:
-            self._servo(np.array([target[0], target[1], rim_clear_z]), yaw)
+            self._servo(self._tcp_goal_for_item(
+                np.array([target[0], target[1], rim_clear_z]), yaw), yaw)
             return
 
         # LOWER ONLY WHILE THE WHOLE OBJECT IS CLEAR OF THE WALLS.
@@ -568,13 +882,16 @@ class PlacementSequence:
         rim_z = self._container_rim_z()
         goal_z = max(target[2] + self.motion.drop_height,
                      rim_z + self._item_radius())
-        if self._servo(np.array([target[0], target[1], goal_z]), yaw):
+        if self._servo(self._tcp_goal_for_item(
+                np.array([target[0], target[1], goal_z]), yaw), yaw):
             self._enter(SequenceState.RELEASE)
         elif self._budget_exceeded():
             self._fail("could not reach the release pose inside the container")
 
     def _step_release(self) -> None:
         """Open the fingers. The item is still welded — DETACH does the drop."""
+        if self._frames_in_state == 1:
+            self._trace_remainder("at_release")
         self.robot.open_gripper()
         if self._frames_in_state >= self.motion.gripper_frames:
             self._enter(SequenceState.DETACH)
@@ -602,10 +919,23 @@ class PlacementSequence:
 
     def _step_retreat(self) -> None:
         """Withdraw vertically before any lateral motion, clear of the rim."""
+        if self._frames_in_state in (2, 12):
+            # MEASURED right after the weld is removed: a released item should
+            # start from rest and fall. A large speed here is a penetration
+            # impulse — something it was welded into — and names the frame.
+            item = self.command.item_id or ""
+            pose = self.scene.item_world_pose(item)
+            vel = self.scene.item_velocities(item)
+            if pose is not None and vel is not None:
+                print(f"{LOG_ROBOT} released {item} frame {self._frames_in_state}: at "
+                      f"{pose[0].round(4).tolist()} m, speed {np.linalg.norm(vel[0]):.3f} m/s "
+                      f"(v {vel[0].round(3).tolist()}), spin {np.linalg.norm(vel[1]):.2f} rad/s")
         target = self._target_world()
-        goal = np.array([target[0], target[1],
-                         self._container_rim_z() + self.motion.retreat_height])
-        if self._servo(goal, self._place_yaw()[0]) or self._budget_exceeded():
+        yaw = self._place_yaw()[0]
+        goal = self._tcp_goal_for_item(
+            np.array([target[0], target[1],
+                      self._container_rim_z() + self.motion.retreat_height]), yaw)
+        if self._servo(goal, yaw) or self._budget_exceeded():
             self._enter(SequenceState.WAIT_FOR_SETTLE)
 
     def _step_wait_for_settle(self) -> None:
@@ -669,6 +999,11 @@ class PlacementSequence:
             outcome.detail["axis_approximated"] = True
         outcome.detail["sequence_state"] = SequenceState.WAIT_FOR_SETTLE.value
         outcome.detail["grasp"] = "temporary fixed joint (secure-grasp approximation)"
+        if self._cut is not None:
+            outcome.detail["cut_and_place"] = True
+            outcome.detail["cut_request_id"] = self._cut.get("request_id", "")
+            self._trace_remainder("retained_settled")
+            outcome.detail["remainder_trace"] = list(self._remainder_trace)
 
         print(f"{LOG_ROBOT} {item}: {outcome.message}")
         self.state = SequenceState.NEXT_ITEM

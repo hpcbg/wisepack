@@ -84,6 +84,11 @@ class GraspJoint:
 
     def __init__(self) -> None:
         self.attached_item: Optional[str] = None
+        #: The held item's origin in the HAND frame at the moment of the weld
+        #: (metres). Zero when nothing is held. A tube gripped off-centre —
+        #: the retained segment of a cut, held `cut_offset` from its cut end —
+        #: has a large X component here, and the carry must account for it.
+        self.offset_in_hand_m: np.ndarray = np.zeros(3)
 
     @property
     def is_attached(self) -> bool:
@@ -129,6 +134,7 @@ class GraspJoint:
         joint.CreateExcludeFromArticulationAttr().Set(True)
 
         self.attached_item = item_id
+        self.offset_in_hand_m = np.asarray(rel_position, dtype=float).copy()
         print(f"{LOG_ROBOT} attached {item_id} to "
               f"{hand_path.rsplit('/', 1)[-1]} (secure-grasp approximation; "
               f"offset {tuple(round(float(v), 4) for v in rel_position)} m)")
@@ -142,6 +148,7 @@ class GraspJoint:
                 print(f"{LOG_ROBOT} detached {self.attached_item} — the drop "
                       "and settling from here are PhysX, not this code")
         self.attached_item = None
+        self.offset_in_hand_m = np.zeros(3)
 
 
 __all__ = ["GraspJoint", "GRASP_JOINT_PATH"]

@@ -349,6 +349,8 @@ class WisepackIsaacApp:
         self.pending: IsaacCommand = None                   # type: ignore[assignment]
         self.items_completed = 0
         self.items_failed = 0
+        self._placed_items = set()
+        self._scene_derived = False
         self.scenario = None
         self._started_at = time.monotonic()
         self._ready_announced = False
@@ -377,6 +379,12 @@ class WisepackIsaacApp:
         #: already expressed in the table frame by the orchestrator, and this
         #: process never transforms an observation itself.
         self.workcell = load_workcell()
+        #: Items this run has placed, and whether the scene has been changed
+        #: by a cut. A later SYNC_SCENE for the derived revision must verify
+        #: against the scene AS IT IS — parent gone, segments present, one of
+        #: them in the bin — not rebuild it from (preset, seed).
+        self._placed_items: set = set()
+        self._scene_derived = False
         self.smoke_items = 0
         self._smoke_queue: list = []
         self._smoke_publisher = None
@@ -687,7 +695,8 @@ class WisepackIsaacApp:
             print(f"{LOG_APP} ignoring {command.command.value}: {reason}")
             return
 
-        if command.command is IsaacCommandType.EXECUTE_ITEM:
+        if command.command in (IsaacCommandType.EXECUTE_ITEM,
+                               IsaacCommandType.EXECUTE_CUT):
             if self.sequence.busy or self.pending is not None:
                 print(f"{LOG_APP} REJECTED {command.item_id}: "
                       f"{self.sequence.command.item_id if self.sequence.command else 'an item'} "
@@ -731,6 +740,8 @@ class WisepackIsaacApp:
         self.run_active = True
         self.items_completed = 0
         self.items_failed = 0
+        self._placed_items = set()
+        self._scene_derived = False
         self.sequence.abort("new run opened")
         self.sequence.reset_release_history()
         self.pending = None
@@ -769,6 +780,8 @@ class WisepackIsaacApp:
     def _on_sequence_state(self, state: IsaacState, message: str,
                            detail: dict) -> None:
         command = self.sequence.command
+        if state is IsaacState.CUT_COMPLETED and isinstance(detail.get("cut"), dict):
+            self._note_cut(command, detail["cut"])
         if self.smoke_items:
             print(f"SMOKE-STATE {state.value} "
                   f"{command.item_id if command else '-'}")
@@ -782,11 +795,40 @@ class WisepackIsaacApp:
             target_pose=command.target_pose if command else None,
             message=message, detail=detail)
 
+    def _note_cut(self, command, cut: dict) -> None:
+        """The scene changed by a cut: keep the scenario and the revision true.
+
+        The orchestrator registers the derived segments as scenario revision
+        N+1 for a cut commanded against revision N; the same arithmetic here
+        keeps the two ends agreeing without a rebuild. The parent leaves the
+        scenario, the segments join it with the scene's own specs.
+        """
+        parent = str(cut.get("source_item_id") or "")
+        specs = self.scene.item_specs
+        added = [specs[s["item_id"]] for s in cut.get("segments", [])
+                 if s.get("item_id") in specs]
+        if self.scenario is not None:
+            self.scenario.items = [i for i in self.scenario.items
+                                   if i.item_id != parent] + added
+        if self._scene_revision is not None:
+            self._scene_revision = int(self._scene_revision) + 1
+        elif command is not None:
+            self._scene_revision = int(command.scenario_revision) + 1
+        self._scene_derived = True
+        print(f"{LOG_APP} scene revision advanced to {self._scene_revision} by the "
+              f"cut of {parent}: {[i.item_id for i in added]} registered")
+
     def _on_item_done(self, item_id: str, outcome) -> None:
         """Report the MEASURED result. Never the target dressed up as an outcome."""
         command = self._last_command
         if command is not None and command.item_id != item_id:
-            command = None
+            # A cut-and-place ends by naming the RETAINED SEGMENT, which is the
+            # item that was placed; the command it answers was for the parent.
+            retained = (command.cut or {}).get("retained_segment_id") if command.cut else None
+            if retained != item_id:
+                command = None
+        if outcome.ok:
+            self._placed_items.add(item_id)
         if outcome.ok:
             self.items_completed += 1
             state = IsaacState.ITEM_COMPLETED
@@ -1045,15 +1087,24 @@ class WisepackIsaacApp:
         poses = {}
         for index, item in enumerate(self.scenario.items):
             entry: dict = {}
-            try:
-                commanded, _ = pose_to_world(
-                    source_pose_for(self.scene_spec, index, item, self.layout),
-                    self.layout)
-                entry["commanded_position_m"] = [round(float(v), 4)
-                                                 for v in commanded]
-            except Exception as exc:                          # noqa: BLE001
+            # THE SLOT THE BODY WAS BUILT IN, not its place in the current list:
+            # a cut removes the parent from the scenario without moving anyone.
+            index = self.scene.item_index.get(item.item_id, index)
+            if getattr(item, "cut_history", None):
+                # A segment left by the cut skill was never commanded to a
+                # source pose; it lies where the cut left it.
                 entry["commanded_position_m"] = None
-                entry["error"] = str(exc)
+                entry["derived_by_cut"] = True
+            else:
+                try:
+                    commanded, _ = pose_to_world(
+                        source_pose_for(self.scene_spec, index, item, self.layout),
+                        self.layout)
+                    entry["commanded_position_m"] = [round(float(v), 4)
+                                                     for v in commanded]
+                except Exception as exc:                          # noqa: BLE001
+                    entry["commanded_position_m"] = None
+                    entry["error"] = str(exc)
             read = self.scene.item_world_pose(item.item_id)
             if read is None:
                 entry["position_m"] = None
@@ -1123,6 +1174,12 @@ class WisepackIsaacApp:
                                       and command.scene.is_physical) else None
         if requested is not None:
             wanted.items = scene_items(requested)
+        elif self._scene_derived and self.scenario is not None:
+            # A CUT CHANGED THE SCENE, and the orchestrator registered the
+            # derived segments as the scenario this revision plans from. The
+            # world to verify against is the one that exists — segments, not
+            # the tube (preset, seed) would rebuild.
+            wanted.items = list(self.scenario.items)
         if (requested is None) != (self.scene_spec is None):
             return ("the built scene is "
                     f"{'a physical-observation' if self.scene_spec else 'the generated'}"
@@ -1140,7 +1197,8 @@ class WisepackIsaacApp:
         if len(self.scene.items) != len(wanted.items):
             return (f"{len(self.scene.items)} object(s) in the scene, "
                     f"{len(wanted.items)} in the scenario")
-        placed = [i for i in self.scene.items if self._is_in_container(i)]
+        placed = [i for i in self.scene.items if self._is_in_container(i)
+                  and i not in self._placed_items]
         if placed:
             # A scene holding items from a previous run is NOT reusable, however
             # well its fingerprint matches — the fingerprint describes the
@@ -1264,6 +1322,15 @@ class WisepackIsaacApp:
                     f"{self._scene_revision}")
         if not self.scene.has_item(item):
             return f"{item} does not exist in the current scene"
+        if command.command is IsaacCommandType.EXECUTE_CUT:
+            if not getattr(self.robot, "has_cutter", False):
+                return (f"the {self.profile.display_name} carries no cutter; "
+                        "a cut-and-place needs the combined gripper+cutter tool")
+            cut = command.cut or {}
+            length = command.dimensions.length_mm if command.dimensions else 0
+            if not 0 < float(cut.get("cut_offset_mm", -1)) < float(length):
+                return (f"the cut plane at {cut.get('cut_offset_mm')} mm is not "
+                        f"inside the {length} mm tube")
         if self.scene_spec is not None and self.scene_spec.object(item) is None:
             # A PHYSICAL SCENE PICKS OBSERVED OBJECTS ONLY. A body that exists
             # but was not part of the synchronized batch has no observed pose,
@@ -1304,7 +1371,9 @@ class WisepackIsaacApp:
             if drift > self.config.motion.max_source_drift_m:
                 return (f"{item} is {drift*1000:.0f} mm from its expected source "
                         f"pose (limit {self.config.motion.max_source_drift_m*1000:.0f} "
-                        "mm) — the scene does not match the plan")
+                        f"mm): expected {[round(float(v), 3) for v in expected]} m, "
+                        f"actual {[round(float(v), 3) for v in actual]} m — the "
+                        "scene does not match the plan")
         return ""
 
     # -- self-driving smoke mode ----------------------------------------- #
