@@ -360,6 +360,22 @@ class PlacementSequence:
             return None if geometry is None else geometry["grip"]
         return self._live_item_world()
 
+    def _installed_cut(self) -> bool:
+        """Is this cut a DISMANTLING cut of a fixed component?"""
+        return bool(self._cut is not None and self._cut.get("installed"))
+
+    def _clear_z(self, over_z: float) -> float:
+        """A travel height clear of the pick row AND of whatever is gripped at `over_z`.
+
+        The pick row lives on the bench, and `lift_height` above the bench
+        clears it. An INSTALLED pipe run is 250 mm up: the same lift height
+        would put the hand THROUGH it, so the travel height is the higher of
+        the two — the row clearance, or the grip height plus the approach
+        clearance.
+        """
+        return max(self.layout.table_top_z_m + self.motion.lift_height,
+                   float(over_z) + self.motion.pre_grasp_height + 0.05)
+
     def _grasp_yaw(self) -> float:
         """Yaw that aims the fingers ACROSS the cylinder AS IT ACTUALLY LIES.
 
@@ -639,8 +655,7 @@ class PlacementSequence:
         if live is None:
             self._fail("the item disappeared from the scene before the approach")
             return
-        goal = np.array([live[0], live[1],
-                         self.layout.table_top_z_m + self.motion.lift_height])
+        goal = np.array([live[0], live[1], self._clear_z(live[2])])
         self.robot.open_gripper()
         if self._servo(goal, self._grasp_yaw()) or self._budget_exceeded():
             self._enter(SequenceState.PRE_GRASP)
@@ -698,6 +713,23 @@ class PlacementSequence:
             return
         # The adapter owns the weld because the frame the item is welded to is a
         # robot-specific prim, and this file must not know one arm's link names.
+        if self._installed_cut():
+            # AN INSTALLED COMPONENT IS HELD BY THE PLANT, not by the fingers:
+            # welding the hand to a kinematic body would only load the arm
+            # against a thing that cannot move. The fingers are closed on the
+            # section that will be released (VERIFY GRIP: the item is between
+            # them, read back below); the cut event welds THAT segment.
+            gap = None
+            try:
+                dof = self.robot.get_joint_state()
+                gap = float(dof[-2] + dof[-1])
+            except Exception:                                   # noqa: BLE001
+                pass
+            print(f"{LOG_ROBOT} {item} is an installed component: fingers closed on "
+                  f"the removable section (finger gap {gap if gap is None else round(gap * 1000)} "
+                  f"mm), no weld to the plant")
+            self._enter(SequenceState.CUT)
+            return
         self.robot.attach_object(
             item_path=item_path(item), item_id=item,
             item_position=item_pose[0], item_orientation=item_pose[1])
@@ -726,13 +758,16 @@ class PlacementSequence:
         lengths_mm = [float(v) for v in self._cut["segment_lengths_mm"]]
         retained = str(self._cut["retained_segment_id"])
         other = segments[1] if retained == segments[0] else segments[0]
+        fixed = self._cut.get("fixed_segment_id") if self._installed_cut() else None
         try:
             before = self.scene.item_world_pose(parent)
-            self.robot.release_object()
+            if self.robot.holding:
+                self.robot.release_object()
             poses = self.scene.split_item(
                 parent, cut_offset_m=mm_to_m(float(self._cut["cut_offset_mm"])),
                 kerf_m=mm_to_m(float(self._cut["kerf_mm"])),
-                segment_ids=segments, segment_lengths_m=[mm_to_m(v) for v in lengths_mm])
+                segment_ids=segments, segment_lengths_m=[mm_to_m(v) for v in lengths_mm],
+                fixed_segment_id=fixed)
             self._cut_remainder = other
             self._remainder_trace = [{
                 "at": "parent_before_cut", "frame": self._frames_in_state,
@@ -744,7 +779,8 @@ class PlacementSequence:
             self.robot.attach_object(
                 item_path=item_path(retained), item_id=retained,
                 item_position=poses[retained][0], item_orientation=poses[retained][1])
-            self.scene.wake_item(other)
+            if other != fixed:
+                self.scene.wake_item(other)
             self._trace_remainder("after_retained_weld")
         except Exception as exc:                          # noqa: BLE001
             self.robot.open_cutter()
@@ -774,12 +810,15 @@ class PlacementSequence:
                 "kerf_mm": float(self._cut["kerf_mm"]),
                 "cut_offset_mm": float(self._cut["cut_offset_mm"]),
                 "retained_segment_id": retained,
+                "fixed_segment_id": fixed,
+                "installed": bool(fixed),
                 "segments": [
                     {"item_id": seg, "length_mm": lengths_mm[i],
                      "pose": world_to_pose(poses[seg][0], poses[seg][1], "table",
                                            self.layout).to_dict(),
                      "world_position_m": [round(float(v), 4) for v in poses[seg][0]],
-                     "retained": seg == retained}
+                     "retained": seg == retained,
+                     "fixed": seg == fixed}
                     for i, seg in enumerate(segments)],
                 "note": ("discrete cut event: the tube body is deactivated and "
                          "two segment bodies are spawned where its material "
@@ -788,7 +827,8 @@ class PlacementSequence:
         }
         self.on_state(IsaacState.CUT_COMPLETED,
                       f"cut {parent} -> {segments[0]} + {segments[1]}; "
-                      f"{retained} retained in the gripper", detail)
+                      f"{retained} retained in the gripper"
+                      + (f"; {fixed} stays installed" if fixed else ""), detail)
         self.robot.open_cutter()
         self._enter(SequenceState.LIFT)
 
@@ -817,8 +857,7 @@ class PlacementSequence:
                 if self._budget_exceeded():
                     self._enter(SequenceState.PRE_PLACE)
                 return
-        goal = np.array([source[0], source[1],
-                         self.layout.table_top_z_m + self.motion.lift_height])
+        goal = np.array([source[0], source[1], self._clear_z(source[2])])
         if self._servo(goal, self._grasp_yaw()) or self._budget_exceeded():
             self._enter(SequenceState.PRE_PLACE)
 
@@ -832,6 +871,10 @@ class PlacementSequence:
             self._trace_remainder("carry_start")
         target = self._target_world()
         safe_z = self._container_rim_z() + self.motion.container_clearance
+        if self._grip_world is not None:
+            # Travel no lower than the height the lift reached: a segment
+            # released from an installed pipe run is carried ABOVE the run.
+            safe_z = max(safe_z, self._clear_z(self._grip_world[2]))
         yaw = self._grasp_yaw()
         goal = self._tcp_goal_for_item(np.array([target[0], target[1], safe_z]), yaw)
         if self._servo(goal, yaw):

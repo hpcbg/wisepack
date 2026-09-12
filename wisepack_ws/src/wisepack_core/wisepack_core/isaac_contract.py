@@ -694,6 +694,16 @@ class IsaacCommand:
             if cut["retained_segment_id"] not in cut["segment_ids"]:
                 raise ContractError(
                     "EXECUTE_CUT retained_segment_id must be one of segment_ids")
+            # A DISMANTLING cut names the segment that stays with the plant.
+            # It must be the OTHER segment: the fingers never keep the fixed one.
+            fixed = cut.get("fixed_segment_id")
+            if fixed is not None:
+                if fixed not in cut["segment_ids"]:
+                    raise ContractError(
+                        "EXECUTE_CUT fixed_segment_id must be one of segment_ids")
+                if fixed == cut["retained_segment_id"]:
+                    raise ContractError(
+                        "EXECUTE_CUT cannot retain the segment that stays installed")
         if self.scene is not None and self.command not in (
                 IsaacCommandType.RESET_SCENE, IsaacCommandType.SYNC_SCENE):
             raise ContractError(

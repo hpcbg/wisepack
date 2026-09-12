@@ -318,6 +318,17 @@ def assemble_scene_sync_gifs(manifest_path: str = SCENE_SYNC_MANIFEST,
         print(f"[gif] {gif_name}: {index} frames, {index / rate:.1f}s, "
               f"{size_mb:.2f} MB  ({spec.get('run_mode', '?')} evidence)")
         written.append(out)
+        if spec.get("mp4"):
+            # The same evidence frames as an H.264 clip for presentations.
+            mp4 = os.path.join(SCENE_SYNC_DIR, spec["mp4"])
+            subprocess.run(
+                ["ffmpeg", "-y", "-v", "error", "-framerate", str(rate),
+                 "-i", os.path.join(folder, "f%04d.png"),
+                 "-vf", "scale=trunc(iw/2)*2:trunc(ih/2)*2",
+                 "-c:v", "libx264", "-pix_fmt", "yuv420p", "-crf", "21",
+                 "-movflags", "+faststart", mp4], check=True)
+            print(f"[gif] {spec['mp4']}: {os.path.getsize(mp4) / 1e6:.2f} MB (H.264)")
+            written.append(mp4)
         if not keep_frames:
             shutil.rmtree(folder, ignore_errors=True)
     return written

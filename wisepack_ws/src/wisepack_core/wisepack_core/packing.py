@@ -156,10 +156,10 @@ def score_plan(plan: PackingPlan, scenario: Scenario,
     # Excessive clearance: gaps large enough to have held another item. Uses the
     # smallest item as the yardstick, so "excessive" is scenario-relative.
     clearance_term = 0.0
-    if plan.placements and scenario.items:
-        smallest = min(i.occupied_volume_mm3 for i in scenario.items)
+    if plan.placements and scenario.packable_items:
+        smallest = min(i.occupied_volume_mm3 for i in scenario.packable_items)
         wasted = plan.unused_capacity_mm3
-        clearance_term = min(1.0, (wasted / smallest) / max(1, len(scenario.items)))
+        clearance_term = min(1.0, (wasted / smallest) / max(1, len(scenario.packable_items)))
 
     return (density
             - weights.container_count * container_term
@@ -355,7 +355,7 @@ def pack_baseline(scenario: Scenario, *,
         cur.level_height = max(cur.level_height, size.z)
         return True
 
-    for item in scenario.items:
+    for item in scenario.packable_items:
         # Any already-open container that accepts this item, oldest first. This
         # is not lookahead — it never revisits a placement or reorders an item.
         if any(try_place(i, item) for i in range(len(states))):
@@ -504,7 +504,7 @@ def _orderings(scenario: Scenario, cfg: OptimizerConfig) -> Iterable[_Ordering]:
     perturbations of the volume-decreasing order: enough randomness to escape a
     bad tie-break, none of the irreproducibility.
     """
-    items = list(scenario.items)
+    items = list(scenario.packable_items)      # never an INSTALLED component
 
     def by(key, name) -> _Ordering:
         # item_id is always the final tie-break, so equal items never depend on

@@ -40,8 +40,8 @@ from typing import Any, Dict, List, Optional, Tuple
 from .cutting import CutConfig, CutProposal, derive_segments
 from .cut_validator import validate_no_coexistence, validate_proposal
 from .domain import (
-    Axis, Container, GeometryType, PackingPlan, Scenario, Source, Strategy,
-    WasteItem,
+    Axis, Container, DomainError, GeometryType, ItemStatus, PackingPlan, Scenario,
+    Source, Strategy, WasteItem,
 )
 from .packing import OptimizerConfig, pack_optimized
 
@@ -84,6 +84,11 @@ class CutPlannerConfig:
     #: an alternative that places it earns that back. Charged identically to
     #: the no-cut reference and to every cut alternative; no special case.
     unplaced_item_cost: float = 1000.0
+    #: DISMANTLING: the value of releasing a section from an INSTALLED plant
+    #: component and packing it. Not a container saving — the component was
+    #: never packable whole — but the whole point of a dismantling cut, so it
+    #: is credited per released segment the plan actually places.
+    released_component_value: float = 1500.0
     #: A cut alternative must beat no-cut by at least this net margin to be
     #: recommended, so a rounding-scale gain never flips the recommendation.
     recommendation_margin: float = 1.0
@@ -287,7 +292,9 @@ def _marginal_pipes(scenario: Scenario, plan: PackingPlan,
         for p in plan.placements_for(last_id):
             priority.setdefault(p.item_id, 1)
 
-    cuttable = [i for i in scenario.items if i.is_cuttable]
+    # INSTALLED components are not loose pipes: they are cut to be REMOVED,
+    # not to fit, and they take the dismantling path below.
+    cuttable = [i for i in scenario.items if i.is_cuttable and not i.is_installed]
     ordered = sorted(cuttable,
                      key=lambda it: (priority.get(it.item_id, 2), -it.length_mm))
     return ordered[:cfg.max_pipes_considered]
@@ -321,11 +328,64 @@ def _derived_scenario(scenario: Scenario, cuts: List[Tuple[WasteItem, List[int]]
     return derived, proposals, all_children
 
 
+def dismantling_segments(component: WasteItem, kerf_mm: int) -> Tuple[List[int], int, int]:
+    """Segment lengths of the predefined dismantling cut of an installed component.
+
+    Returns ``(segment_lengths, released_index, fixed_index)`` in the item's
+    own -Z .. +Z order. The released section is the FREE end's
+    ``removable_length_mm``; the fixed remainder is what is left after the kerf.
+    """
+    installation = component.installation or {}
+    released = int(component.removable_length_mm)
+    fixed_len = int(component.length_mm) - released - int(kerf_mm)
+    if released <= 0 or fixed_len <= 0:
+        raise DomainError(
+            f"{component.item_id}: removable length {released} mm does not leave "
+            f"a fixed remainder from {component.length_mm} mm")
+    if installation.get("fixed_end", "+z") == "+z":
+        return [released, fixed_len], 0, 1
+    return [fixed_len, released], 1, 0
+
+
+def _dismantling_scenario(scenario: Scenario, component: WasteItem,
+                          cfg: CutPlannerConfig
+                          ) -> Tuple[Scenario, CutProposal, WasteItem, WasteItem]:
+    """Derive the scenario in which the released section is a waste item.
+
+    The fixed remainder is registered as an INSTALLED component again (status
+    and provenance carried over), so the packer never sees it; the released
+    section is an ordinary derived item with dismantling provenance.
+    """
+    segs, released_i, fixed_i = dismantling_segments(component, cfg.cut.kerf_mm)
+    children = derive_segments(component, segs, kerf_mm=cfg.cut.kerf_mm)
+    released, fixed = children[released_i], children[fixed_i]
+    installation = dict(component.installation or {})
+    fixed.installation = {**installation, "fixed_length_mm": fixed.length_mm,
+                          "removable_length_mm": 0,
+                          "dismantled_from": component.item_id}
+    fixed.status = ItemStatus.INSTALLED
+    released.cut_history[-1].update({
+        "dismantling": True,
+        "dismantled_from": installation.get("component_id", component.item_id),
+        "released_length_mm": released.length_mm})
+    prop = CutProposal.for_segments(
+        f"dism-{scenario.scenario_id[:24]}-{component.item_id[:16]}", component, segs,
+        config=cfg.cut,
+        reason=(f"dismantle {installation.get('component_id', component.item_id)}: "
+                f"release the free {released.length_mm} mm section for packing; "
+                f"the {fixed.length_mm} mm remainder stays installed"))
+    prop.validator_result = validate_proposal(prop, component, children=children)
+    items = [i for i in scenario.items if i.item_id != component.item_id] + [fixed, released]
+    derived = replace(scenario, scenario_id=f"{scenario.scenario_id}-dismantle", items=items)
+    return derived, prop, released, fixed
+
+
 def _score_alternative(label: str, strategy: Strategy, is_cut: bool,
                        plan: PackingPlan, proposals: List[CutProposal],
                        no_cut_containers: int, no_cut_util: float,
                        cfg: CutPlannerConfig, valid: bool,
-                       no_cut_unplaced: int = 0) -> CutAlternative:
+                       no_cut_unplaced: int = 0,
+                       released_placed: int = 0) -> CutAlternative:
     n_cuts = sum(p.n_cuts for p in proposals)
     cutting_time = sum(p.estimated_cutting_time_s for p in proposals)
     handling_time = sum(p.estimated_handling_time_s for p in proposals)
@@ -339,6 +399,7 @@ def _score_alternative(label: str, strategy: Strategy, is_cut: bool,
     unplaced_saved = no_cut_unplaced - len(plan.unplaced_item_ids)
     value = (container_savings * cfg.container_cost_proxy
              + unplaced_saved * cfg.unplaced_item_cost
+             + released_placed * cfg.released_component_value
              + max(0.0, util_gain) * cfg.utilization_weight)
     process_cost = 0.0
     if is_cut:
@@ -423,12 +484,46 @@ def plan_cut_aware(scenario: Scenario, *,
         if candidates_evaluated >= cfg.max_cut_aware_plans or timed_out:
             break
 
+    # (7b) DISMANTLING: every installed component with a predefined removable
+    # section gets one alternative per strategy. Its value is the released
+    # section entering the plan, not a container saved.
+    for component in scenario.installed_components:
+        if template is None or component.removable_length_mm <= 0:
+            continue
+        if time.perf_counter() > deadline:
+            timed_out = True
+            break
+        candidates_evaluated += 1
+        derived, prop, released, fixed = _dismantling_scenario(scenario, component, cfg)
+        coexist_ok = validate_no_coexistence(derived.items)["valid"]
+        for strategy in CUT_STRATEGIES:
+            plan = pack_optimized(
+                derived, config=replace(opt, strategy=strategy),
+                plan_id=f"dism-{scenario.scenario_id[:20]}-{component.item_id[:12]}-{strategy.value[:8]}")
+            placed = 1 if plan.placement_for_item(released.item_id) is not None else 0
+            valid = (prop.is_validated and coexist_ok and plan.is_valid and placed == 1
+                     and plan.placement_for_item(fixed.item_id) is None)
+            alternatives.append(_score_alternative(
+                f"dismantle:{component.item_id}:{'-'.join(map(str, prop.segment_lengths_mm))}:"
+                f"{strategy.value}",
+                strategy, True, plan, [prop], no_cut.containers, no_cut.utilization_pct,
+                cfg, valid, no_cut_unplaced=no_cut_unplaced, released_placed=placed))
     # (8) recommendation: best VALID alternative that beats no-cut by the margin.
     valid_alts = [a for a in alternatives if a.valid]
     best = max(valid_alts, key=lambda a: a.whole_process_score, default=None)
     recommend_cut = bool(best and best.whole_process_score
                          > no_cut.whole_process_score + cfg.recommendation_margin)
-    if recommend_cut:
+    if recommend_cut and best.label.startswith("dismantle:"):
+        recommended_label = best.label
+        prop = best.proposals[0]
+        component = scenario.item(prop.source_item_id)
+        segs, released_i, fixed_i = (dismantling_segments(component, prop.kerf_mm)
+                                     if component else (prop.segment_lengths_mm, 0, 1))
+        reason = (f"Dismantling {prop.source_item_id}: one cut releases the "
+                  f"{segs[released_i]} mm free section as a waste item that the plan "
+                  f"packs; the {segs[fixed_i]} mm remainder stays installed. Net "
+                  f"whole-process benefit {best.whole_process_score:.0f} > 0.")
+    elif recommend_cut:
         recommended_label = best.label
         saved = no_cut.containers - best.containers
         placed = no_cut_unplaced - len(best.plan.unplaced_item_ids)
@@ -454,5 +549,5 @@ def plan_cut_aware(scenario: Scenario, *,
 
 __all__ = [
     "CUT_STRATEGIES", "CutPlannerConfig", "CutAlternative",
-    "WholeProcessComparison", "plan_cut_aware",
+    "WholeProcessComparison", "plan_cut_aware", "dismantling_segments",
 ]

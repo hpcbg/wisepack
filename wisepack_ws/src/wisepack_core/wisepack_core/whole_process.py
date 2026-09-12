@@ -79,6 +79,10 @@ class WholeProcess:
         self.retained_segment_id: Optional[str] = None
         self.cut_awaiting_placement = False
         self.cut_backend = ""
+        #: DISMANTLING: the evaluator-facing status line of a dismantling cut
+        #: (an installed component's free section released and packed), kept
+        #: beside the generic cut state so the dashboard can show one row.
+        self.dismantling_status = ""
 
         self.plan_container_status = "ok"        # ok | waiting_for_container
         self.planning_result: Dict[str, Any] = {}
@@ -133,6 +137,8 @@ class WholeProcess:
                    details={"recommended": recommended.summary(),
                             "recommend_cut": cmp.recommend_cut})
 
+        self.dismantling_status = ("dismantling cut proposed"
+                                   if str(cmp.recommended_label).startswith("dismantle:") else "")
         if cmp.recommend_cut and not self.prefer_no_cut:
             self.selected_cut_label = cmp.recommended_label
             eng._set_stage(Stage.WAIT_FOR_CUT_APPROVAL)
@@ -370,6 +376,8 @@ class WholeProcess:
         eng = self.engine
         self.cut_backend = "isaac_sim"
         self.cut_skill_state = CutState.IN_PROGRESS
+        if self.dismantling_status:
+            self.dismantling_status = "gripping and cutting"
         eng._set_stage(Stage.CUT_IN_PROGRESS)
         self._emit(Stage.CUT_IN_PROGRESS, "CUT_REQUESTED", Actor.ISAAC_SIM,
                    source=Source.SIMULATED,
@@ -435,6 +443,8 @@ class WholeProcess:
             str(s["item_id"]): s.get("pose") for s in segments})
         self.retained_segment_id = str(payload.get("retained_segment_id") or "")
         self.cut_awaiting_placement = True
+        if self.dismantling_status:
+            self.dismantling_status = "released segment registered; carrying it to the bin"
         return result
 
     def retained_segment_placed(self, child_id: str,
@@ -460,6 +470,8 @@ class WholeProcess:
                            "straight from the cut, without a regrasp",
                    details=dict(details or {}))
         self.cut_awaiting_placement = False
+        if self.dismantling_status:
+            self.dismantling_status = "released segment placed in the container"
         eng._set_stage(Stage.REPLAN_AFTER_CUT)
 
         # THE VALIDATED CUT-AWARE PLAN IS THE PLAN. It already places every
@@ -510,6 +522,8 @@ class WholeProcess:
                     actual_kerf_mm=prop.kerf_mm, completion_status=CutState.FAILED,
                     failure_reason=reason).to_dict()
             self.cut_skill_state = CutState.FAILED
+            if self.dismantling_status:
+                self.dismantling_status = f"failed: {reason}"
             self.cut_approval_state = CutApprovalState.PENDING
             self.selected_cut_label = "no_cut"
             eng._set_stage(Stage.CUT_COMPLETED)
@@ -546,6 +560,33 @@ class WholeProcess:
                 parent, result.actual_segment_lengths_mm,
                 kerf_mm=result.actual_kerf_mm,
                 child_ids=result.resulting_child_ids or None)
+            if parent.is_installed:
+                # A DISMANTLING CUT. The segment on the fixed end stays part of
+                # the plant: INSTALLED, never packable, with the installation
+                # provenance carried over. The released segment is a NEW WASTE
+                # ITEM: available for packing, its lineage naming the component
+                # it came from and the cut operation that released it.
+                installation = dict(parent.installation or {})
+                fixed_index = 1 if installation.get("fixed_end", "+z") == "+z" else 0
+                operation = str((self.cut_request or {}).get("request_id") or result.proposal_id)
+                for index, child in enumerate(children):
+                    if index == fixed_index:
+                        child.status = ItemStatus.INSTALLED
+                        child.installation = {
+                            **installation, "fixed_length_mm": child.length_mm,
+                            "removable_length_mm": 0, "dismantled_from": parent.item_id,
+                            "cut_operation_id": operation}
+                    else:
+                        child.status = ItemStatus.PENDING
+                        child.installation = None
+                        child.cut_history[-1].update({
+                            "dismantling": True,
+                            "dismantled_from": installation.get("component_id", parent.item_id),
+                            "source_component_id": parent.item_id,
+                            "cut_operation_id": operation,
+                            "released_length_mm": child.length_mm,
+                            "status": "available_for_packing"})
+                self.dismantling_status = "released segment registered as waste"
             for child in children:
                 pose = (poses or {}).get(child.item_id)
                 # The simulator reports a contract `Pose` (position_mm nested);
@@ -755,11 +796,84 @@ class WholeProcess:
     # Snapshot / analytics
     # =================================================================== #
 
+    def dismantling_snapshot(self) -> Optional[Dict[str, Any]]:
+        """The compact, evaluator-facing view of a dismantling cut, or None.
+
+        Installed component, the proposed cut and its position, the released
+        segment, approval, registration as waste, its packing target and the
+        execution status — from the same objects the generic cut view uses.
+        """
+        alt = self._selected_alternative()
+        if alt is None or not alt.proposals:
+            rec = self.comparison.recommended if self.comparison else None
+            alt = rec if rec is not None and rec.label.startswith("dismantle:") else None
+        if alt is None or not str(alt.label).startswith("dismantle:"):
+            return None
+        eng = self.engine
+        prop = alt.proposals[0]
+        scenario = eng.scenario
+        component = scenario.item(prop.source_item_id) if scenario else None
+        installation = dict(component.installation or {}) if component else {}
+        children = prop.derived_item_ids_for()
+        if not installation and scenario is not None:
+            # After the cut the component is gone; its fixed remainder carries
+            # the installation provenance and says which side stayed.
+            for index, child_id in enumerate(children):
+                child = scenario.item(child_id)
+                if child is not None and child.is_installed:
+                    installation = dict(child.installation or {})
+                    break
+        fixed_index = 1 if installation.get("fixed_end", "+z") == "+z" else 0
+        released_id = children[1 - fixed_index]
+        fixed_id = children[fixed_index]
+        lengths = list(prop.segment_lengths_mm)
+        released_item = scenario.item(released_id) if scenario else None
+        fixed_item = scenario.item(fixed_id) if scenario else None
+        placement = alt.plan.placement_for_item(released_id)
+        if eng.selected is not None and eng.selected.placement_for_item(released_id):
+            placement = eng.selected.placement_for_item(released_id)
+        target = None
+        if placement is not None:
+            target = {"container_id": placement.container_id,
+                      "position_mm": {"x": placement.position.x + placement.size.x / 2.0,
+                                      "y": placement.position.y + placement.size.y / 2.0,
+                                      "z": placement.position.z + placement.size.z / 2.0},
+                      "axis": placement.axis.value,
+                      "executed": bool(placement.executed)}
+        registered = None
+        if released_item is not None:
+            registered = {"item_id": released_id, "status": released_item.status.value,
+                          "length_mm": released_item.length_mm,
+                          "cut_operation_id": (released_item.cut_history[-1].get("cut_operation_id")
+                                               if released_item.cut_history else None)}
+        return {
+            "component_id": installation.get("component_id", prop.source_item_id),
+            "installed": {"item_id": prop.source_item_id,
+                          "length_mm": prop.original_length_mm,
+                          "fixed_end": installation.get("fixed_end"),
+                          "elevation_mm": installation.get("elevation_mm"),
+                          "support_id": installation.get("support_id"),
+                          "status": "installed"},
+            "proposal": {"label": alt.label, "segments_mm": lengths, "kerf_mm": prop.kerf_mm,
+                         "cut_from_free_end_mm": lengths[1 - fixed_index],
+                         "cut_from_fixed_end_mm": lengths[fixed_index],
+                         "validated": prop.is_validated},
+            "released_segment": {"item_id": released_id, "length_mm": lengths[1 - fixed_index]},
+            "fixed_remainder": {"item_id": fixed_id, "length_mm": lengths[fixed_index],
+                                "status": (fixed_item.status.value if fixed_item else "installed")},
+            "cut_approval_state": self.cut_approval_state.value,
+            "cut_skill_state": self.cut_skill_state.value,
+            "registered_as_waste": registered,
+            "packing_target": target,
+            "execution_status": self.dismantling_status or "proposed",
+        }
+
     def cut_snapshot(self) -> Optional[Dict[str, Any]]:
         if self.comparison is None:
             return None
         return {
             **self.comparison.to_dict(),
+            "dismantling": self.dismantling_snapshot(),
             "selected_label": self.selected_cut_label,
             "cut_approval_state": self.cut_approval_state.value,
             "cut_skill_state": self.cut_skill_state.value,

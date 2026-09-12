@@ -384,6 +384,14 @@ _PRESET_DESCRIPTIONS = {
         "combined gripper+cutter tool grips the retained segment, cuts, carries "
         "it to the bin and leaves the remainder on the table. NOT a packing "
         "benchmark, and NOT a cutting-physics model."),
+    "isaac_fixed_pipe_dismantling": (
+        "DISMANTLING DEMONSTRATION for the Isaac Sim backend: the same bench "
+        "and loose tubes, plus one INSTALLED steel pipe run fixed to a support "
+        "above the table. The pipe is not waste yet: only the section the "
+        "combined gripper+cutter releases becomes a WISEPACK item, is planned "
+        "into the bin and carried there straight from the cut; the fixed "
+        "remainder stays part of the installation. NOT a packing benchmark, "
+        "and NOT a cutting-physics model."),
 }
 
 
@@ -526,6 +534,10 @@ PRESETS: Dict[str, Dict[str, Any]] = {
         item_count=3, length_range_mm=(150, 420), diameter_range_mm=(40, 40),
         container_spec="isaac_smoke_bin", permitted_axes=("x", "y"),
         max_containers=1),
+    "isaac_fixed_pipe_dismantling": dict(
+        item_count=4, length_range_mm=(150, 400), diameter_range_mm=(40, 40),
+        container_spec="isaac_smoke_bin", permitted_axes=("x", "y"),
+        max_containers=1),
 }
 
 
@@ -612,7 +624,24 @@ def build_curated_scenario(seed: int = 7,
 
 _CUT_SCENARIOS = frozenset({
     "cut_avoids_extra_container", "cut_not_worthwhile", "cut_result_deviation",
-    "isaac_cut_demo"})
+    "isaac_cut_demo", "isaac_fixed_pipe_dismantling"})
+
+#: THE INSTALLED PIPE RUN of the dismantling demonstration, in the table frame
+#: (millimetres; the origin is the robot base on the table top). One 400 mm
+#: steel pipe, OD 40, lying along X 250 mm above the table at the robot's
+#: left, its -X end clamped to a support post behind the robot; the 150 mm at
+#: the free +X end, reaching into the workspace, is the section the
+#: dismantling cut releases. Named here so the scene builder,
+#: the planner and the tests read one definition.
+FIXED_PIPE_INSTALLATION = {
+    "component_id": "pipe-run-1",
+    "support_id": "pipe-run-1-support",
+    "axis": "x",
+    "fixed_end": "-z",
+    "elevation_mm": 250,
+    "removable_length_mm": 150,
+}
+FIXED_PIPE_TABLE_POSITION_MM = (100, -520, 250)     # table frame = robot base: world (0.10, -0.52, 0.65)
 
 
 def build_cut_scenario(preset: str, seed: int = 7,
@@ -674,6 +703,39 @@ def build_cut_scenario(preset: str, seed: int = 7,
             max_containers=1, description=_PRESET_DESCRIPTIONS[preset],
             curated=True)
 
+    if preset == "isaac_fixed_pipe_dismantling":
+        # ROBOTIC DISMANTLING. The loose bench tubes of the cut demonstration
+        # minus the long one, plus an INSTALLED pipe run above the table. The
+        # installed component is status INSTALLED: it is never packed whole,
+        # and its predefined dismantling request (release the free 150 mm)
+        # goes through the same cut-aware proposal, approval and execution
+        # path as a loose cut.
+        def bench(item_id, length, *, cut=False, mc=0, minseg=None,
+                  position=Vec3(x=80, y=60, z=40), installation=None):
+            od, wall = 40, 3
+            density = 7850.0
+            volume = (math.pi / 4.0) * (od ** 2 - (od - 2 * wall) ** 2) * length
+            return WasteItem(
+                item_id=item_id, length_mm=length, outer_diameter_mm=od,
+                inner_diameter_mm=od - 2 * wall, geometry_type=GeometryType.TUBE,
+                material="carbon_steel", segregation_group="A",
+                weight_kg=round(volume * 1e-9 * density, 3),
+                source_position=position, priority=1,
+                dose_class="LLW", permitted_axes=(Axis.X, Axis.Y),
+                cut_allowed=cut, maximum_number_of_cuts=mc,
+                minimum_segment_length_mm=minseg, protected_end_length_mm=20,
+                installation=installation)
+        x, y, z = FIXED_PIPE_TABLE_POSITION_MM
+        items = [bench("tube-short-a", 160), bench("tube-short-b", 150),
+                 bench("tube-mid", 260),
+                 bench("pipe-run-1", 400, cut=True, mc=1, minseg=120,
+                       position=Vec3(x=x, y=y, z=z),
+                       installation=dict(FIXED_PIPE_INSTALLATION))]
+        return Scenario(
+            scenario_id=scenario_id or preset, preset=preset, seed=seed,
+            items=items, container_template=make_container("isaac_smoke_bin", "CNT"),
+            max_containers=1, description=_PRESET_DESCRIPTIONS[preset],
+            curated=True)
     template = make_container("standard_box", "CNT")
     if preset == "cut_not_worthwhile":
         # A cuttable pipe that already fits one box alongside a small filler.
@@ -742,5 +804,6 @@ def inject_item(scenario: Scenario, spec: Dict[str, Any],
 __all__ = [
     "MATERIALS", "DOSE_CLASSES", "CONTAINER_SPECS", "make_container",
     "GeneratorConfig", "generate_scenario", "PRESETS", "preset_config",
+    "FIXED_PIPE_INSTALLATION", "FIXED_PIPE_TABLE_POSITION_MM",
     "build_curated_scenario", "build_cut_scenario", "build_scenario", "inject_item",
 ]

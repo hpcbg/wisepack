@@ -1163,6 +1163,18 @@ class IsaacExecutionBridge:
         # from the cut is the whole point of a combined tool.
         order = [p.item_id for p in alt.plan.ordered_placements]
         retained = next((c for c in order if c in children), children[0])
+        # A DISMANTLING cut: the segment on the fixed end stays with the plant.
+        # The fingers keep the OTHER one; a plan that placed the fixed segment
+        # would be a plan to pack the installation, and is refused.
+        fixed_segment = None
+        if parent.is_installed:
+            fixed_end = str((parent.installation or {}).get("fixed_end", "+z"))
+            fixed_segment = children[1] if fixed_end == "+z" else children[0]
+            if retained == fixed_segment:
+                self.node.get_logger().error(
+                    f"{LOG} the plan places the installed remainder {fixed_segment}; "
+                    "no dismantling cut is dispatched")
+                return False
         placement = alt.plan.placement_for_item(retained)
         container = alt.plan.container(placement.container_id) if placement else None
         if placement is None or container is None:
@@ -1208,6 +1220,10 @@ class IsaacExecutionBridge:
                 "segment_ids": children,
                 "segment_lengths_mm": [int(v) for v in prop.segment_lengths_mm],
                 "retained_segment_id": retained,
+                **({"fixed_segment_id": fixed_segment, "installed": True,
+                    "component_id": str((parent.installation or {}).get(
+                        "component_id", parent.item_id))}
+                   if fixed_segment else {}),
             })
         self._cut_in_flight = {
             "request_id": command.cut["request_id"], "parent": parent.item_id,

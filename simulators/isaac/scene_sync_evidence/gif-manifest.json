@@ -308,121 +308,121 @@
    {
     "file": "scene-isaac-seq-33.jpg",
     "hold": 1,
-    "label": "Sequential picks, time-lapse: item 4 of 18 \u2014 next pick",
+    "label": "Sequential picks, time-lapse: item 4 of 18 — next pick",
     "source_frame": 272
    },
    {
     "file": "scene-isaac-seq-34.jpg",
     "hold": 1,
-    "label": "Sequential picks, time-lapse: item 5 of 18 \u2014 next pick",
+    "label": "Sequential picks, time-lapse: item 5 of 18 — next pick",
     "source_frame": 286
    },
    {
     "file": "scene-isaac-seq-35.jpg",
     "hold": 1,
-    "label": "Sequential picks, time-lapse: item 5 of 18 \u2014 transport to the container",
+    "label": "Sequential picks, time-lapse: item 5 of 18 — transport to the container",
     "source_frame": 300
    },
    {
     "file": "scene-isaac-seq-36.jpg",
     "hold": 1,
-    "label": "Sequential picks, time-lapse: item 5 of 18 \u2014 transport to the container",
+    "label": "Sequential picks, time-lapse: item 5 of 18 — transport to the container",
     "source_frame": 314
    },
    {
     "file": "scene-isaac-seq-37.jpg",
     "hold": 1,
-    "label": "Sequential picks, time-lapse: item 6 of 18 \u2014 approach",
+    "label": "Sequential picks, time-lapse: item 6 of 18 — approach",
     "source_frame": 328
    },
    {
     "file": "scene-isaac-seq-38.jpg",
     "hold": 1,
-    "label": "Sequential picks, time-lapse: item 6 of 18 \u2014 grasp",
+    "label": "Sequential picks, time-lapse: item 6 of 18 — grasp",
     "source_frame": 342
    },
    {
     "file": "scene-isaac-seq-39.jpg",
     "hold": 1,
-    "label": "Sequential picks, time-lapse: item 7 of 18 \u2014 next pick",
+    "label": "Sequential picks, time-lapse: item 7 of 18 — next pick",
     "source_frame": 356
    },
    {
     "file": "scene-isaac-seq-40.jpg",
     "hold": 1,
-    "label": "Sequential picks, time-lapse: item 8 of 18 \u2014 next pick",
+    "label": "Sequential picks, time-lapse: item 8 of 18 — next pick",
     "source_frame": 370
    },
    {
     "file": "scene-isaac-seq-41.jpg",
     "hold": 1,
-    "label": "Sequential picks, time-lapse: item 8 of 18 \u2014 release",
+    "label": "Sequential picks, time-lapse: item 8 of 18 — release",
     "source_frame": 384
    },
    {
     "file": "scene-isaac-seq-42.jpg",
     "hold": 1,
-    "label": "Sequential picks, time-lapse: item 9 of 18 \u2014 release",
+    "label": "Sequential picks, time-lapse: item 9 of 18 — release",
     "source_frame": 398
    },
    {
     "file": "scene-isaac-seq-43.jpg",
     "hold": 1,
-    "label": "Sequential picks, time-lapse: item - of 18 \u2014 placed",
+    "label": "Sequential picks, time-lapse: item - of 18 — placed",
     "source_frame": 412
    },
    {
     "file": "scene-isaac-seq-44.jpg",
     "hold": 1,
-    "label": "Sequential picks, time-lapse: item 12 of 18 \u2014 next pick",
+    "label": "Sequential picks, time-lapse: item 12 of 18 — next pick",
     "source_frame": 426
    },
    {
     "file": "scene-isaac-seq-45.jpg",
     "hold": 1,
-    "label": "Sequential picks, time-lapse: item 12 of 18 \u2014 transport to the container",
+    "label": "Sequential picks, time-lapse: item 12 of 18 — transport to the container",
     "source_frame": 440
    },
    {
     "file": "scene-isaac-seq-46.jpg",
     "hold": 1,
-    "label": "Sequential picks, time-lapse: item 13 of 18 \u2014 transport to the container",
+    "label": "Sequential picks, time-lapse: item 13 of 18 — transport to the container",
     "source_frame": 454
    },
    {
     "file": "scene-isaac-seq-47.jpg",
     "hold": 1,
-    "label": "Sequential picks, time-lapse: item 14 of 18 \u2014 grasp",
+    "label": "Sequential picks, time-lapse: item 14 of 18 — grasp",
     "source_frame": 468
    },
    {
     "file": "scene-isaac-seq-48.jpg",
     "hold": 1,
-    "label": "Sequential picks, time-lapse: item 15 of 18 \u2014 approach",
+    "label": "Sequential picks, time-lapse: item 15 of 18 — approach",
     "source_frame": 482
    },
    {
     "file": "scene-isaac-seq-49.jpg",
     "hold": 1,
-    "label": "Sequential picks, time-lapse: item 16 of 18 \u2014 grasp",
+    "label": "Sequential picks, time-lapse: item 16 of 18 — grasp",
     "source_frame": 496
    },
    {
     "file": "scene-isaac-seq-50.jpg",
     "hold": 1,
-    "label": "Sequential picks, time-lapse: item 16 of 18 \u2014 release",
+    "label": "Sequential picks, time-lapse: item 16 of 18 — release",
     "source_frame": 510
    },
    {
     "file": "scene-isaac-seq-51.jpg",
     "hold": 1,
-    "label": "Sequential picks, time-lapse: item 17 of 18 \u2014 release",
+    "label": "Sequential picks, time-lapse: item 17 of 18 — release",
     "source_frame": 524
    },
    {
     "file": "scene-isaac-seq-52.jpg",
     "hold": 1,
-    "label": "Sequential picks, time-lapse: item 18 of 18 \u2014 release",
+    "label": "Sequential picks, time-lapse: item 18 of 18 — release",
     "source_frame": 538
    },
    {
@@ -586,109 +586,109 @@
    },
    {
     "file": "cut-isaac-seq-24.jpg",
-    "label": "Pick 1 of 3 after the cut: short tube \u2014 grasp",
+    "label": "Pick 1 of 3 after the cut: short tube — grasp",
     "hold": 1,
     "source_frame": 183
    },
    {
     "file": "cut-isaac-seq-25.jpg",
-    "label": "Pick 1 of 3 after the cut: short tube \u2014 grasp",
+    "label": "Pick 1 of 3 after the cut: short tube — grasp",
     "hold": 1,
     "source_frame": 189
    },
    {
     "file": "cut-isaac-seq-26.jpg",
-    "label": "Pick 1 of 3 after the cut: short tube \u2014 carry",
+    "label": "Pick 1 of 3 after the cut: short tube — carry",
     "hold": 1,
     "source_frame": 195
    },
    {
     "file": "cut-isaac-seq-27.jpg",
-    "label": "Pick 1 of 3 after the cut: short tube \u2014 carry",
+    "label": "Pick 1 of 3 after the cut: short tube — carry",
     "hold": 1,
     "source_frame": 213
    },
    {
     "file": "cut-isaac-seq-28.jpg",
-    "label": "Pick 1 of 3 after the cut: short tube \u2014 release",
+    "label": "Pick 1 of 3 after the cut: short tube — release",
     "hold": 1,
     "source_frame": 213
    },
    {
     "file": "cut-isaac-seq-29.jpg",
-    "label": "Pick 1 of 3 after the cut: short tube \u2014 release",
+    "label": "Pick 1 of 3 after the cut: short tube — release",
     "hold": 1,
     "source_frame": 230
    },
    {
     "file": "cut-isaac-seq-30.jpg",
-    "label": "Pick 2 of 3: the REMAINDER of the cut, from where it lay \u2014 grasp (close-up)",
+    "label": "Pick 2 of 3: the REMAINDER of the cut, from where it lay — grasp (close-up)",
     "hold": 1,
     "source_frame": 243
    },
    {
     "file": "cut-isaac-seq-31.jpg",
-    "label": "Pick 2 of 3: the REMAINDER of the cut, from where it lay \u2014 grasp (close-up)",
+    "label": "Pick 2 of 3: the REMAINDER of the cut, from where it lay — grasp (close-up)",
     "hold": 1,
     "source_frame": 248
    },
    {
     "file": "cut-isaac-seq-32.jpg",
-    "label": "Pick 2 of 3: the REMAINDER of the cut, from where it lay \u2014 carry",
+    "label": "Pick 2 of 3: the REMAINDER of the cut, from where it lay — carry",
     "hold": 1,
     "source_frame": 254
    },
    {
     "file": "cut-isaac-seq-33.jpg",
-    "label": "Pick 2 of 3: the REMAINDER of the cut, from where it lay \u2014 carry",
+    "label": "Pick 2 of 3: the REMAINDER of the cut, from where it lay — carry",
     "hold": 1,
     "source_frame": 271
    },
    {
     "file": "cut-isaac-seq-34.jpg",
-    "label": "Pick 2 of 3: the REMAINDER of the cut, from where it lay \u2014 release",
+    "label": "Pick 2 of 3: the REMAINDER of the cut, from where it lay — release",
     "hold": 1,
     "source_frame": 271
    },
    {
     "file": "cut-isaac-seq-35.jpg",
-    "label": "Pick 2 of 3: the REMAINDER of the cut, from where it lay \u2014 release",
+    "label": "Pick 2 of 3: the REMAINDER of the cut, from where it lay — release",
     "hold": 1,
     "source_frame": 285
    },
    {
     "file": "cut-isaac-seq-36.jpg",
-    "label": "Pick 3 of 3: last tube \u2014 grasp",
+    "label": "Pick 3 of 3: last tube — grasp",
     "hold": 1,
     "source_frame": 300
    },
    {
     "file": "cut-isaac-seq-37.jpg",
-    "label": "Pick 3 of 3: last tube \u2014 grasp",
+    "label": "Pick 3 of 3: last tube — grasp",
     "hold": 1,
     "source_frame": 306
    },
    {
     "file": "cut-isaac-seq-38.jpg",
-    "label": "Pick 3 of 3: last tube \u2014 carry",
+    "label": "Pick 3 of 3: last tube — carry",
     "hold": 1,
     "source_frame": 313
    },
    {
     "file": "cut-isaac-seq-39.jpg",
-    "label": "Pick 3 of 3: last tube \u2014 carry",
+    "label": "Pick 3 of 3: last tube — carry",
     "hold": 1,
     "source_frame": 329
    },
    {
     "file": "cut-isaac-seq-40.jpg",
-    "label": "Pick 3 of 3: last tube \u2014 release",
+    "label": "Pick 3 of 3: last tube — release",
     "hold": 1,
     "source_frame": 329
    },
    {
     "file": "cut-isaac-seq-41.jpg",
-    "label": "Pick 3 of 3: last tube \u2014 release",
+    "label": "Pick 3 of 3: last tube — release",
     "hold": 1,
     "source_frame": 346
    },
@@ -697,6 +697,238 @@
     "label": "Done: retained segment, remainder and both short tubes in the one bin; 4 of 4 placed, 0 failed",
     "hold": 8,
     "source_frame": 355
+   }
+  ]
+ },
+ "isaac-dismantling.gif": {
+  "source": "Isaac Sim dismantling run: preset isaac_fixed_pipe_dismantling (seed 7), LIVE Isaac Sim 6.0.1 execution on 2026-09-13 driven through the dashboard API (reset -> compare_cut_aware -> select_cut_alternative -> approve_cut -> approve); DemoCamera frames captured with WISEPACK_ISAAC_CAPTURE_DIR and WISEPACK_ISAAC_CAPTURE_EVERY=8; close-ups are crops of the same frames; the two dashboard stills are the cut-aware panel for the same scenario in the sim-mode dashboard (identical planner output)",
+  "run_mode": "live_isaac_generated_scene",
+  "fps": 3,
+  "width": 720,
+  "mp4": "isaac-dismantling.mp4",
+  "footer": "Installed pipe run -> dismantling cut proposed and approved -> Panda grips the free section, shears it off -> released segment carried straight to the container -> fixed remainder stays installed -> loose parts packed",
+  "frames": [
+   {
+    "file": "dism-isaac-seq-01.jpg",
+    "label": "Installed steel pipe run above the bench: clamped to its support frame, the free length reaching into the workspace (close-up)",
+    "hold": 6,
+    "source_frame": 74
+   },
+   {
+    "file": "dism-dashboard-recommended.jpg",
+    "label": "WISEPACK proposes the dismantling cut: 400 mm installed pipe, release the free 150 mm as a waste item, 247 mm stays installed",
+    "hold": 6,
+    "source_frame": null
+   },
+   {
+    "file": "dism-dashboard-approved.jpg",
+    "label": "Operator approves the dismantling cut (packing approval comes separately, after the cut)",
+    "hold": 4,
+    "source_frame": null
+   },
+   {
+    "file": "dism-isaac-seq-02.jpg",
+    "label": "Dismantling cut selected on the installed component; the operator approves the cut (close-up)",
+    "hold": 4,
+    "source_frame": 108
+   },
+   {
+    "file": "dism-isaac-seq-03.jpg",
+    "label": "Approach: the combined gripper + cutter goes to the removable section (close-up)",
+    "hold": 1,
+    "source_frame": 118
+   },
+   {
+    "file": "dism-isaac-seq-04.jpg",
+    "label": "Approach: the combined gripper + cutter goes to the removable section (close-up)",
+    "hold": 1,
+    "source_frame": 120
+   },
+   {
+    "file": "dism-isaac-seq-05.jpg",
+    "label": "Approach: the combined gripper + cutter goes to the removable section (close-up)",
+    "hold": 1,
+    "source_frame": 122
+   },
+   {
+    "file": "dism-isaac-seq-06.jpg",
+    "label": "Grip: the fingers close on the section that will be removed (close-up)",
+    "hold": 2,
+    "source_frame": 122
+   },
+   {
+    "file": "dism-isaac-seq-07.jpg",
+    "label": "Grip: the fingers close on the section that will be removed (close-up)",
+    "hold": 2,
+    "source_frame": 125
+   },
+   {
+    "file": "dism-isaac-seq-08.jpg",
+    "label": "Grip: the fingers close on the section that will be removed (close-up)",
+    "hold": 2,
+    "source_frame": 128
+   },
+   {
+    "file": "dism-isaac-seq-09.jpg",
+    "label": "Cut: the shear closes on the plane; at CUT_COMPLETE the section is released from the installation (close-up)",
+    "hold": 2,
+    "source_frame": 128
+   },
+   {
+    "file": "dism-isaac-seq-10.jpg",
+    "label": "Cut: the shear closes on the plane; at CUT_COMPLETE the section is released from the installation (close-up)",
+    "hold": 2,
+    "source_frame": 129
+   },
+   {
+    "file": "dism-isaac-seq-11.jpg",
+    "label": "Cut: the shear closes on the plane; at CUT_COMPLETE the section is released from the installation (close-up)",
+    "hold": 2,
+    "source_frame": 130
+   },
+   {
+    "file": "dism-isaac-seq-12.jpg",
+    "label": "Separation: the released segment stays in the gripper, the fixed remainder stays clamped to the frame (close-up)",
+    "hold": 1,
+    "source_frame": 131
+   },
+   {
+    "file": "dism-isaac-seq-13.jpg",
+    "label": "Separation: the released segment stays in the gripper, the fixed remainder stays clamped to the frame (close-up)",
+    "hold": 1,
+    "source_frame": 135
+   },
+   {
+    "file": "dism-isaac-seq-14.jpg",
+    "label": "Separation: the released segment stays in the gripper, the fixed remainder stays clamped to the frame (close-up)",
+    "hold": 1,
+    "source_frame": 139
+   },
+   {
+    "file": "dism-isaac-seq-15.jpg",
+    "label": "Separation: the released segment stays in the gripper, the fixed remainder stays clamped to the frame (close-up)",
+    "hold": 1,
+    "source_frame": 143
+   },
+   {
+    "file": "dism-isaac-seq-16.jpg",
+    "label": "Direct transfer: the released segment is carried straight to the container, no drop on the bench",
+    "hold": 1,
+    "source_frame": 143
+   },
+   {
+    "file": "dism-isaac-seq-17.jpg",
+    "label": "Direct transfer: the released segment is carried straight to the container, no drop on the bench",
+    "hold": 1,
+    "source_frame": 149
+   },
+   {
+    "file": "dism-isaac-seq-18.jpg",
+    "label": "Direct transfer: the released segment is carried straight to the container, no drop on the bench",
+    "hold": 1,
+    "source_frame": 155
+   },
+   {
+    "file": "dism-isaac-seq-19.jpg",
+    "label": "Direct transfer: the released segment is carried straight to the container, no drop on the bench",
+    "hold": 1,
+    "source_frame": 161
+   },
+   {
+    "file": "dism-isaac-seq-20.jpg",
+    "label": "Release and settle: the new waste item is in the bin; the fixed remainder is still installed",
+    "hold": 2,
+    "source_frame": 161
+   },
+   {
+    "file": "dism-isaac-seq-21.jpg",
+    "label": "Release and settle: the new waste item is in the bin; the fixed remainder is still installed",
+    "hold": 2,
+    "source_frame": 168
+   },
+   {
+    "file": "dism-isaac-seq-22.jpg",
+    "label": "Release and settle: the new waste item is in the bin; the fixed remainder is still installed",
+    "hold": 2,
+    "source_frame": 175
+   },
+   {
+    "file": "dism-isaac-seq-23.jpg",
+    "label": "Loose parts follow: pick 1 of 3 — grasp",
+    "hold": 1,
+    "source_frame": 198
+   },
+   {
+    "file": "dism-isaac-seq-24.jpg",
+    "label": "Loose parts follow: pick 1 of 3 — carry",
+    "hold": 1,
+    "source_frame": 210
+   },
+   {
+    "file": "dism-isaac-seq-25.jpg",
+    "label": "Loose parts follow: pick 1 of 3 — carry",
+    "hold": 1,
+    "source_frame": 225
+   },
+   {
+    "file": "dism-isaac-seq-26.jpg",
+    "label": "Loose parts follow: pick 1 of 3 — release",
+    "hold": 1,
+    "source_frame": 225
+   },
+   {
+    "file": "dism-isaac-seq-27.jpg",
+    "label": "Pick 2 of 3 — grasp",
+    "hold": 1,
+    "source_frame": 254
+   },
+   {
+    "file": "dism-isaac-seq-28.jpg",
+    "label": "Pick 2 of 3 — carry",
+    "hold": 1,
+    "source_frame": 265
+   },
+   {
+    "file": "dism-isaac-seq-29.jpg",
+    "label": "Pick 2 of 3 — carry",
+    "hold": 1,
+    "source_frame": 281
+   },
+   {
+    "file": "dism-isaac-seq-30.jpg",
+    "label": "Pick 2 of 3 — release",
+    "hold": 1,
+    "source_frame": 281
+   },
+   {
+    "file": "dism-isaac-seq-31.jpg",
+    "label": "Pick 3 of 3 — grasp",
+    "hold": 1,
+    "source_frame": 340
+   },
+   {
+    "file": "dism-isaac-seq-32.jpg",
+    "label": "Pick 3 of 3 — carry",
+    "hold": 1,
+    "source_frame": 351
+   },
+   {
+    "file": "dism-isaac-seq-33.jpg",
+    "label": "Pick 3 of 3 — carry",
+    "hold": 1,
+    "source_frame": 368
+   },
+   {
+    "file": "dism-isaac-seq-34.jpg",
+    "label": "Pick 3 of 3 — release",
+    "hold": 1,
+    "source_frame": 368
+   },
+   {
+    "file": "dism-isaac-seq-35.jpg",
+    "label": "Done: the released section and the loose parts are in the container; the installation keeps its remainder",
+    "hold": 8,
+    "source_frame": 392
    }
   ]
  }

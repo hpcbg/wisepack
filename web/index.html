@@ -929,6 +929,28 @@ function renderCut(wp) {
   box.append(el("div", { class: "notice" },
     cut.label || "SIMULATED cutting; the packing arithmetic is measured"));
 
+  // DISMANTLING: a compact view of a cut that releases a section from an
+  // INSTALLED component (only present when the selected cut is one).
+  const dm = cut.dismantling;
+  if (dm) {
+    const fmt = (p) => p ? `${p.container_id} @ (${Math.round(p.position_mm.x)}, ${Math.round(p.position_mm.y)}, ${Math.round(p.position_mm.z)}) mm, axis ${p.axis}${p.executed ? " — placed" : ""}` : "—";
+    const reg = dm.registered_as_waste;
+    const drows = [
+      ["Installed component", `${dm.component_id} · ${dm.installed.length_mm} mm, fixed at its ${dm.installed.fixed_end} end, ${dm.installed.elevation_mm} mm above the bench`],
+      ["Dismantling cut proposed", `${dm.proposal.segments_mm.join(" + ")} mm (kerf ${dm.proposal.kerf_mm} mm)${dm.proposal.validated ? " · validated" : ""}`],
+      ["Cut position", `${dm.proposal.cut_from_free_end_mm} mm from the free end · ${dm.proposal.cut_from_fixed_end_mm} mm from the fixed end`],
+      ["Released segment", `${dm.released_segment.item_id} · ${dm.released_segment.length_mm} mm`],
+      ["Fixed remainder", `${dm.fixed_remainder.item_id} · ${dm.fixed_remainder.length_mm} mm · stays ${dm.fixed_remainder.status}`],
+      ["Cut approved", el("span", { class: "pill " + (dm.cut_approval_state === "approved" ? "ok" : "warn") }, dm.cut_approval_state)],
+      ["Segment registered as waste", reg ? `${reg.item_id} · ${reg.status}${reg.cut_operation_id ? " · " + reg.cut_operation_id : ""}` : "not yet — after the cut"],
+      ["Packing target", fmt(dm.packing_target)],
+      ["Execution status", dm.execution_status],
+    ];
+    box.append(el("h4", { style: "margin:10px 0 4px" }, "Dismantling"));
+    box.append(el("table", {}, [el("tbody", {}, drows.map(([k, v]) =>
+      el("tr", {}, [el("td", { class: "mut" }, k), el("td", {}, v)])))]));
+  }
+
   // Alternatives dropdown (only refill when the proposal revision changes).
   const sel = $("#cut-alt");
   if (sel && cut.plan_revision !== CUT_ALT_REV) {

@@ -73,6 +73,12 @@ def test_every_item_fits_its_container_in_some_orientation(preset):
     scenario = build_scenario(preset, seed=7)
     inner = scenario.container_template.inner_size
     for item in scenario.items:
+        if item.is_installed:
+            # An INSTALLED component is never packed whole: only the section
+            # its dismantling cut releases must fit the container.
+            assert 0 < item.removable_length_mm <= max(inner.x, inner.y), \
+                f"{item.item_id}: the removable section would not fit"
+            continue
         fits = any(
             item.size_for_axis(axis).x <= inner.x
             and item.size_for_axis(axis).y <= inner.y

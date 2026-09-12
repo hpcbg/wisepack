@@ -463,6 +463,15 @@ class SourcePoseUnavailable(ValueError):
     """A synchronized scene has no pose for the item — and no fallback exists."""
 
 
+def installed_pose_for(item: WasteItem) -> Pose:
+    """The declared pose of an installed component, in the table frame."""
+    installation = item.installation or {}
+    return Pose(
+        x_mm=float(item.source_position.x), y_mm=float(item.source_position.y),
+        z_mm=float(item.source_position.z),
+        axis=str(installation.get("axis", Axis.X.value)), frame="table")
+
+
 def source_pose_for(scene: Any, index: int, item: WasteItem,
                     layout: SceneLayout = DEFAULT_LAYOUT) -> Pose:
     """THE pick pose of ``item`` — where it was spawned and where it is picked.
@@ -482,6 +491,10 @@ def source_pose_for(scene: Any, index: int, item: WasteItem,
     never saw — precisely the silent substitution this path exists to remove —
     so it raises, and the caller refuses the pick with the reason.
     """
+    if item.is_installed or item.installation is not None:
+        # An INSTALLED component is where the plant put it, never in a row
+        # slot: its declared table-frame position and axis, verbatim.
+        return installed_pose_for(item)
     if scene is None or not getattr(scene, "is_physical", False):
         return table_pose_for_index(index, item, layout)
     source = scene.object(item.item_id)

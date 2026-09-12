@@ -281,6 +281,36 @@ def _run(app) -> int:
         check("split_segments_rest_where_spawned", False, f"{type(exc).__name__}: {exc}")
     arm_ok("arm_controllable_after_split")
 
+    # 3b'. A DISMANTLING SPLIT: the segment named as fixed stays kinematic and
+    #      immobile while the other one is dragged past it, wakes nothing, and
+    #      the released one is an ordinary dynamic body.
+    try:
+        poses = scene.split_item("item-004", cut_offset_m=0.075, kerf_m=0.003,
+                                 segment_ids=["item-004-s1", "item-004-s2"],
+                                 segment_lengths_m=[0.072, 0.125],
+                                 fixed_segment_id="item-004-s2")
+        fixed_at = np.asarray(poses["item-004-s2"][0], dtype=float)
+        stage_ = stage_utils.get_current_stage(backend="usd")
+        kin = UsdPhysics.RigidBodyAPI(stage_.GetPrimAtPath(item_path("item-004-s2"))
+                                      ).GetKinematicEnabledAttr().Get()
+        released = scene.items["item-004-s1"]
+        p1, q1 = scene.item_world_pose("item-004-s1")
+        for n in range(90):
+            released.set_world_poses(positions=np.array([[p1[0], p1[1] + 0.0002 * n, p1[2] + 0.0004 * n]]),
+                                     orientations=np.array([q1]))
+            released.set_velocities(np.zeros((1, 3)), np.zeros((1, 3)))
+            step(1)
+        now = np.asarray(scene.item_world_pose("item-004-s2")[0], dtype=float)
+        v = scene.item_velocities("item-004-s2")
+        moved = float(np.linalg.norm(now - fixed_at)) * 1000.0
+        check("dismantling_fixed_remainder_stays_installed", bool(kin) and moved < 0.5,
+              f"fixed segment kinematic={kin}, moved {moved:.2f} mm while the released segment "
+              f"was carried past it (v {np.round(v[0], 4).tolist()})")
+        released.set_world_poses(positions=np.array([[0.0, -0.2, -1.0]]))
+        step(5)
+    except Exception as exc:                                     # noqa: BLE001
+        check("dismantling_fixed_remainder_stays_installed", False, f"{type(exc).__name__}: {exc}")
+
     # 3c. CONTACT OFFSET ACROSS THE KERF. The retained segment is lifted with
     #     only the kerf between its cut face and the remainder's. If PhysX's
     #     contact offset is wider than that gap, the two faces count as

@@ -32,14 +32,15 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
+import math
 import os
 
 import numpy as np
 
 import isaacsim.core.experimental.utils.stage as stage_utils
-from isaacsim.core.experimental.materials import RigidBodyMaterial
+from isaacsim.core.experimental.materials import OmniPbrMaterial, RigidBodyMaterial
 from isaacsim.core.experimental.objects import Cube, Cylinder, DomeLight, GroundPlane
-from isaacsim.core.experimental.prims import GeomPrim, RigidPrim
+from isaacsim.core.experimental.prims import GeomPrim, RigidPrim, XformPrim
 from pxr import Gf, UsdGeom, UsdLux, UsdPhysics
 
 from wisepack_core.domain import (GEOMETRY_SOURCE_CAD_MESH, Scenario, Vec3,
@@ -64,6 +65,7 @@ TABLE_PATH = f"{WORLD}/Table"
 ITEMS_ROOT = f"{WORLD}/Items"
 CONTAINERS_ROOT = f"{WORLD}/Containers"
 MATERIALS_ROOT = f"{WORLD}/PhysicsMaterials"
+VISUAL_MATERIALS_ROOT = f"{WORLD}/Looks"
 #: Debug frame markers: the configured camera pose, the work-area origin, the
 #: robot base and each synchronized object's COMMANDED pose. Visual only — no
 #: collision, no physics — so a wrong frame assumption is seen before it is
@@ -168,7 +170,92 @@ class WisepackScene:
         UsdGeom.Xformable(light.GetPrim()).AddRotateXYZOp().Set(
             Gf.Vec3f(-40.0, 0.0, 35.0))
 
+    #: Visual PBR materials, keyed by role. Built once per stage in
+    #: `_build_visual_materials`; None when the renderer has no MDL support.
+    VISUAL_MATERIALS = {
+        # Industrial steel: metallic, moderately rough, cool grey — not chrome.
+        "Steel": {"colour": (0.36, 0.37, 0.40), "metallic": 0.9, "roughness": 0.46,
+                  "texture": 0.7},
+        # The cutter bracket: darker, rougher machined steel.
+        "SteelDark": {"colour": (0.22, 0.23, 0.26), "metallic": 0.85, "roughness": 0.55,
+                      "texture": 0.4},
+        # The shear blades: brighter, harder, less rough.
+        "Blade": {"colour": (0.60, 0.62, 0.64), "metallic": 0.95, "roughness": 0.30,
+                  "texture": 0.5},
+        # Aluminium extrusion profiles of the installation frame.
+        "Aluminium": {"colour": (0.50, 0.51, 0.53), "metallic": 0.75, "roughness": 0.52,
+                      "texture": 0.6},
+        # Pipe clamps: painted/blackened steel.
+        "Clamp": {"colour": (0.16, 0.17, 0.19), "metallic": 0.6, "roughness": 0.6,
+                  "texture": 0.3},
+    }
+
+    def _brushed_roughness_texture(self) -> Optional[str]:
+        """A generated brushed-metal roughness map, written once per process.
+
+        No texture asset ships with the repository: a 512 x 512 greyscale map
+        of horizontal brushing streaks plus fine grain is synthesised here and
+        bound as the roughness texture, which is what gives the steel its
+        subtle surface variation instead of a uniform sheen.
+        """
+        try:
+            import tempfile                                          # noqa: PLC0415
+            from PIL import Image                                    # noqa: PLC0415
+            folder = os.path.join(tempfile.gettempdir(), "wisepack-isaac-materials")
+            os.makedirs(folder, exist_ok=True)
+            path = os.path.join(folder, "steel_roughness.png")
+            if not os.path.isfile(path):
+                rng = np.random.default_rng(7)
+                size = 512
+                streaks = rng.normal(0.0, 1.0, size=(size, 1))
+                kernel = np.ones(9) / 9.0
+                streaks = np.convolve(streaks[:, 0], kernel, mode="same")[:, None]
+                grain = rng.normal(0.0, 1.0, size=(size, size))
+                grain = (grain + np.roll(grain, 1, axis=1) + np.roll(grain, 2, axis=1)) / 3.0
+                field = 0.55 + 0.18 * streaks + 0.06 * grain
+                image = np.clip(field * 255.0, 0, 255).astype(np.uint8)
+                Image.fromarray(image, mode="L").save(path)
+            return path
+        except Exception as exc:                                     # noqa: BLE001
+            print(f"{LOG_SCENE} no roughness texture ({exc!r}); constants only")
+            return None
+
+    def _build_visual_materials(self) -> None:
+        """OmniPBR metals for every metal part of the workcell (see VISUAL_MATERIALS)."""
+        self._visual: Dict[str, Any] = {}
+        texture = self._brushed_roughness_texture()
+        for name, spec in self.VISUAL_MATERIALS.items():
+            try:
+                material = OmniPbrMaterial(f"{VISUAL_MATERIALS_ROOT}/{name}")
+                material.set_input_values("diffuse_color_constant", [list(spec["colour"])])
+                material.set_input_values("metallic_constant", [float(spec["metallic"])])
+                material.set_input_values("reflection_roughness_constant",
+                                          [float(spec["roughness"])])
+                material.set_input_values("specular_level", [0.6])
+                if texture and spec.get("texture", 0.0) > 0.0:
+                    material.set_input_values("reflectionroughness_texture", [texture])
+                    material.set_input_values("reflection_roughness_texture_influence",
+                                              [float(spec["texture"])])
+                self._visual[name] = material
+            except Exception as exc:                                 # noqa: BLE001
+                print(f"{LOG_SCENE} WARNING: visual material {name} not built: {exc!r}")
+        print(f"{LOG_SCENE} visual materials: {sorted(self._visual)}"
+              + (" with a brushed roughness map" if texture else ""))
+
+    def apply_metal(self, path: str, role: str = "Steel") -> bool:
+        """Bind the PBR metal `role` to `path` (and its descendants). False if unavailable."""
+        material = getattr(self, "_visual", {}).get(role)
+        if material is None:
+            return False
+        try:
+            XformPrim(path).apply_visual_materials(material)
+            return True
+        except Exception as exc:                                     # noqa: BLE001
+            print(f"{LOG_SCENE} WARNING: could not bind {role} to {path}: {exc!r}")
+            return False
+
     def _build_materials(self) -> None:
+        self._build_visual_materials()
         p = self.physics
         self._item_material = RigidBodyMaterial(
             f"{MATERIALS_ROOT}/Item",
@@ -307,9 +394,17 @@ class WisepackScene:
             geom = GeomPrim(paths=path, apply_collision_apis=True)
             geom.apply_physics_materials(self._item_material)
             self._tune_item_collider(path)
+            self.apply_metal(path, "Steel")
 
             body = RigidPrim(paths=path)
             body.set_masses(np.array([max(item.weight_kg, 0.05)]))
+            if item.is_installed:
+                # AN INSTALLED COMPONENT: fixed to the plant, not a loose part.
+                # The body is KINEMATIC — PhysX never moves it — and it carries
+                # a visible support: an aluminium-profile frame with clamps
+                # at its fixed end (see `_build_installation`).
+                self._make_kinematic(path)
+                self._build_installation(item, position, orientation)
             # SLEEPING IS LEFT ENABLED, deliberately, and an earlier version of
             # this file disabling it was a real bug.
             #
@@ -359,6 +454,89 @@ class WisepackScene:
                 api = PhysxSchema.PhysxCollisionAPI.Apply(prim)
                 api.CreateContactOffsetAttr(float(self.ITEM_CONTACT_OFFSET_M))
                 api.CreateRestOffsetAttr(0.0)
+
+    def _make_kinematic(self, path: str) -> None:
+        """Make a rigid body kinematic: it holds its pose whatever touches it."""
+        stage = stage_utils.get_current_stage(backend="usd")
+        prim = stage.GetPrimAtPath(path)
+        api = (UsdPhysics.RigidBodyAPI(prim) if prim.HasAPI(UsdPhysics.RigidBodyAPI)
+               else UsdPhysics.RigidBodyAPI.Apply(prim))
+        api.CreateKinematicEnabledAttr(True)
+        api.GetKinematicEnabledAttr().Set(True)
+
+    def installation_path(self, item_id: str) -> str:
+        return f"{ITEMS_ROOT}/{item_id.replace('-', '_')}_installation"
+
+    def _build_installation(self, item: WasteItem, position: Any, orientation: Any) -> None:
+        """The support an installed pipe run is fixed to, at its fixed end.
+
+        Modelled on an industrial pipe test rig: a square aluminium-profile
+        post standing on the bench beyond the pipe's fixed end, a cantilever
+        arm from the post running back under the pipe, two pipe clamps
+        holding the pipe on that arm, and a base plate. Static colliders, so
+        the pipe visibly rests IN clamps and the arm never sweeps through it.
+        The free length of the pipe reaches into the workspace from here.
+        """
+        from .grasp import _quat_rotate                                  # noqa: PLC0415
+        installation = item.installation or {}
+        centre = np.asarray(position, dtype=float)
+        axis = _quat_rotate(np.asarray(orientation, dtype=float), np.array([0.0, 0.0, 1.0]))
+        sign = 1.0 if installation.get("fixed_end", "+z") == "+z" else -1.0
+        length = mm_to_m(item.length_mm)
+        radius = mm_to_m(item.outer_diameter_mm) / 2.0
+        fixed_end = centre + axis * (sign * length / 2.0)
+        top = self.layout.table_top_z_m
+        height = float(centre[2] - top)
+        # A horizontal frame axis along the pipe, and its in-plane normal.
+        along = np.array([axis[0], axis[1], 0.0])
+        along = along / (np.linalg.norm(along) or 1.0)
+        root = self.installation_path(item.item_id)
+        stage = stage_utils.get_current_stage(backend="usd")
+        if stage.GetPrimAtPath(root):
+            stage.RemovePrim(root)
+        UsdGeom.Xform.Define(stage, root)
+        profile = 0.04                                   # 40 x 40 mm extrusion
+        parts = []
+        # Post: beyond the fixed end, from the bench up past the pipe.
+        post_c = fixed_end + sign * along * (0.035 + profile / 2.0)
+        post_h = height + radius + 0.06
+        parts.append(("Post", (profile, profile, post_h),
+                      (post_c[0], post_c[1], top + post_h / 2.0), "Aluminium"))
+        # Base plate under the post.
+        parts.append(("BasePlate", (0.16, 0.16, 0.012),
+                      (post_c[0], post_c[1], top + 0.006), "Aluminium"))
+        # Cantilever arm under the pipe, back from the post towards the free end.
+        arm_len = 0.26
+        arm_c = post_c - sign * along * (profile / 2.0 + arm_len / 2.0)
+        arm_z = centre[2] - radius - profile / 2.0
+        parts.append(("Arm", (arm_len, profile, profile),
+                      (arm_c[0], arm_c[1], arm_z), "Aluminium"))
+        # Diagonal brace from the post down to the arm's far end (a box, tilted).
+        # Two pipe clamps on the arm, gripping the pipe.
+        clamp_w, clamp_h = 0.05, 2.0 * radius + 0.03
+        for k, back in enumerate((0.05, 0.19)):
+            c = fixed_end - sign * along * back
+            parts.append((f"Clamp{k + 1}", (clamp_w, 2.0 * radius + 0.036, clamp_h),
+                          (c[0], c[1], centre[2] - 0.002), "Clamp"))
+            parts.append((f"ClampBolt{k + 1}", (clamp_w + 0.01, 0.012, 0.012),
+                          (c[0], c[1], centre[2] + radius + 0.021), "Clamp"))
+        # A short cross rail on top of the post (reads as a frame, not a stick).
+        parts.append(("CrossRail", (profile, 0.34, profile),
+                      (post_c[0], post_c[1], top + post_h + profile / 2.0), "Aluminium"))
+        yaw = math.degrees(math.atan2(along[1], along[0]))
+        half = math.radians(yaw) / 2.0
+        q_yaw = np.array([math.cos(half), 0.0, 0.0, math.sin(half)])
+        for name, size, pos, role in parts:
+            path = f"{root}/{name}"
+            Cube(paths=path, sizes=1.0, scales=np.array([list(size)]),
+                 positions=np.array([list(pos)]), orientations=np.array([q_yaw]),
+                 colors=np.array([[0.7, 0.7, 0.72] if role == "Aluminium" else [0.15, 0.15, 0.17]]))
+            panel = GeomPrim(paths=path, apply_collision_apis=True)
+            panel.apply_physics_materials(self._static_material)
+            self.apply_metal(path, role)
+        print(f"{LOG_SCENE} installation {installation.get('support_id', root)}: "
+              f"{item.item_id} fixed at its {installation.get('fixed_end', '+z')} end, "
+              f"{height * 1000:.0f} mm above the bench, on a post with two clamps")
 
     def _build_cad_item(self, item: WasteItem, path: str,
                         position: Any, orientation: Any) -> None:
@@ -624,6 +802,15 @@ class WisepackScene:
             if stage.GetPrimAtPath(path):
                 stage.RemovePrim(path)
                 removed += 1
+            support = self.installation_path(item_id)
+            if stage.GetPrimAtPath(support):
+                stage.RemovePrim(support)
+        # Anything else left under the items root (a support of a component
+        # that was cut and renamed) goes too: the next scenario starts clean.
+        root = stage.GetPrimAtPath(ITEMS_ROOT)
+        if root:
+            for child in list(root.GetChildren()):
+                stage.RemovePrim(child.GetPath())
         self.items.clear()
         self.item_specs.clear()
         self.item_index.clear()
@@ -708,8 +895,8 @@ class WisepackScene:
             return False
 
     def split_item(self, parent_id: str, *, cut_offset_m: float, kerf_m: float,
-                   segment_ids: Sequence[str], segment_lengths_m: Sequence[float]
-                   ) -> Dict[str, Any]:
+                   segment_ids: Sequence[str], segment_lengths_m: Sequence[float],
+                   fixed_segment_id: Optional[str] = None) -> Dict[str, Any]:
         """THE DISCRETE CUT EVENT: one tube body becomes two segment bodies.
 
         Geometry: the parent lies along its local +Z; `cut_offset_m` is the
@@ -793,8 +980,17 @@ class WisepackScene:
             geom = GeomPrim(paths=path, apply_collision_apis=True)
             geom.apply_physics_materials(self._item_material)
             self._tune_item_collider(path)
+            self.apply_metal(path, "Steel")
             body = RigidPrim(paths=path)
             body.set_masses(np.array([max(child.weight_kg, 0.02)]))
+            if fixed_segment_id is not None and child.item_id == fixed_segment_id:
+                # THE FIXED REMAINDER of a dismantling cut stays with the
+                # installation: kinematic, exactly where the material was, its
+                # fresh cut face towards the released segment. The support
+                # prims keep the parent's name and stay where they are.
+                self._make_kinematic(path)
+                child.installation = dict(spec.installation or {})
+                child.status = child.status.__class__("installed")
             self.items[child.item_id] = body
             self.item_specs[child.item_id] = child
             self.item_index[child.item_id] = next_index
@@ -806,7 +1002,9 @@ class WisepackScene:
                   f"{child.weight_kg} kg at {tuple(round(float(v), 3) for v in position)} m")
         print(f"{LOG_SCENE} {parent_id} cut at {cut_offset_m * 1000:.0f} mm from its "
               f"end (kerf {kerf_m * 1000:.0f} mm): deactivated; "
-              f"{segment_ids[0]} and {segment_ids[1]} spawned in its place")
+              f"{segment_ids[0]} and {segment_ids[1]} spawned in its place"
+              + (f"; {fixed_segment_id} stays installed (kinematic)"
+                 if fixed_segment_id else ""))
         return poses
 
     def item_velocities(self, item_id: str

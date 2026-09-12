@@ -92,6 +92,10 @@ class ItemStatus(str, Enum):
     PLACED = "placed"              # executed into a container
     UNPLACED = "unplaced"          # no feasible placement found
     REMOVED = "removed"            # withdrawn by a dynamic event
+    #: An INSTALLED COMPONENT: part of the plant, fixed, not yet waste. It is
+    #: never packed whole; only the section a dismantling cut releases becomes
+    #: a packable item (see ``WasteItem.installation``).
+    INSTALLED = "installed"
 
 
 class ContainerStatus(str, Enum):
@@ -739,6 +743,15 @@ class WasteItem:
     cut_history: List[Dict[str, Any]] = field(default_factory=list)
     derived_item_ids: List[str] = field(default_factory=list)
 
+    #: INSTALLATION PROVENANCE for a fixed plant component (status INSTALLED):
+    #: ``component_id``, ``fixed_end`` ("-z" or "+z": which end of the item's
+    #: length axis is attached to the plant), ``support_id``, ``elevation_mm``
+    #: (centre height above the table), ``axis``, ``removable_length_mm`` (the
+    #: predefined dismantling request: how much of the FREE end a cut releases)
+    #: and, after a cut, ``cut_operation_id`` / ``dismantled_from``. None for
+    #: an ordinary waste item.
+    installation: Optional[Dict[str, Any]] = None
+
     # -- physical perception provenance ----------------------------------- #
     # Set ONLY when this item came from a real perception source. None for every
     # generated item, which is what keeps the default `sim` behaviour and every
@@ -801,6 +814,31 @@ class WasteItem:
         self.derived_item_ids = [
             _require_id("derived_item_id", d) for d in self.derived_item_ids]
         self.cut_history = list(self.cut_history)
+        if self.installation is not None:
+            self.installation = dict(self.installation)
+            fixed_end = str(self.installation.get("fixed_end", "+z"))
+            if fixed_end not in ("-z", "+z"):
+                raise DomainError(
+                    f"{self.item_id}: installation.fixed_end must be '-z' or '+z', "
+                    f"not {fixed_end!r}")
+            self.installation["fixed_end"] = fixed_end
+            self.installation.setdefault("component_id", self.item_id)
+            # An installed component is not waste yet: the status says so, and
+            # nothing downstream may pack it whole.
+            if self.status is not ItemStatus.INSTALLED:
+                self.status = ItemStatus.INSTALLED
+
+    @property
+    def is_installed(self) -> bool:
+        """A fixed plant component, excluded from packing until dismantled."""
+        return self.status is ItemStatus.INSTALLED
+
+    @property
+    def removable_length_mm(self) -> int:
+        """The predefined dismantling request of an installed component (0 if none)."""
+        if self.installation is None:
+            return 0
+        return int(self.installation.get("removable_length_mm", 0) or 0)
 
     # -- cut metadata helpers --------------------------------------------- #
 
@@ -909,6 +947,9 @@ class WasteItem:
             # "generated item" from "observed item whose provenance was lost".
             "observation": (self.observation.to_dict()
                             if self.observation else None),
+            "installation": (dict(self.installation)
+                             if self.installation is not None else None),
+            "is_installed": self.is_installed,
         }
 
     @staticmethod
@@ -942,6 +983,8 @@ class WasteItem:
             derived_item_ids=list(d.get("derived_item_ids", [])),
             observation=(PhysicalObservation.from_dict(d["observation"])
                          if d.get("observation") else None),
+            installation=(dict(d["installation"])
+                          if isinstance(d.get("installation"), dict) else None),
         )
 
 
@@ -1326,6 +1369,17 @@ class Scenario:
             if i.item_id == item_id:
                 return i
         return None
+
+    @property
+    def packable_items(self) -> List[WasteItem]:
+        """The items a packer may place: everything that is not an INSTALLED
+        component. A fixed pipe run is part of the plant until a dismantling
+        cut releases a section of it; the packer never sees it whole."""
+        return [i for i in self.items if not i.is_installed]
+
+    @property
+    def installed_components(self) -> List[WasteItem]:
+        return [i for i in self.items if i.is_installed]
 
     def to_dict(self) -> Dict[str, Any]:
         return {

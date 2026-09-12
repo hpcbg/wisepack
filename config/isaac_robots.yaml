@@ -215,7 +215,7 @@ robots:
     supported_skills: [HOME, MOVE_TO_PICK, GRASP, LIFT, MOVE_TO_CONTAINER,
                        RELEASE, SETTLE, VERIFY, CUT]
     supported_presets: [isaac_cylinders_smoke, isaac_cylinder5_physical, isaac_scene_physical,
-                        isaac_cut_demo]
+                        isaac_cut_demo, isaac_fixed_pipe_dismantling]
 
     # THE COMBINED END EFFECTOR: the stock parallel-jaw gripper plus a shear
     # mounted on the same hand, independently actuated. `cut_offset_m` is the

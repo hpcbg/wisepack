@@ -194,12 +194,31 @@ class GripperCutterTool:
             self._blade_translate_attrs.append(
                 geom.GetPrim().GetAttribute("xformOp:translate"))
         self._assert_physics_free(stage)
+        self._bind_metal_looks(stage)
         self.built = True
         print(f"{LOG_ROBOT} gripper+cutter tool built under {hand_path.rsplit('/', 1)[-1]} "
               f"as visual geometry (no rigid body, no collider): cut frame "
               f"{tuple(round(float(v), 3) for v in self.cut_frame_in_hand_m)} m in the "
               f"hand frame, grasp->cut offset "
               f"{tuple(round(float(v), 3) for v in self.grasp_to_cut_m)} m")
+
+    def _bind_metal_looks(self, stage) -> None:
+        """Steel looks for the tool, when the scene built them (scene.py Looks).
+
+        The bracket takes the dark machined-steel material, the blades the
+        bright hardened-steel one; without the materials the display colours
+        stand. Binding a look changes nothing physical: the tool stays
+        schema-free.
+        """
+        try:
+            from isaacsim.core.experimental.materials import OmniPbrMaterial   # noqa: PLC0415
+            for path, look in ((self.bracket_path, "/World/Looks/SteelDark"),
+                               (self.blade_paths[0], "/World/Looks/Blade"),
+                               (self.blade_paths[1], "/World/Looks/Blade")):
+                if stage.GetPrimAtPath(look):
+                    XformPrim(path).apply_visual_materials(OmniPbrMaterial(look))
+        except Exception as exc:                                   # noqa: BLE001
+            print(f"{LOG_ROBOT} tool keeps display colours ({exc!r})")
 
     def _assert_physics_free(self, stage) -> None:
         """No tool prim may carry a physics schema. Checked, not assumed."""

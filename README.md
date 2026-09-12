@@ -149,6 +149,28 @@ discrete scene event, not fracture physics) → two rigid segments → retained
 segment placed → re-plan → packing approval → every remaining tube packed. Live
 Isaac Sim run; details and limits in [§15b](#15b-cutting-skill-in-isaac-sim-grip-cut-place).*
 
+### From dismantling to waste packing
+
+WISEPACK can also start **before the waste item exists**. In the dismantling
+scenario a steel pipe run is part of the installation, clamped to a support
+frame above the bench. The robot grips the section to be removed, cuts it from
+the installation with the same combined gripper + cutter, and the released
+section becomes a new WISEPACK waste item — registered with its provenance,
+planned into the container, approved by the operator and placed by the same
+robotic execution workflow, straight from the cut. The fixed remainder stays
+installed.
+
+<p align="center">
+  <img src="images/generated/scene-sync/isaac-dismantling.gif" width="640"
+       alt="An installed steel pipe on a support frame above the bench; WISEPACK proposes the dismantling cut, the operator approves, the Panda grips the free section with the combined gripper and cutter, cuts it from the installation, carries it straight to the container while the fixed remainder stays clamped, then packs the loose parts">
+</p>
+
+*Installed pipe → dismantling cut proposed and approved → grip and cut → the
+released section carried straight to the container → fixed remainder stays
+installed → loose parts packed. Live Isaac Sim run;
+[MP4](images/generated/scene-sync/isaac-dismantling.mp4), details in
+[§15c](#15c-dismantling-from-an-installed-pipe-to-a-packed-waste-item).*
+
 ## Physical RGB-D 6-DoF perception — Intel RealSense D435
 
 **WISEPACK now locates a real workpiece with a real depth camera.** A physical
@@ -605,6 +627,7 @@ Regenerate every diagram and figure from source:
 ./generate_demo_artifacts.sh --images-only
 ./generate_readme_gifs.sh                     # requires playwright + ffmpeg
 python3 scripts/generate_readme_gifs.py --evaluator-demo   # the end-to-end demo, from tracked stills
+python3 scripts/generate_readme_gifs.py --scene-sync-gifs  # scene-sync, cut and dismantling GIFs/MP4
 ```
 
 ---
@@ -1869,6 +1892,7 @@ and Logistics status panels alongside the ROS topic and FIWARE mapping diagnosti
 | Physical `ObservationBatch` → Isaac scene synchronization | **live — configured demo camera→work-area transform** ([§15a](#physical-d435-to-isaac-to-robot-pick-demonstrated)) | **demonstrated**, for one object in 6-DoF and for a whole bench of 18 objects picked one by one ([whole scene](#whole-scene-physical-to-isaac-demonstrated)); the transform is a stated assumption, not a measured calibration | no |
 | Whole-scene RGB-D perception (`rgbd_scene_depth_plane`) | **live — physical D435, every workpiece on the work plane** | **measured footprints and planar poses; identity assigned by size** against a configured class table, not recognised | no |
 | Cutting skill: combined gripper+cutter on the Panda, cut-and-place in the physics simulator | **live — Isaac Sim 6.0.1, generated bench scene** ([§15b](#15b-cutting-skill-in-isaac-sim-grip-cut-place)) | discrete cut event on the planner's plane (no fracture physics); segment and remainder poses measured; 4 of 4 placed after the cut | cut result, derived items, placement errors |
+| Dismantling: an installed pipe run cut into a released waste section and a fixed remainder | **live — Isaac Sim 6.0.1, generated bench scene with an installed component** ([§15c](#15c-dismantling-from-an-installed-pipe-to-a-packed-waste-item)) | installed component excluded from packing until cut; released section registered with provenance and packed straight from the cut; remainder stays installed | dismantling view, derived items, placement errors |
 | Measured camera→robot/work-area calibration (physical) | future | not implemented — the demo transform stands in for it; no physical accuracy is claimed | no |
 | MoveIt2 execution | future | not implemented | no |
 
@@ -4634,6 +4658,66 @@ faces count as touching across the kerf (1 mm contact offset on every item
 collider). The standalone check `simulators/isaac/tool_check.py` pins all
 three with numbers. Limits: generated scene, no fracture physics, one
 demonstrated cut geometry.
+
+## 15c. Dismantling: from an installed pipe to a packed waste item
+
+The loose-pipe cut of [§15b](#15b-cutting-skill-in-isaac-sim-grip-cut-place)
+answers "this part fits nowhere whole". Dismantling answers an earlier
+question: the part is still **installed**. Preset `isaac_fixed_pipe_dismantling`
+keeps the bench and its loose tubes and adds one 400 mm steel pipe run,
+250 mm above the bench at the robot's left, clamped at one end to an
+aluminium-profile support frame (post, cantilever arm, two clamps), its free
+length reaching into the workspace. All metal parts carry PBR steel and
+aluminium materials with a brushed roughness map, the cutter its own machined
+and hardened steel.
+
+<p align="center">
+  <img src="images/generated/scene-sync/dism-isaac-seq-01.jpg" width="32%"
+       alt="The installed pipe run on its support frame above the bench, close-up">
+  <img src="images/generated/scene-sync/dism-isaac-seq-08.jpg" width="32%"
+       alt="The combined gripper and cutter gripping the free section of the installed pipe">
+  <img src="images/generated/scene-sync/dism-isaac-seq-15.jpg" width="32%"
+       alt="The released section lifted away in the gripper while the fixed remainder stays in the clamps">
+</p>
+
+**Installed is not waste.** The pipe is a WISEPACK item with status
+`installed` and an installation record (component, fixed end, support,
+elevation, removable length). The packers, the cut-aware comparison and the
+validator read `Scenario.packable_items`, which excludes it: before the cut it
+is neither placed nor unplaced. Its pick pose is its declared position, never
+a row slot.
+
+**The same workflow.** The cut-aware planner adds a *dismantling* alternative
+for the component: release the free 150 mm as a waste item, leave 247 mm
+installed (kerf 3 mm). It is proposed, validated and approved through the
+same comparison and the same separate cut approval; the dashboard's cut panel
+gains a compact *Dismantling* block (installed component, cut proposed, cut
+position, released segment, fixed remainder, cut approved, segment registered
+as waste, packing target, execution status). The bridge dispatches the same
+`EXECUTE_CUT`, now naming the segment that stays with the plant.
+
+**The same skill.** Approach → align → grip the removable section → cutter
+closes → `CUT_COMPLETE`: the pipe becomes a **kinematic** fixed remainder in
+the clamps, its fresh cut face exposed, and a dynamic released segment welded
+to the hand → retract straight up → carry above the run → place. The fixed
+remainder never moves, is never a packing candidate and is never attached to
+the gripper; the released segment is registered with derived-item provenance
+(source component, cut operation id, length, measured pose, status available
+for packing), the plan is validated against it, packing approval is asked
+again, and the loose parts follow.
+
+| Step | Measured, on the run in `simulators/isaac/DISMANTLING_EVIDENCE.md` |
+|---|---|
+| Proposal | `dismantle:pipe-run-1:247-150:max_density`; released section packed at CNT-01 (75, 60, 20) mm |
+| Grip + cut | fingers 60 mm from the plane on the free side; `CUT_COMPLETED` after 0.8 s |
+| Fixed remainder | (0.0235, −0.52, 0.65) m at creation, at lift, at carry, at release and after settle — unchanged |
+| Released section (150 mm) placed from the cut | 17 mm from plan, no drop on the bench |
+| Remaining picks after approval | 26 mm, 26 mm, 101 mm |
+| Run | **4 of 4 placed, 0 failed**, `COMPLETE` 68 s after the run began |
+
+Limits: a generated scene with a predefined removable length; one component,
+one cut geometry; the support frame is a simple rig, not a plant model; no
+fracture physics.
 
 ## 16. Tests and evidence
 

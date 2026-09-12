@@ -20,6 +20,10 @@ identical to the live run's). The storyboard is
 scripts/generate_readme_gifs.py --evaluator-demo` re-assembles it from tracked
 stills and records nothing.
 
+The second cutting scenario — a section cut from an INSTALLED pipe run and
+packed while the remainder stays installed — is documented in
+`DISMANTLING_EVIDENCE.md`; it reuses this skill unchanged.
+
 Every number below is from the run whose files sit beside this document in
 `scene_sync_evidence/cut-run-*` (2026-09-12, generated preset `isaac_cut_demo`
 seed 7, live Isaac Sim execution driven through the dashboard API). README

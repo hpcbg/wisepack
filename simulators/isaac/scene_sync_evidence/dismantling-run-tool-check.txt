@@ -1,0 +1,19 @@
+TOOL-CHECK [PASS] tool_built_visual_only: root /World/Panda/panda_hand/wisepack_gripper_cutter; applied schemas per prim {'/World/Panda/panda_hand/wisepack_gripper_cutter': [], '/World/Panda/panda_hand/wisepack_gripper_cutter/bracket': ['MaterialBindingAPI'], '/World/Panda/panda_hand/wisepack_gripper_cutter/blade_pos': ['MaterialBindingAPI'], '/World/Panda/panda_hand/wisepack_gripper_cutter/blade_
+TOOL-CHECK [PASS] arm_controllable_after_play: dof [0.012, -0.567, 0.0]..., tcp [0.389, 0.005, 0.856]
+TOOL-CHECK [PASS] blades_close_and_open: open 0.0700, closed 0.0000, reopened 0.0700 m (world distance between the blade prims)
+TOOL-CHECK [PASS] blades_ride_with_the_hand: blade midpoint [0.505, 0.009, 0.834] vs cut frame [0.505, 0.009, 0.829]
+TOOL-CHECK [PASS] blade_has_no_contact_effect: gravity-free tube with its end 1 mm inside the closed blade: spawned [0.4529, 0.0048, 0.7818], after 60 frames [0.4529, 0.0048, 0.7818], after an open/close stroke [0.4529, 0.0048, 0.7818] — moved 0.0 mm (the rigid-body tool with collision 'disabled' pushed a tube 54 mm)
+TOOL-CHECK [PASS] bracket_has_no_contact_effect: gravity-free tube centred on the bracket at [0.4762, 0.0084, 0.8625] -> [0.4762, 0.0084, 0.8625] — moved 0.0 mm (rigid-body tool: 49 mm)
+TOOL-CHECK [PASS] segments_created_while_playing: poses [[0.6, -0.05, 0.42], [0.6, 0.07, 0.42]]
+TOOL-CHECK [PASS] arm_controllable_after_creation: dof [0.012, -0.583, 0.0]..., tcp [0.389, 0.005, 0.864]
+TOOL-CHECK [PASS] gripper_after_creation: gripper commanded
+TOOL-CHECK [PASS] split_segments_rest_where_spawned: parent was at [0.48, -0.1004, 0.42]; segment drift after 120 frames {'item-003-s1': 0.7, 'item-003-s2': 1.2} mm
+TOOL-CHECK [PASS] arm_controllable_after_split: dof [0.012, -0.598, 0.0]..., tcp [0.389, 0.005, 0.873]
+TOOL-CHECK [PASS] dismantling_fixed_remainder_stays_installed: fixed segment kinematic=True, moved 0.00 mm while the released segment was carried past it (v [0.0, 0.0, 0.0])
+TOOL-CHECK [PASS] kerf_wider_than_contact_offset_stops_phantom_drag: remainder drift while the other segment is moved past it: 0.0 mm with the default offsets, 0.0 mm with a 1 mm contact offset (kerf 3 mm)
+TOOL-CHECK [PASS] tube_deactivated_while_playing: parked at [0.0, 0.0, -2.267]
+TOOL-CHECK [PASS] arm_controllable_after_deactivation: dof [0.012, -0.611, 0.0]..., tcp [0.389, 0.005, 0.881]
+TOOL-CHECK [PASS] weld_new_body: attached with hand-frame offset [-0.1806, 0.0495, 0.4769] and detached
+TOOL-CHECK [PASS] arm_controllable_after_weld: dof [0.012, -0.623, -0.0]..., tcp [0.389, 0.005, 0.889]
+TOOL-CHECK [FAIL] delete_while_playing_keeps_arm: Exception: Failed to get DOF positions from backend
+TOOL-CHECK-DONE 17/18 passed; failed: ['delete_while_playing_keeps_arm']
