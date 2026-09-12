@@ -10,6 +10,7 @@ through the same REST endpoints the buttons use.
     python3 scripts/generate_readme_gifs.py --only approve
     python3 scripts/generate_readme_gifs.py --fps 3 --keep-frames
     python3 scripts/generate_readme_gifs.py --scene-sync-gifs   # evidence GIFs, no recording
+    python3 scripts/generate_readme_gifs.py --evaluator-demo    # end-to-end demo, no recording
 
 HONESTY RULE, enforced rather than remembered: these are recorded in SIMULATION
 mode, so the captured header badge reads SIMULATED and every GIF is checked for
@@ -317,6 +318,179 @@ def assemble_scene_sync_gifs(manifest_path: str = SCENE_SYNC_MANIFEST,
         print(f"[gif] {gif_name}: {index} frames, {index / rate:.1f}s, "
               f"{size_mb:.2f} MB  ({spec.get('run_mode', '?')} evidence)")
         written.append(out)
+        if not keep_frames:
+            shutil.rmtree(folder, ignore_errors=True)
+    return written
+
+
+# --------------------------------------------------------------------------- #
+# Evaluator demo: ONE end-to-end sequence assembled from tracked evidence
+# --------------------------------------------------------------------------- #
+
+DEMO_DIR = os.path.join(OUT_DIR, "demo")
+DEMO_MANIFEST = os.path.join(DEMO_DIR, "demo-manifest.json")
+DEMO_CANVAS = (960, 540)
+
+
+def _demo_font(ImageFont, size: int, bold: bool = True):
+    name = "DejaVuSans-Bold.ttf" if bold else "DejaVuSans.ttf"
+    try:
+        return ImageFont.truetype(f"/usr/share/fonts/truetype/dejavu/{name}", size)
+    except OSError:
+        return ImageFont.load_default()
+
+
+def _demo_card(spec: Dict, Image, ImageDraw, ImageFont):
+    """A full-frame text card: title, optional lines, on a dark ground."""
+    width, height = DEMO_CANVAS
+    image = Image.new("RGB", DEMO_CANVAS, (16, 22, 34))
+    draw = ImageDraw.Draw(image)
+    title_font = _demo_font(ImageFont, int(spec.get("title_size", 50)))
+    line_font = _demo_font(ImageFont, int(spec.get("line_size", 27)), bold=False)
+    margin = 70
+    title_lines = _wrap(str(spec.get("title", "")), title_font, width - 2 * margin, draw)
+    body = [w for line in spec.get("lines", []) for w in
+            (_wrap(str(line), line_font, width - 2 * margin, draw) or [""])]
+    title_h = 60 * len(title_lines)
+    body_h = 40 * len(body)
+    total = title_h + (26 if body else 0) + body_h
+    y = (height - total) // 2
+    for line in title_lines:
+        w = draw.textlength(line, font=title_font)
+        draw.text(((width - w) / 2, y), line, font=title_font, fill=(255, 255, 255))
+        y += 60
+    if body:
+        draw.rectangle([width // 2 - 40, y + 4, width // 2 + 40, y + 8], fill=(255, 140, 40))
+        y += 26
+        for line in body:
+            w = draw.textlength(line, font=line_font)
+            draw.text(((width - w) / 2, y), line, font=line_font, fill=(222, 226, 234))
+            y += 40
+    return image
+
+
+def _demo_frame(path: str, title: str, sub: str, Image, ImageDraw, ImageFont,
+                below_banner: bool = False):
+    """One evidence still fitted onto the canvas with a large title banner.
+
+    `below_banner` fits the still into the area UNDER the banner instead of
+    letting the banner overlay it — for dashboard panels, whose first row is
+    the point.
+    """
+    width, height = DEMO_CANVAS
+    source = Image.open(path).convert("RGB")
+    canvas = Image.new("RGB", DEMO_CANVAS, (238, 241, 246))
+    draw = ImageDraw.Draw(canvas, "RGBA")
+    title_font = _demo_font(ImageFont, 34)
+    sub_font = _demo_font(ImageFont, 22, bold=False)
+    margin = 22
+    t_lines = _wrap(title, title_font, width - 2 * margin, draw) if title else []
+    s_lines = _wrap(sub, sub_font, width - 2 * margin, draw) if sub else []
+    band = (14 + 42 * len(t_lines) + 30 * len(s_lines) + (6 if s_lines else 0)
+            if (t_lines or s_lines) else 0)
+    top = band + 12 if below_banner else 0
+    room = height - top
+    scale = min(width / source.width, room / source.height)
+    fitted = source.resize((max(1, int(source.width * scale)),
+                            max(1, int(source.height * scale))), Image.LANCZOS)
+    canvas.paste(fitted, ((width - fitted.width) // 2, top + (room - fitted.height) // 2))
+    if not band:
+        return canvas
+    draw.rectangle([0, 0, width, band], fill=(16, 22, 34, 222))
+    y = 10
+    for line in t_lines:
+        draw.text((margin, y), line, font=title_font, fill=(255, 255, 255))
+        y += 42
+    y += 6 if s_lines else 0
+    for line in s_lines:
+        draw.text((margin, y), line, font=sub_font, fill=(255, 190, 120))
+        y += 30
+    return canvas
+
+
+def _demo_step_sources(step: Dict) -> List[str]:
+    """The evidence files one storyboard step draws on, in order."""
+    if "image" in step:
+        return [os.path.join(OUT_DIR, step["image"])]
+    if "frames" in step:
+        return [os.path.join(OUT_DIR, f) for f in step["frames"]]
+    if "range" in step:
+        pattern, first, last = step["range"]
+        return [os.path.join(OUT_DIR, pattern % n) for n in range(int(first), int(last) + 1)]
+    return []
+
+
+def assemble_evaluator_demo(manifest_path: str = DEMO_MANIFEST,
+                            keep_frames: bool = False) -> List[str]:
+    """Assemble the evaluator-facing end-to-end demo from TRACKED evidence.
+
+    The storyboard lives in `images/generated/demo/demo-manifest.json`: text
+    cards and evidence stills (physical D435 frames, Isaac frames, dashboard
+    panels), each with an on-screen title, a duration for the long asset and
+    a duration for the short README GIF (0 = not in the short cut). Nothing is
+    recorded here: every still is a tracked capture from a live run, and a
+    missing one is a hard error, never a substitute. The long variant is
+    written as a GIF and as an H.264 MP4 for presentations.
+    """
+    from PIL import Image, ImageDraw, ImageFont            # noqa: PLC0415
+
+    with open(manifest_path, encoding="utf-8") as fh:
+        manifest = json.load(fh)
+    steps = manifest.get("steps") or []
+    if not steps:
+        raise RuntimeError("the demo manifest lists no steps")
+    for step in steps:
+        for path in _demo_step_sources(step):
+            if not os.path.isfile(path):
+                raise RuntimeError(
+                    f"demo evidence {os.path.relpath(path, REPO)} is missing; it is a "
+                    "capture from a live run and cannot be regenerated here")
+
+    written: List[str] = []
+    for gif_name, spec in (manifest.get("outputs") or {}).items():
+        variant = spec.get("variant", "long")
+        fps = int(spec.get("fps", 4))
+        folder = os.path.join(FRAME_ROOT, "demo-" + gif_name.split(".")[0])
+        shutil.rmtree(folder, ignore_errors=True)
+        os.makedirs(folder, exist_ok=True)
+        index = 0
+        for step in steps:
+            seconds = float(step.get("short_seconds" if variant == "short" else "seconds", 0))
+            count = int(round(seconds * fps))
+            if count <= 0:
+                continue
+            if "card" in step:
+                frame = _demo_card(step["card"], Image, ImageDraw, ImageFont)
+                for _ in range(count):
+                    index += 1
+                    frame.save(os.path.join(folder, f"f{index:04d}.png"))
+                continue
+            sources = _demo_step_sources(step)
+            subs = {int(k): v for k, v in (step.get("subs") or {}).items()}
+            sub = str(step.get("sub", ""))
+            for n in range(count):
+                src_index = min(len(sources) - 1, (n * len(sources)) // count)
+                sub = subs.get(src_index, sub)
+                frame = _demo_frame(sources[src_index], str(step.get("title", "")), sub,
+                                    Image, ImageDraw, ImageFont,
+                                    below_banner=bool(step.get("below_banner")))
+                index += 1
+                frame.save(os.path.join(folder, f"f{index:04d}.png"))
+        os.makedirs(DEMO_DIR, exist_ok=True)
+        out = os.path.join(DEMO_DIR, gif_name)
+        assemble(folder, out, fps, int(spec.get("width", DEMO_CANVAS[0])))
+        print(f"[demo] {gif_name}: {index} frames, {index / fps:.1f}s, "
+              f"{os.path.getsize(out) / 1e6:.2f} MB ({variant})")
+        written.append(out)
+        if spec.get("mp4"):
+            mp4 = os.path.join(DEMO_DIR, spec["mp4"])
+            subprocess.run(
+                ["ffmpeg", "-y", "-v", "error", "-framerate", str(fps),
+                 "-i", os.path.join(folder, "f%04d.png"),
+                 "-c:v", "libx264", "-pix_fmt", "yuv420p", "-crf", "21",
+                 "-movflags", "+faststart", mp4], check=True)
+            print(f"[demo] {spec['mp4']}: {os.path.getsize(mp4) / 1e6:.2f} MB (H.264)")
+            written.append(mp4)
         if not keep_frames:
             shutil.rmtree(folder, ignore_errors=True)
     return written
@@ -1165,6 +1339,10 @@ def main() -> int:
                         help=("with --attach: regenerate ONLY the Object "
                               "source selector figure, leaving the per-source "
                               "table images untouched."))
+    parser.add_argument("--evaluator-demo", action="store_true",
+                        help=("assemble the evaluator-facing end-to-end demo "
+                              "(images/generated/demo/) from the tracked evidence "
+                              "stills listed in its manifest; records nothing"))
     parser.add_argument("--scene-sync-gifs", action="store_true",
                         help=("assemble the physical-D435 -> Isaac -> pick "
                               "evidence GIFs from the TRACKED frames listed in "
@@ -1180,6 +1358,19 @@ def main() -> int:
                               "a real acquisition rather than photographing an "
                               "older result."))
     args = parser.parse_args()
+
+    if args.evaluator_demo:
+        if not shutil.which("ffmpeg"):
+            print("ERROR: ffmpeg is required to assemble the demo.", file=sys.stderr)
+            return 2
+        written = assemble_evaluator_demo(keep_frames=args.keep_frames)
+        if not args.keep_frames:
+            shutil.rmtree(FRAME_ROOT, ignore_errors=True)
+        print(f"\nwrote {len(written)} demo asset(s):")
+        for path in written:
+            print(f"  {os.path.relpath(path, REPO)}  "
+                  f"({os.path.getsize(path) / 1e6:.2f} MB)")
+        return 0
 
     if args.scene_sync_gifs:
         if not shutil.which("ffmpeg"):

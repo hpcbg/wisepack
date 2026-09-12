@@ -14,6 +14,10 @@ Franka Emika Panda backend:
   **recorded** capture replayed. Sections *Live versus recorded* onward.
 
 This document and README §15a describe the same runs with the same numbers.
+The cutting skill that follows the whole-scene chain in the evaluator demo
+(`images/generated/demo/`) is documented in `CUT_SKILL_EVIDENCE.md`; the demo
+itself is assembled from the tracked stills of both runs by
+`scripts/generate_readme_gifs.py --evaluator-demo`.
 
 **What this is and is not.** It shows that a real RGB-D observation drives the
 synchronized Isaac workcell through an explicitly configured demo transform,

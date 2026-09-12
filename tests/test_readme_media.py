@@ -225,3 +225,61 @@ def test_the_readme_uses_the_operator_facing_source_label():
                   "| Acquisition | Perception method |",
                   "Object source: Physical camera"):
         assert stale not in readme, f"stale operator-facing wording: {stale!r}"
+
+
+# --------------------------------------------------------------------------- #
+# The evaluator demo: assembled from tracked evidence, sized for its purpose
+# --------------------------------------------------------------------------- #
+
+DEMO_DIR = os.path.join(GEN, "demo")
+
+
+def _demo_manifest():
+    import json
+    with open(os.path.join(DEMO_DIR, "demo-manifest.json"), encoding="utf-8") as fh:
+        return json.load(fh)
+
+
+def test_demo_manifest_names_only_tracked_evidence_stills():
+    manifest = _demo_manifest()
+    for step in manifest["steps"]:
+        if "image" in step:
+            files = [step["image"]]
+        elif "frames" in step:
+            files = list(step["frames"])
+        elif "range" in step:
+            pattern, first, last = step["range"]
+            files = [pattern % n for n in range(int(first), int(last) + 1)]
+        else:
+            assert "card" in step, f"a step without evidence or a card: {step}"
+            continue
+        for rel in files:
+            assert os.path.isfile(os.path.join(GEN, rel)), f"demo evidence {rel} is missing"
+
+
+def test_demo_storyboard_durations_fit_the_brief():
+    manifest = _demo_manifest()
+    long_s = sum(float(s.get("seconds", 0)) for s in manifest["steps"])
+    short_s = sum(float(s.get("short_seconds", 0)) for s in manifest["steps"])
+    assert 60 <= long_s <= 90, f"the long demo must run 60-90 s, storyboard says {long_s}"
+    assert 25 <= short_s <= 45, f"the README cut must run 25-45 s, storyboard says {short_s}"
+
+
+@pytest.mark.parametrize("name,max_mb", [
+    ("wisepack-end-to-end-demo.gif", 16.0),
+    ("wisepack-end-to-end-demo.mp4", 8.0),
+    ("wisepack-end-to-end-demo-short.gif", 6.0),
+])
+def test_demo_assets_exist_and_stay_presentable(name, max_mb):
+    path = os.path.join(DEMO_DIR, name)
+    assert os.path.isfile(path), f"demo asset {name} is missing"
+    size_mb = os.path.getsize(path) / 1e6
+    assert 0.2 < size_mb <= max_mb, f"{name} is {size_mb:.1f} MB"
+
+
+def test_demo_manifest_outputs_match_the_assets():
+    manifest = _demo_manifest()
+    for gif_name, spec in manifest["outputs"].items():
+        assert os.path.isfile(os.path.join(DEMO_DIR, gif_name)), gif_name
+        if spec.get("mp4"):
+            assert os.path.isfile(os.path.join(DEMO_DIR, spec["mp4"])), spec["mp4"]

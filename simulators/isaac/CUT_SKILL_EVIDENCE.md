@@ -9,6 +9,17 @@ gripper, places it, leaves the remainder where it lies, registers both derived
 items and re-plans — and the operator approves the packing again before any
 other object moves.
 
+The evaluator-facing demo (`images/generated/demo/wisepack-end-to-end-demo.gif`,
+`.mp4`, and the shorter README cut) is assembled from the stills of this run,
+of the whole-scene run in `SCENE_SYNC_EVIDENCE.md`, and of two dashboard
+panels captured for this scenario (`images/generated/demo/dashboard-cut-*.png`:
+the cut-aware recommendation for `isaac_cut_demo` seed 7 before and after
+`approve_cut`, taken from the sim-mode dashboard whose planner output is
+identical to the live run's). The storyboard is
+`images/generated/demo/demo-manifest.json`; `python3
+scripts/generate_readme_gifs.py --evaluator-demo` re-assembles it from tracked
+stills and records nothing.
+
 Every number below is from the run whose files sit beside this document in
 `scene_sync_evidence/cut-run-*` (2026-09-12, generated preset `isaac_cut_demo`
 seed 7, live Isaac Sim execution driven through the dashboard API). README
