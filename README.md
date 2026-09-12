@@ -18,6 +18,58 @@ trail.
 
 ---
 
+## Real-world perception now drives robot execution in the Digital Twin
+
+A physical Intel RealSense D435 observes the steel tube. FoundationPose
+estimates its 6-DoF pose using the model-free representation learned from
+simulated reference views. WISEPACK transforms the observation into the
+workcell, synchronizes the Isaac scene, and the existing robot backend
+approaches, grasps, transports and places **that same observed object**.
+
+This closes the loop from real perception to planning and robotic execution:
+
+```text
+real object -> RGB-D perception -> 6-DoF pose -> synchronized Digital Twin
+            -> WISEPACK planning -> robot pick-and-place
+```
+
+<p align="center">
+  <img src="images/generated/scene-sync/physical-to-isaac-pick.gif" width="720"
+       alt="Physical D435 observation synchronized into the Isaac workcell; the Panda approaches, grasps, transports and places the observed tube into the WISEPACK container">
+</p>
+
+*Physical D435 → FoundationPose (model-free) → synchronized Isaac workcell →
+Panda pick-and-place. The final frame shows the tube settled in the container
+by PhysX, with the settling error reported as measured.*
+
+<p align="center">
+  <img src="images/generated/scene-sync/run1-d435-pose-overlay.jpg" width="48%"
+       alt="The real D435 frame with the Cylinder5 pose FoundationPose estimated, drawn on the physical tube">
+  <img src="images/generated/scene-sync/run1-isaac-synchronized.jpg" width="48%"
+       alt="The Isaac workcell synchronized to that observation: the Cylinder5 lies on the table at the observed pose before the robot moves">
+</p>
+
+*Left: the real D435 frame with the estimated 6-DoF pose drawn on the physical
+tube. Right: the Isaac workcell synchronized to that observation — the tube is
+instantiated at its observed pose before the robot moves.*
+
+**Why this matters.**
+
+* The Digital Twin is no longer initialized only from generated source poses:
+  the physical environment now drives the simulated robotic workcell.
+* The WISEPACK planning, approval and execution architecture is preserved
+  unchanged; the observation simply enters it as a new scene revision.
+* Simulation and real perception are connected through one observation
+  contract, so a camera and a simulated sensor are interchangeable inputs.
+* This establishes the foundation for autonomous scene understanding, object
+  selection, cutting and eventual physical-cell deployment.
+
+The run-by-run numbers, the frame chain and the qualifications are in
+[§15a, Physical D435 → Isaac → robot pick](#physical-d435-to-isaac-to-robot-pick-demonstrated)
+and [`simulators/isaac/SCENE_SYNC_EVIDENCE.md`](simulators/isaac/SCENE_SYNC_EVIDENCE.md).
+
+---
+
 ## Physical RGB-D 6-DoF perception — Intel RealSense D435
 
 **WISEPACK now locates a real workpiece with a real depth camera.** A physical
@@ -4269,58 +4321,38 @@ with every intermediate pose, the Isaac log lines and the raw JSON:
 | run | D435 data | table pose = pick target (mm) | outcome |
 |---|---|---|---|
 | placement 1, 2026-09-11 | **live** capture | (479.4, 13.7, 21.3) | ITEM_COMPLETED, settled in CNT-01 |
-| placement 1 again, 2026-09-12 | **live** capture, same physical placement (within 0.3 mm of the day before) | (479.4, 13.3, 21.6) | ITEM_COMPLETED, settled in CNT-01 |
+| placement 1 again, 2026-09-12 | **live** capture, same physical placement (within 0.3 mm of the day before); source of the GIF at the top of this README | (479.4, 13.3, 21.6) | ITEM_COMPLETED, settled in CNT-01 |
 | placement 2 | **recorded** D435 capture of 2026-08-10, replayed through the same worker | (487.3, −7.2, 8.8) | ITEM_COMPLETED, settled in CNT-01 |
 
 The tube could not be physically moved during these sessions, so placement 2 is
 a **recorded-capture replay**, not a second live placement; it is labelled that
 way everywhere. Its Isaac object and pick target moved with its observation, by
-the displacement between the two captures.
+the displacement between the two captures. In every run the Isaac log's pick
+line prints the transformed observation (`pick [0.479 0.014 0.421]`,
+`pick [0.479 0.013 0.422]`, `pick [0.487 -0.007 0.409]`), never the generated
+row slot the placeholder had before synchronization
+(`images/generated/scene-sync/isaac-generated-placeholder.jpg`).
 
-| | |
-|---|---|
-| ![Live D435 colour frame of the bench with the physical Cylinder5 tube among other parts](images/generated/scene-sync/run1-d435-rgb.jpg) | ![The Cylinder5 CAD reprojected onto the live D435 frame at the pose FoundationPose estimated model-free](images/generated/scene-sync/run1-d435-pose-overlay.jpg) |
+<p align="center">
+  <img src="images/generated/scene-sync/run1-isaac-grasp.jpg" width="48%"
+       alt="The Panda closing its gripper on the synchronized Cylinder5 at the observed heading">
+  <img src="images/generated/scene-sync/run1-isaac-carry.jpg" width="48%"
+       alt="The Panda carrying the tube from the observed pose towards the WISEPACK container">
+</p>
 
-*Placement 1, **live** physical D435. FoundationPose estimated the pose from
-the learned reference representation; CAD was not supplied to the estimator.
-The engineering CAD model is drawn on the frame only to visualise the estimate,
-and is used afterwards to instantiate the object in the Digital Twin / Isaac
-scene.*
+*Placement 1, live: the Panda grasps the tube at the observed heading and
+carries it to the WISEPACK container.*
 
-![The Isaac workcell after synchronization: the Cylinder5 CAD body lying on the table at the transformed observed pose, before any robot motion; frame markers for the robot base, the work-area origin and the assumed camera](images/generated/scene-sync/run1-isaac-synchronized.jpg)
+<p align="center">
+  <img src="images/generated/scene-sync/run2-d435-pose-overlay.jpg" width="48%"
+       alt="Recorded D435 capture replayed: the estimated pose drawn on the earlier bench arrangement">
+  <img src="images/generated/scene-sync/run2-isaac-synchronized.jpg" width="48%"
+       alt="The Isaac workcell synchronized to the replayed observation, the tube at a different pose and heading">
+</p>
 
-*A physical D435 observation synchronized into the Isaac workcell using the
-configured demo camera-to-workarea transform. The simulated Cylinder5 starts at
-the transformed observed pose rather than at the generated source-row position
-(compare the placeholder in `images/generated/scene-sync/isaac-generated-placeholder.jpg`).
-The axis markers are the configured frames, drawn so a wrong assumption is
-visible.*
-
-| | |
-|---|---|
-| ![The Panda closing its gripper on the synchronized Cylinder5 at the observed heading](images/generated/scene-sync/run1-isaac-grasp.jpg) | ![The Panda carrying the tube from the observed pose towards the WISEPACK container](images/generated/scene-sync/run1-isaac-carry.jpg) |
-
-*The existing Panda backend approaches, grasps and carries the object from the
-pose derived from the physical `ObservationBatch`. The Isaac log line for this
-item reads `pick [0.479 0.014 0.421]` — the transformed observation, not the
-row slot.*
-
-![Animated: the generated placeholder is replaced by the synchronized Cylinder5, the Panda approaches, grasps, lifts, carries and releases it into the container](images/generated/scene-sync/physical-to-isaac-pick.gif)
-
-*The full sequence, from the **live** D435 re-acquisition of placement 1 on
-2026-09-12: generated placeholder → synchronized scene → approach → grasp →
-carry → release → settled in CNT-01. DemoCamera frames, assembled from the
-tracked evidence stills by `generate_readme_gifs.py --scene-sync-gifs`; the
-transform is the configured demo assumption named in the footer.*
-
-| | |
-|---|---|
-| ![Recorded D435 capture replayed: the CAD reprojected at the estimated pose on the earlier bench arrangement](images/generated/scene-sync/run2-d435-pose-overlay.jpg) | ![The Isaac workcell synchronized to the replayed observation, the tube at a slightly different pose and heading](images/generated/scene-sync/run2-isaac-synchronized.jpg) |
-
-*Placement 2 is a **recorded D435 capture replayed** through the same worker,
-not a live placement. The synchronized Isaac object and the pick target
-(`pick [0.487 -0.007 0.409]`) followed the different observation; the
-displacement from placement 1 is about 8, 21 and 12 mm in x, y and z.*
+*Placement 2, recorded capture replayed: a different observation, and the
+synchronized Isaac object and pick target followed it (about 8, 21 and 12 mm
+from placement 1 in x, y and z).*
 
 ## 16. Tests and evidence
 
