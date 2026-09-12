@@ -27,3 +27,20 @@ workarea->table : {'parent_frame': 'table', 'child_frame': 'wisepack_workarea', 
  Isaac read-back after settle (m): [0.4816, -0.0081, 0.4184] commanded [0.4873, -0.0072, 0.4088] settle offset mm 11.2
  pick yaw for the gripper (deg): -84.99
  scene geometry: {'source': 'engineering_cad', 'model_id': 'cylinder5', 'note': "engineering CAD from config/perception_objects.yaml; the estimator's learned representation is never used as scene geometry"} | estimator: learned_representation
+
+=== placement 1, second LIVE acquisition on 2026-09-12 (run 3): dataset cylinder5-20260912-045336 run_mode live method foundationpose_rgbd_model_free
+ SAME physical placement as placement 1 of 2026-09-11 (the tube was not moved between the two days); acquired live from the D435 again, synchronized and picked again, this time with the full DemoCamera frame sequence captured for the README GIF.
+ camera-frame model origin (mm): [-160.92, 85.3, 620.57]
+ camera-frame body centre  (mm): [-170.64, -13.35, 520.38]  tube axis: [0.0944, 0.9954, 0.0135]
+ workarea pose (mm): [-170.641, 13.348, 21.619] axis [0.094378, -0.995446, -0.013451]
+ table pose    (mm): [479.359, 13.348, 21.619] axis [0.094378, -0.995446, -0.013451]
+ hand check    (mm): [479.359, 13.348, 21.619]
+ Isaac world   (m) : [0.479359, 0.013348, 0.421619] q(wxyz) [-0.166605, -0.102837, -0.704379, 0.682288]
+ pose the bridge SENT (table, mm): {'x': 479.359, 'y': 13.348, 'z': 21.619} orientation {'x': -0.102837, 'y': -0.704379, 'z': 0.682288, 'w': -0.166605}
+ recomputed == sent: True
+ Isaac read-back after settle (m): [0.4867, 0.0143, 0.4181] commanded [0.4794, 0.0133, 0.4216] settle offset mm 8.2
+ pick yaw for the gripper (deg): -84.58
+ [isaac-robot] log line: item item-001 #0: pick [0.479 0.013 0.422] -> place [0.279 0.351 0.421] (axis x, release moved 14 mm inward for wall clearance)
+ outcome: ITEM_COMPLETED, settled inside CNT-01, 47.2 mm from the planned pose, axis off 5.1 deg
+ difference from placement 1 on 2026-09-11 (table, mm): dx -0.063 dy -0.314 dz +0.316  -> a repeat of the same placement, NOT a second placement
+ scene geometry: {'source': 'engineering_cad', 'model_id': 'cylinder5', 'note': "engineering CAD from config/perception_objects.yaml; the estimator's learned representation is never used as scene geometry"} | estimator: learned_representation

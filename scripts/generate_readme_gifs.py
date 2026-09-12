@@ -9,6 +9,7 @@ through the same REST endpoints the buttons use.
     python3 scripts/generate_readme_gifs.py
     python3 scripts/generate_readme_gifs.py --only approve
     python3 scripts/generate_readme_gifs.py --fps 3 --keep-frames
+    python3 scripts/generate_readme_gifs.py --scene-sync-gifs   # evidence GIFs, no recording
 
 HONESTY RULE, enforced rather than remembered: these are recorded in SIMULATION
 mode, so the captured header badge reads SIMULATED and every GIF is checked for
@@ -248,6 +249,130 @@ def assemble(folder: str, out_path: str, fps: int, width: int = 1000) -> str:
          "-loop", "0", out_path],
         check=True)
     return out_path
+
+
+# --------------------------------------------------------------------------- #
+# Scene-synchronization evidence GIFs (physical D435 -> Isaac -> pick)
+# --------------------------------------------------------------------------- #
+
+SCENE_SYNC_DIR = os.path.join(OUT_DIR, "scene-sync")
+SCENE_SYNC_MANIFEST = os.path.join(REPO, "simulators", "isaac",
+                                   "scene_sync_evidence", "gif-manifest.json")
+
+
+def assemble_scene_sync_gifs(manifest_path: str = SCENE_SYNC_MANIFEST,
+                             fps: Optional[int] = None,
+                             width: Optional[int] = None,
+                             keep_frames: bool = False) -> List[str]:
+    """Assemble the scene-sync GIFs from the TRACKED evidence frames only.
+
+    These GIFs are evidence of a physical run — a real D435 observation
+    synchronized into Isaac and picked — and a physical run cannot be replayed
+    by this script. So this mode records nothing: it reads the frame list in
+    `simulators/isaac/scene_sync_evidence/gif-manifest.json`, stamps each
+    tracked still with its label and the provenance footer, and hands the
+    sequence to the same ffmpeg assembler the workflow GIFs use. A frame the
+    manifest names but the repository does not hold is a hard error, never a
+    substitute: regenerating can therefore not quietly replace this evidence
+    with a generated-scenario capture.
+    """
+    from PIL import Image, ImageDraw, ImageFont            # noqa: PLC0415
+
+    with open(manifest_path, encoding="utf-8") as fh:
+        manifest = json.load(fh)
+    written: List[str] = []
+    for gif_name, spec in manifest.items():
+        if gif_name.startswith("_"):
+            continue
+        frames = spec.get("frames") or []
+        if not frames:
+            raise RuntimeError(f"{gif_name}: the manifest lists no frames")
+        rate = int(fps or spec.get("fps", 3))
+        out_width = int(width or spec.get("width", 800))
+        footer = str(spec.get("footer", ""))
+        folder = os.path.join(FRAME_ROOT, "scene-sync-" + gif_name.split(".")[0])
+        shutil.rmtree(folder, ignore_errors=True)
+        os.makedirs(folder, exist_ok=True)
+
+        index = 0
+        for entry in frames:
+            path = os.path.join(SCENE_SYNC_DIR, entry["file"])
+            if not os.path.isfile(path):
+                raise RuntimeError(
+                    f"{gif_name}: evidence frame {entry['file']} is missing from "
+                    f"{os.path.relpath(SCENE_SYNC_DIR, REPO)}. It is a capture "
+                    "from a physical run and cannot be regenerated here; "
+                    "restore it from version control.")
+            image = Image.open(path).convert("RGB")
+            _stamp(image, str(entry.get("label", "")), footer, ImageDraw,
+                   ImageFont)
+            for _ in range(max(1, int(entry.get("hold", 1)))):
+                index += 1
+                image.save(os.path.join(folder, f"f{index:04d}.png"))
+
+        os.makedirs(SCENE_SYNC_DIR, exist_ok=True)
+        out = os.path.join(SCENE_SYNC_DIR, gif_name)
+        assemble(folder, out, rate, out_width)
+        size_mb = os.path.getsize(out) / 1e6
+        print(f"[gif] {gif_name}: {index} frames, {index / rate:.1f}s, "
+              f"{size_mb:.2f} MB  ({spec.get('run_mode', '?')} evidence)")
+        written.append(out)
+        if not keep_frames:
+            shutil.rmtree(folder, ignore_errors=True)
+    return written
+
+
+def _wrap(text: str, font, max_width: int, draw) -> List[str]:
+    """Greedy word wrap by measured pixel width, so nothing runs off-frame."""
+    lines: List[str] = []
+    current = ""
+    for word in text.split():
+        candidate = (current + " " + word).strip()
+        if current and draw.textlength(candidate, font=font) > max_width:
+            lines.append(current)
+            current = word
+        else:
+            current = candidate
+    if current:
+        lines.append(current)
+    return lines
+
+
+def _stamp(image, label: str, footer: str, ImageDraw, ImageFont) -> None:
+    """Label banner at the top, provenance footer at the bottom, in place.
+
+    Both are word-wrapped to the frame width: a label that ran off the right
+    edge would hide exactly the part of the sentence that qualifies the claim.
+    """
+    width, height = image.size
+    scale = width / 960.0
+    try:
+        bold = ImageFont.truetype(
+            "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+            int(24 * scale))
+        small = ImageFont.truetype(
+            "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", int(16 * scale))
+    except OSError:
+        bold = small = ImageFont.load_default()
+    draw = ImageDraw.Draw(image, "RGBA")
+    margin = int(16 * scale)
+    if label:
+        lines = _wrap(label, bold, width - 2 * margin, draw)
+        line_h = int(30 * scale)
+        band = int(18 * scale) + line_h * len(lines)
+        draw.rectangle([0, 0, width, band], fill=(20, 24, 32, 215))
+        for n, line in enumerate(lines):
+            draw.text((margin, int(9 * scale) + n * line_h), line,
+                      font=bold, fill=(255, 255, 255))
+    if footer:
+        lines = _wrap(footer, small, width - 2 * margin, draw)
+        line_h = int(20 * scale)
+        band = int(12 * scale) + line_h * len(lines)
+        draw.rectangle([0, height - band, width, height],
+                       fill=(20, 24, 32, 215))
+        for n, line in enumerate(lines):
+            draw.text((margin, height - band + int(6 * scale) + n * line_h),
+                      line, font=small, fill=(230, 230, 230))
 
 
 # --------------------------------------------------------------------------- #
@@ -1040,6 +1165,13 @@ def main() -> int:
                         help=("with --attach: regenerate ONLY the Object "
                               "source selector figure, leaving the per-source "
                               "table images untouched."))
+    parser.add_argument("--scene-sync-gifs", action="store_true",
+                        help=("assemble the physical-D435 -> Isaac -> pick "
+                              "evidence GIFs from the TRACKED frames listed in "
+                              "simulators/isaac/scene_sync_evidence/"
+                              "gif-manifest.json. Records nothing and needs no "
+                              "dashboard, browser or camera; a listed frame "
+                              "that is missing is an error, not a substitute."))
     parser.add_argument("--model-free-shots", action="store_true",
                         help=("with --attach: capture the MODEL-FREE perception "
                               "figures in light theme, cropped to the panels. "
@@ -1048,6 +1180,23 @@ def main() -> int:
                               "a real acquisition rather than photographing an "
                               "older result."))
     args = parser.parse_args()
+
+    if args.scene_sync_gifs:
+        if not shutil.which("ffmpeg"):
+            print("ERROR: ffmpeg is required to assemble the GIFs.",
+                  file=sys.stderr)
+            return 2
+        written = assemble_scene_sync_gifs(
+            fps=args.fps if args.fps != 3 else None,
+            width=args.width if args.width != 1000 else None,
+            keep_frames=args.keep_frames)
+        if not args.keep_frames:
+            shutil.rmtree(FRAME_ROOT, ignore_errors=True)
+        print(f"\nwrote {len(written)} scene-sync GIF(s):")
+        for path in written:
+            print(f"  {os.path.relpath(path, REPO)}  "
+                  f"({os.path.getsize(path) / 1e6:.2f} MB)")
+        return 0
 
     try:
         from playwright.sync_api import sync_playwright

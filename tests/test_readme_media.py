@@ -74,7 +74,9 @@ def test_required_media_exists_and_is_non_trivial(name):
 def test_all_readme_image_paths_resolve():
     with open(os.path.join(REPO, "README.md"), encoding="utf-8") as fh:
         readme = fh.read()
-    for ref in re.findall(r"images/generated/([\w.\-]+)", readme):
+    # A reference may sit in a sub-folder (`scene-sync/...`), so the path is
+    # matched through to the file name and checked as a file, not a directory.
+    for ref in re.findall(r"images/generated/([\w.\-/]+)", readme):
         assert os.path.isfile(os.path.join(GEN, ref)), \
             f"README references missing image {ref}"
 

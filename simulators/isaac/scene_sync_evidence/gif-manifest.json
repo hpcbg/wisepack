@@ -1,0 +1,109 @@
+{
+  "_about": [
+    "Frame lists for the scene-synchronization GIFs in images/generated/scene-sync/.",
+    "Assembled by: python3 scripts/generate_readme_gifs.py --scene-sync-gifs",
+    "Every frame named here is a TRACKED capture from a physical D435 -> Isaac run;",
+    "the assembler never records anything itself and refuses a frame it cannot find,",
+    "so re-running the generator cannot replace this evidence with a generated-scenario",
+    "capture. `hold` is how many GIF frames the still is shown for at `fps`."
+  ],
+  "physical-to-isaac-pick.gif": {
+    "source": "run 3: LIVE D435 acquisition on 2026-09-12 of placement 1 (same physical placement as 2026-09-11), synchronized into Isaac through the configured demo transform and picked by the existing Panda backend; DemoCamera frames captured with WISEPACK_ISAAC_CAPTURE_DIR",
+    "run_mode": "live",
+    "fps": 3,
+    "width": 800,
+    "footer": "LIVE physical D435 -> FoundationPose (model-free) -> CONFIGURED DEMO camera-to-workarea transform -> Isaac Sim, Panda. No calibrated accuracy claimed.",
+    "frames": [
+      {
+        "file": "run3-isaac-seq-01.jpg",
+        "hold": 5,
+        "label": "BEFORE synchronization: generated placeholder at the scenario row slot"
+      },
+      {
+        "file": "run3-isaac-seq-02.jpg",
+        "hold": 7,
+        "label": "SYNCHRONIZED: Cylinder5 CAD spawned at the transformed physical observation (table 479, 13, 22 mm)"
+      },
+      {
+        "file": "run3-isaac-seq-03.jpg",
+        "hold": 3,
+        "label": "Operator approval -> the Panda picks from the synchronized pose"
+      },
+      {
+        "file": "run3-isaac-seq-04.jpg",
+        "hold": 1,
+        "label": "Approach: pick target = the transformed observation (0.479, 0.013, 0.422 m)"
+      },
+      {
+        "file": "run3-isaac-seq-05.jpg",
+        "hold": 1,
+        "label": "Approach: pick target = the transformed observation (0.479, 0.013, 0.422 m)"
+      },
+      {
+        "file": "run3-isaac-seq-06.jpg",
+        "hold": 1,
+        "label": "Approach: pick target = the transformed observation (0.479, 0.013, 0.422 m)"
+      },
+      {
+        "file": "run3-isaac-seq-07.jpg",
+        "hold": 1,
+        "label": "Approach: gripper turned to the observed tube heading (-84.6 deg)"
+      },
+      {
+        "file": "run3-isaac-seq-08.jpg",
+        "hold": 3,
+        "label": "Grasp (temporary fixed joint)"
+      },
+      {
+        "file": "run3-isaac-seq-09.jpg",
+        "hold": 1,
+        "label": "Lift"
+      },
+      {
+        "file": "run3-isaac-seq-10.jpg",
+        "hold": 1,
+        "label": "Lift"
+      },
+      {
+        "file": "run3-isaac-seq-11.jpg",
+        "hold": 1,
+        "label": "Carry to the WISEPACK container CNT-01"
+      },
+      {
+        "file": "run3-isaac-seq-12.jpg",
+        "hold": 1,
+        "label": "Carry to the WISEPACK container CNT-01"
+      },
+      {
+        "file": "run3-isaac-seq-13.jpg",
+        "hold": 1,
+        "label": "Carry to the WISEPACK container CNT-01"
+      },
+      {
+        "file": "run3-isaac-seq-14.jpg",
+        "hold": 1,
+        "label": "Carry to the WISEPACK container CNT-01"
+      },
+      {
+        "file": "run3-isaac-seq-15.jpg",
+        "hold": 3,
+        "label": "Release: PhysX settles the tube (47 mm from the planned pose, axis off 5 deg)"
+      },
+      {
+        "file": "run3-isaac-seq-16.jpg",
+        "hold": 1,
+        "label": "Retreat"
+      },
+      {
+        "file": "run3-isaac-seq-17.jpg",
+        "hold": 1,
+        "label": "Retreat"
+      },
+      {
+        "file": "run3-isaac-seq-18.jpg",
+        "hold": 6,
+        "label": "ITEM_COMPLETED: settled inside CNT-01"
+      }
+    ]
+  }
+}

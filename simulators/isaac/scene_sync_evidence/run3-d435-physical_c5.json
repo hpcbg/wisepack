@@ -1,0 +1,157 @@
+{
+ "available": true,
+ "reason": "",
+ "acquisition": "Intel RealSense D435",
+ "acquisition_backend": "realsense",
+ "provenance": "measured",
+ "is_current_run": false,
+ "is_current_physical": true,
+ "status_label": "CURRENT PHYSICAL D435 RESULT \u2014 acquired live from this dashboard. It is a measurement in camera coordinates and is NOT part of the workflow run below.",
+ "acquired_how": "acquired live from the camera",
+ "run_mode": "live",
+ "run_label": "LIVE PHYSICAL D435",
+ "run_note": "Acquired from the physical D435 during this run.",
+ "perception_method": "foundationpose_rgbd_model_free",
+ "estimator_geometry": "learned_representation",
+ "representation": {
+  "id": "cylinder5-simref-15v",
+  "label": "Cylinder5",
+  "model_id": "cylinder5",
+  "method": "foundationpose_rgbd_model_free",
+  "reference_digest": "9e59f85169e2d07f",
+  "reference_digest_short": "9e59f851",
+  "reference_source": "simulated Isaac views",
+  "reference_view_count": 15,
+  "foundationpose_revision": "a1b694b83e633c2cb6115b9063d940a687759392",
+  "validation_status": "experimental",
+  "validation_summary": "sim + physical transfer demonstrated",
+  "validation_note": "Sim-to-real pose transfer demonstrated at one physical pose; multi-pose physical validation pending.",
+  "validation_evidence": [
+   "Simulated benchmark over 10 object poses and viewpoints \u2014 mean position error 6.650 mm and mean tube-axis-line error 0.676 deg, against CAD at 2.599 mm and 0.528 deg.",
+   "Physical D435, one stationary pose, 12/12 frames registered. Repeatability 2.077 mm mean centre spread and 0.124 deg mean axis spread. Agreement with CAD 7.142 mm mean centre and 0.273 deg mean axis. REPEATABILITY AND AGREEMENT, NOT ACCURACY \u2014 no independently measured physical pose for this object exists."
+  ],
+  "validation_gate": "A second, clearly different physical pose, captured and compared the same way, showing that registration and the CAD/model-free offset are not specific to a single physical pose.",
+  "experimental": true,
+  "physical_ground_truth_available": false,
+  "usable_for_packing_geometry": false,
+  "geometry_note": "Reconstructed for pose estimation only. Principal length approximately 341.5 mm and transverse diameter approximately 26.7 mm; the bore is not represented and the ends are effectively capped, so its volume is not the part's volume. WISEPACK packing continues to use the exact CAD geometry.",
+  "ready": true,
+  "reason": ""
+ },
+ "object_model_id": "cylinder5",
+ "device": {
+  "name": "RealSense D435",
+  "serial_number": "317222072788",
+  "firmware_version": "5.17.0.10",
+  "usb_type_descriptor": "3.2"
+ },
+ "selected_profile": {
+  "width": 1280,
+  "height": 720,
+  "fps": 30
+ },
+ "operator_roi_px": [
+  255,
+  70,
+  445,
+  719
+ ],
+ "roi_note": "The ROI says WHERE to look. Object identity is model_id, stated by the operator, and is never inferred from it.",
+ "frame_id": "camera_color_optical_frame",
+ "pose_valid": true,
+ "workarea_pose_available": false,
+ "object_centre_mm": [
+  -170.641,
+  -13.349,
+  520.381
+ ],
+ "model_frame_origin_mm": [
+  -160.917,
+  85.297,
+  620.572
+ ],
+ "tube_axis_line": [
+  0.094378,
+  0.995446,
+  0.013451
+ ],
+ "measured_dof": [
+  "x",
+  "y",
+  "z",
+  "orientation_partial"
+ ],
+ "segmentation": {
+  "mask_source": "depth_plane_foreground",
+  "mask_valid": true,
+  "mask_pixels": 27171,
+  "components": 2,
+  "roi_px": [
+   255,
+   70,
+   445,
+   719
+  ],
+  "mask_extent_long_mm": 333.3,
+  "mask_extent_across_mm": 26.3,
+  "mask_median_range_mm": 516.0
+ },
+ "repeatability": {
+  "frames": 1,
+  "measured": false,
+  "note": "REPEATABILITY IS NOT MEASURED here and is NOT zero: a single measurement frame has no spread. Measuring it needs several independent frames of the same stationary scene \u2014 run the multi-frame validation, e.g. ./scripts/physical_c5.sh --model <id> --frames 5."
+ },
+ "plausibility": {
+  "pose_origin_z_mm": 620.6,
+  "pose_reference_point": "model_frame_origin",
+  "object_centre_z_mm": 520.4,
+  "centre_depth_expected_mm": 528.5,
+  "centre_depth_error_mm": -8.1,
+  "centre_depth_plausible": true,
+  "cad_centroid_px": [
+   348.9,
+   351.5
+  ],
+  "mask_centroid_px": [
+   356.8,
+   360.5
+  ],
+  "centroid_offset_px": 11.9,
+  "centroid_offset_mm": 6.8,
+  "centroid_plausible": true,
+  "tube_axis_line": [
+   0.0944,
+   0.9954,
+   0.0135
+  ],
+  "depth_plausible": true,
+  "cad_projected_area_px": 26734.5,
+  "mask_pixels": 27171,
+  "mask_to_cad_area_ratio": 1.016,
+  "area_plausible": true
+ },
+ "timing_ms": {
+  "capture_ms": 2608.9,
+  "segmentation_ms": 1660.9,
+  "artifacts_ms": 6.0,
+  "inference_passes": 1,
+  "inference_ms": [
+   3729.6
+  ],
+  "inference_total_ms": 3729.6,
+  "estimator_reported_ms": 1270.7,
+  "measurement_frames": 1,
+  "total_ms": 8456.4
+ },
+ "images": [
+  "depth",
+  "mask",
+  "overlay",
+  "rgb"
+ ],
+ "completed_at": "2026-09-12T04:53:44Z",
+ "dataset": "cylinder5-20260912-045336",
+ "planning_available": false,
+ "planning_blocked_reason": "Physical 6-DoF perception validated in camera coordinates. No measured camera-to-work-area calibration exists; an Isaac run places this object through the CONFIGURED DEMO transform in config/isaac_workcell.yaml and reports it as such, never as calibrated.",
+ "accuracy_note": "No ground truth exists for the physical part. Repeatability is reported; accuracy is NOT measured and is not claimed."
+}

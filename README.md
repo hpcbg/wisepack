@@ -66,7 +66,10 @@ downstream workflow; the evidence and its limits are in
 camera has not been calibrated to the work area, so no validated camera→work-area
 transform exists. The missing extrinsic is represented as missing rather than as
 an identity transform, so the pose cannot be silently placed in a frame nobody
-measured. That calibration is the next step.
+measured. For the Isaac workcell a separately declared **configured demo
+transform** now carries this pose into the synchronized scene
+([§15a](#physical-d435-to-isaac-to-robot-pick-demonstrated)); a *measured* calibration is
+still the next step.
 
 **The missing extrinsic does not block container packing, and that is not a
 loophole.** Two different questions are being kept apart:
@@ -74,7 +77,7 @@ loophole.** Two different questions are being kept apart:
 | Question | Answered by | Status |
 |---|---|---|
 | *How big is this object?* | the named CAD model in `config/perception_objects.yaml` | **known** — D25 × L342 mm, bore 19 mm |
-| *Where is it on the bench?* | the camera→work-area extrinsic | **unknown**, and reported as unknown |
+| *Where is it on the bench?* | a measured camera→work-area extrinsic | **unknown**, and reported as unknown — the Isaac scene uses a declared demo transform instead ([§15a](#physical-d435-to-isaac-to-robot-pick-demonstrated)) |
 
 The Digital Twin here is a **packing** twin: it asks how the object's geometry
 fits inside a container, and computes a **new pose inside that container**. The
@@ -375,12 +378,13 @@ actually in them rather than relabelled to match the current default. Which arm
 executes is a run-time selection — see
 [Supported robots](#supported-robots).*
 
-*Two honest limitations. **Physical-camera observations are not yet
-synchronized into the Isaac scene**: Isaac still initializes object poses from
-its existing scenario source. Real camera perception is implemented and
-validated — see [§15a](#15a-real-camera-perception) — and it drives the planning
-and the Digital Twin; what is missing is the last hop into the simulator's
-scene.
+*Two honest limitations. **The physical camera reaches the Isaac scene through
+a configured demo transform, not a measured calibration**: a real D435
+observation is synchronized into the workcell and picked from its transformed
+pose — see [Physical D435 → Isaac → robot pick](#physical-d435-to-isaac-to-robot-pick-demonstrated) —
+but the camera→work-area transform is a stated demonstrator assumption, so no
+physical placement accuracy is claimed. Measured camera-to-robot calibration
+remains future work.
 And the settled pose is where physics puts it, not a reproduction of the target:
 the latest four-item **Panda** run measured a **mean final-position error after
 release and settling of about 35 mm** (see
@@ -629,7 +633,7 @@ so the table below says which level produced it.
 | DDS to FIWARE latency | **MEASURED** | When the benchmark has been run; `not measured` otherwise | production network conditions |
 | Perception, `sim` (default) | **SIMULATED** | Ground-truth scenario poses stand in for detection | camera, RGB-D, detector, pose estimation |
 | Perception, `camera` — **physical planar RGB** | **MEASURED — planar pose** | A real USB camera through the `planar_fasterrcnn` method. Object x/y/yaw are **real, measured** on an ArUco-calibrated plane and become the objects WISEPACK plans from. Object dimensions are **configured proxy geometry**, declared not measured | depth, 6-DoF pose, measured object dimensions, and any measured detection RATE — see §14 |
-| Perception, `camera` — **physical RGB-D** | **MEASURED — 6-DoF pose, camera frame** | A **real Intel RealSense D435**: measured RGB-D with depth aligned to colour, `depth_plane_foreground` segmentation inside an operator ROI, and a **FoundationPose 6-DoF pose in `camera_color_optical_frame`** — from **either** the object's CAD mesh **or** a learned reference representation with **no CAD given to the estimator**. Packing geometry is the **exact selected CAD model** for both, never a proxy and never the reconstruction | **no external physical pose ground truth** — repeatability and inter-method agreement are reported, accuracy is not; and no camera→work-area extrinsic, so `workarea_pose_available` is false. Model-free is demonstrated at **one** physical pose; multi-pose validation pending |
+| Perception, `camera` — **physical RGB-D** | **MEASURED — 6-DoF pose, camera frame** | A **real Intel RealSense D435**: measured RGB-D with depth aligned to colour, `depth_plane_foreground` segmentation inside an operator ROI, and a **FoundationPose 6-DoF pose in `camera_color_optical_frame`** — from **either** the object's CAD mesh **or** a learned reference representation with **no CAD given to the estimator**. Packing geometry is the **exact selected CAD model** for both, never a proxy and never the reconstruction | **no external physical pose ground truth** — repeatability and inter-method agreement are reported, accuracy is not; the camera→work-area transform that synchronizes the Isaac scene is a **configured demo assumption**, not a measured calibration, and the perception panel keeps `workarea_pose_available` false until a measured one exists. Model-free is demonstrated at **one** physical pose; multi-pose validation pending |
 | Perception, **simulated RGB-D** | **SIMULATED ACQUISITION, real estimator** | Simulated **D435-compatible** RGB-D from Isaac with an exact synthetic instance mask, through the **same FoundationPose worker and provider** as the physical path. This is where the quantitative pose error comes from | nothing about a real sensor: no lens, no depth noise, no ambient IR. **Simulator ground truth is used only for evaluation** — never given to FoundationPose, never reaching the planner |
 | Robot, default backend | **SIMULATED - LOGICAL** | Deterministic workflow advance, geometric placement per the accepted plan, seeded grasp failures and workflow events | mass, inertia, gravity, kinematics, contacts, friction, collision response, settling |
 | Robot, Isaac backend | **PHYSICS-BASED SIMULATION** | A selected articulated manipulator — UFACTORY xArm 7 or Franka Emika Panda — with rigid bodies, mass, gravity, collision geometry, contacts, friction and settling in PhysX. Cylinders are carried and released, never teleported, and the measured settled pose is reported back | real hardware, safety functions, calibration, perception |
@@ -654,8 +658,11 @@ Reading the table:
   camera frame and packs the exact CAD geometry. Neither has an external
   physical pose ground truth, so **no physical accuracy number is published** —
   the quantitative error comes from the simulated RGB-D run;
-* **physical-camera observations are not yet synchronized into the Isaac
-  scene** — Isaac initializes object poses from its existing scenario source.
+* **physical-camera observations are synchronized into the Isaac scene through
+  a configured demo transform** — the camera→work-area transform is a stated
+  demonstrator assumption, not a measured camera-to-robot calibration, so the
+  synchronized pose is consistent with the observation, not accurate against
+  the bench ([§15a](#physical-d435-to-isaac-to-robot-pick-demonstrated)).
 
 Every figure in the dashboard, the artefacts and the reports carries a
 `measured` / `simulated` / `operator` / `target` label. Nothing is unlabelled.
@@ -1726,7 +1733,8 @@ and Logistics status panels alongside the ROS topic and FIWARE mapping diagnosti
 | Physical 2-D camera | **live — selectable per run as Object source: Physical RGB camera** | real | detected count |
 | Physical RGB-D camera (the proposal's depth pipeline) | **live — Intel RealSense D435 + FoundationPose, acquired from the dashboard** | **measured 6-DoF pose** in the camera frame; no external physical pose ground truth | detected count |
 | Simulated RGB-D camera (quantitative pose error) | **live — Isaac-rendered D435-compatible RGB-D + FoundationPose, acquired from the dashboard** | estimate is **real**; the frame is **simulated**. Pose error **measured against simulator ground truth**, read only after the estimate | no |
-| Camera→work-area extrinsic (physical) | future | not implemented — `workarea_pose_available` is false; packing uses CAD geometry, execution stays gated | no |
+| Physical `ObservationBatch` → Isaac scene synchronization | **live — configured demo camera→work-area transform** ([§15a](#physical-d435-to-isaac-to-robot-pick-demonstrated)) | **demonstrated**: the Isaac object is instantiated at the transformed physical pose and picked from it; the transform is a stated assumption, not a measured calibration | no |
+| Measured camera→robot/work-area calibration (physical) | future | not implemented — the demo transform stands in for it; no physical accuracy is claimed | no |
 | MoveIt2 execution | future | not implemented | no |
 
 The `/diagnostics` page renders this table live and, in ROS/FIWARE mode, marks
@@ -2106,10 +2114,11 @@ homing, and a safe hold on any model or controller failure.
 
 It carries the **same two stated limitations** as the Panda backend, unchanged:
 
-* **Isaac still initializes object poses from its existing scenario source.**
-  WISEPACK does have a validated camera detector (§15a), but synchronizing a
-  physical `ObservationBatch` into the Isaac scene is a separate development
-  step and was deliberately not bundled with the robot migration;
+* **the physical camera reaches the scene through a configured demo
+  transform.** A physical `ObservationBatch` is synchronized into the Isaac
+  scene ([§15a](#physical-d435-to-isaac-to-robot-pick-demonstrated)), but the camera→work-area
+  transform is a stated demonstrator assumption, not a measured calibration —
+  the same for both arms, since the synchronizer is robot-neutral;
 * **the grasp is still the temporary fixed joint.** The carry is idealised; the
   release and everything after it are real PhysX.
 
@@ -2255,18 +2264,16 @@ its C extension.
 **GUI is the default** when `DISPLAY` is set; the launcher falls back to headless
 automatically and says so. `WISEPACK_ISAAC_HEADLESS=1` forces it.
 
-**Physical-camera observations are not yet synchronized into the Isaac scene.**
-Isaac initializes object poses from its **existing scenario source** — the
-simulator spawned the items, so it knows where they are.
-
-This is not "WISEPACK has no perception". Camera perception is implemented and
-validated: selecting **Object source: Physical RGB camera** runs a real detector,
-produces measured observations, and those observations drive the packing, the
-validator, the Digital Twin and the approval gate (§15a). What is missing is
-only the last hop — building the Isaac scene from a physical `ObservationBatch`
-instead of from the scenario. Extension point:
-`wisepack_core.isaac_transform.table_pose_for_index`, fed from
-`ObservationBatch.scene_objects()`.
+**Physical-camera observations are synchronized into the Isaac scene through a
+configured demo transform.** For a generated run Isaac initializes object poses
+from its scenario source, as before. For a physical RGB-D run the scene is
+built from the physical `ObservationBatch`: the D435 pose is carried through
+an explicitly configured camera→work-area transform, the engineering CAD object
+is spawned at that pose, and the robot picks from it — see
+[Physical D435 → Isaac → robot pick](#physical-d435-to-isaac-to-robot-pick-demonstrated). That
+transform is a **stated demonstrator assumption, not a measured camera-to-robot
+calibration**; measured calibration of the physical workcell remains future
+work, and no physical placement accuracy is claimed.
 
 **Temporary fixed-joint grasp.** When the gripper closes, the item is welded to
 the selected robot's end-effector link with a USD fixed joint, removed the
@@ -3389,11 +3396,13 @@ ones.
 **The work-area frame differs from the physical path, for a stated reason.** The
 simulated camera is part of the scene, which exported an exact
 camera→work-area transform; it is applied through the same generic
-`RigidTransform` the physical camera will use once a measured extrinsic exists,
-so a simulated observation legitimately reaches `wisepack_workarea` with
-`workarea_pose_available: true`. The physical D435 has no such transform, keeps
-`camera_color_optical_frame` and `workarea_pose_available: false`, and **the
-simulated path's transform is never borrowed for it**.
+`RigidTransform` the physical path uses, so a simulated observation
+legitimately reaches `wisepack_workarea` with `workarea_pose_available: true`.
+The physical D435 has no *measured* transform: its observation keeps
+`camera_color_optical_frame` and `workarea_pose_available: false`, and only the
+Isaac scene synchronizer carries it further, through the explicitly configured
+demo transform ([§15a](#physical-d435-to-isaac-to-robot-pick-demonstrated)). **The simulated
+path's exact transform is never borrowed for it.**
 
 **Ground truth is evaluation only, and structurally so.** `estimate()` is not
 given the scene — it cannot read a ground-truth pose because it never receives
@@ -3458,8 +3467,9 @@ only.
 **Coordinate frame honesty, and two separate validities.** FoundationPose
 reports in the camera optical frame, and WISEPACK keeps it there. A successful
 estimate is **valid** (`pose_valid = true`) in that frame — it is a real,
-reproducible pose. What it cannot yet do is move into the work area, which is a
-different fact with its own field:
+reproducible pose. Whether it can be placed in the work area is a different
+fact with its own field, which the perception panel reports for a **measured**
+transform only:
 
 | | |
 |---|---|
@@ -3468,12 +3478,15 @@ different fact with its own field:
 | camera→work-area extrinsic available | **false** |
 | work-area pose available | **false** |
 
-`workarea_pose_available` is what a planner or the Isaac scene synchronizer
-consults; it is derived, so it is true only when the pose is already in the
-work-area frame or a validated transform into it exists. The missing extrinsic
-is represented as missing — never as an identity transform, and never by
-relabelling `frame_id`. The planar ArUco homography is a *planar* map and is
-never reused as a 3-D transform.
+`workarea_pose_available` is derived, so it is true only when the pose is
+already in the work-area frame or a validated measured transform into it
+exists. The missing measured extrinsic is represented as missing — never as an
+identity transform, and never by relabelling `frame_id`. The Isaac scene
+synchronizer is the one consumer that applies the separately declared
+**configured demo transform** to a camera-frame pose, and it labels the result
+`configured_demo` end to end ([§15a](#physical-d435-to-isaac-to-robot-pick-demonstrated)). The
+planar ArUco homography is a *planar* map and is never reused as a 3-D
+transform.
 
 **Offline reference regression.** With no depth camera attached, the complete
 WISEPACK path — worker → provider → `PhysicalObservation` → serialisation →
@@ -4205,10 +4218,109 @@ Isaac scene:         Synchronized
 Object:              Cylinder5 [cad_mesh] at (x, y, z) mm in table
 ```
 
-The two-position evidence for this path — camera-frame pose, configured
-transform, work-area pose, Isaac world pose and the robot's pick target for each
-placement, with the D435 frames and Isaac captures — is in
-[`simulators/isaac/SCENE_SYNC_EVIDENCE.md`](simulators/isaac/SCENE_SYNC_EVIDENCE.md).
+<a id="physical-d435-to-isaac-to-robot-pick-demonstrated"></a>
+#### Physical D435 → Isaac → robot pick, demonstrated
+
+**This closes the gap documented in earlier revisions of this README**, where a
+physical observation drove planning, the validator and the Digital Twin but
+never populated the Isaac scene. The completed path is:
+
+```text
+physical D435
+  -> FoundationPose (model-free: learned reference representation, no CAD)
+  -> ObservationBatch
+  -> configured demo camera-to-workarea transform
+  -> synchronized Isaac scene (Cylinder5 engineering CAD at the transformed pose)
+  -> existing Panda pick-and-place
+  -> WISEPACK container placement
+```
+
+Real RGB-D perception now drives the Isaac workcell: the physical D435 pose is
+transformed through an explicitly configured demo camera-to-workarea transform,
+the corresponding engineering object is instantiated at that pose in Isaac, and
+the existing robot backend picks from the synchronized position. **The robot's
+pick target is the transformed physical observation, not the generated
+source-row coordinates** the placeholder had before synchronization.
+
+What is demonstrated is exactly *real RGB-D observation → synchronized Digital
+Twin / Isaac scene → robot pick from the transformed observed pose*. It is
+**not**:
+
+* **calibrated camera-to-robot accuracy.** The camera/workcell transform is a
+  **configured demo assumption** (`config/isaac_workcell.yaml`, provenance
+  `configured_demo`), not a measured industrial camera-to-robot calibration.
+  The numbers are consistent with each other, not measured against an
+  independent truth, and no physical placement accuracy is claimed;
+* **autonomous object identification or multi-object scene understanding.**
+  The object identity (`model_id`) and the ROI remain demonstrator inputs, and
+  one object is synchronized;
+* **physical robot execution.** The pick is Isaac physics, with the same
+  fixed-joint grasp limitation as every other Isaac result here.
+
+FoundationPose model-free still receives **no CAD**: it estimates from the
+learned reference representation. The authoritative engineering CAD is used
+only *after* perception, to instantiate the physical object in the Digital
+Twin / Isaac scene.
+
+**Evidence.** Three runs are documented in
+[`simulators/isaac/SCENE_SYNC_EVIDENCE.md`](simulators/isaac/SCENE_SYNC_EVIDENCE.md),
+with every intermediate pose, the Isaac log lines and the raw JSON:
+
+| run | D435 data | table pose = pick target (mm) | outcome |
+|---|---|---|---|
+| placement 1, 2026-09-11 | **live** capture | (479.4, 13.7, 21.3) | ITEM_COMPLETED, settled in CNT-01 |
+| placement 1 again, 2026-09-12 | **live** capture, same physical placement (within 0.3 mm of the day before) | (479.4, 13.3, 21.6) | ITEM_COMPLETED, settled in CNT-01 |
+| placement 2 | **recorded** D435 capture of 2026-08-10, replayed through the same worker | (487.3, −7.2, 8.8) | ITEM_COMPLETED, settled in CNT-01 |
+
+The tube could not be physically moved during these sessions, so placement 2 is
+a **recorded-capture replay**, not a second live placement; it is labelled that
+way everywhere. Its Isaac object and pick target moved with its observation, by
+the displacement between the two captures.
+
+| | |
+|---|---|
+| ![Live D435 colour frame of the bench with the physical Cylinder5 tube among other parts](images/generated/scene-sync/run1-d435-rgb.jpg) | ![The Cylinder5 CAD reprojected onto the live D435 frame at the pose FoundationPose estimated model-free](images/generated/scene-sync/run1-d435-pose-overlay.jpg) |
+
+*Placement 1, **live** physical D435. FoundationPose estimated the pose from
+the learned reference representation; CAD was not supplied to the estimator.
+The engineering CAD model is drawn on the frame only to visualise the estimate,
+and is used afterwards to instantiate the object in the Digital Twin / Isaac
+scene.*
+
+![The Isaac workcell after synchronization: the Cylinder5 CAD body lying on the table at the transformed observed pose, before any robot motion; frame markers for the robot base, the work-area origin and the assumed camera](images/generated/scene-sync/run1-isaac-synchronized.jpg)
+
+*A physical D435 observation synchronized into the Isaac workcell using the
+configured demo camera-to-workarea transform. The simulated Cylinder5 starts at
+the transformed observed pose rather than at the generated source-row position
+(compare the placeholder in `images/generated/scene-sync/isaac-generated-placeholder.jpg`).
+The axis markers are the configured frames, drawn so a wrong assumption is
+visible.*
+
+| | |
+|---|---|
+| ![The Panda closing its gripper on the synchronized Cylinder5 at the observed heading](images/generated/scene-sync/run1-isaac-grasp.jpg) | ![The Panda carrying the tube from the observed pose towards the WISEPACK container](images/generated/scene-sync/run1-isaac-carry.jpg) |
+
+*The existing Panda backend approaches, grasps and carries the object from the
+pose derived from the physical `ObservationBatch`. The Isaac log line for this
+item reads `pick [0.479 0.014 0.421]` — the transformed observation, not the
+row slot.*
+
+![Animated: the generated placeholder is replaced by the synchronized Cylinder5, the Panda approaches, grasps, lifts, carries and releases it into the container](images/generated/scene-sync/physical-to-isaac-pick.gif)
+
+*The full sequence, from the **live** D435 re-acquisition of placement 1 on
+2026-09-12: generated placeholder → synchronized scene → approach → grasp →
+carry → release → settled in CNT-01. DemoCamera frames, assembled from the
+tracked evidence stills by `generate_readme_gifs.py --scene-sync-gifs`; the
+transform is the configured demo assumption named in the footer.*
+
+| | |
+|---|---|
+| ![Recorded D435 capture replayed: the CAD reprojected at the estimated pose on the earlier bench arrangement](images/generated/scene-sync/run2-d435-pose-overlay.jpg) | ![The Isaac workcell synchronized to the replayed observation, the tube at a slightly different pose and heading](images/generated/scene-sync/run2-isaac-synchronized.jpg) |
+
+*Placement 2 is a **recorded D435 capture replayed** through the same worker,
+not a live placement. The synchronized Isaac object and the pick target
+(`pick [0.487 -0.007 0.409]`) followed the different observation; the
+displacement from placement 1 is about 8, 21 and 12 mm in x, y and z.*
 
 ## 16. Tests and evidence
 
@@ -4285,9 +4397,13 @@ Stated plainly, because a demonstrator that hides its edges is not evidence.
      physical tube truly is. Repeatability (0.43 mm, 0.22°) and independent
      plausibility checks are published; an accuracy figure is not. The
      quantitative error (≈4.0 mm, ≈0.83°) is from the **simulated** run;
-   * **not implemented:** the camera→work-area extrinsic.
-     `workarea_pose_available` stays false. Container packing is unaffected
-     because it uses the CAD geometry, but **execution is still gated** by it;
+   * **configured, not measured:** the camera→work-area transform. Isaac scene
+     synchronization from a physical observation is implemented and
+     demonstrated with a **configured demo transform**
+     ([§15a](#physical-d435-to-isaac-to-robot-pick-demonstrated)); a measured camera-to-robot
+     calibration remains future work, so `workarea_pose_available` stays false
+     on the perception panel and no physical placement accuracy is claimed.
+     Container packing is unaffected because it uses the CAD geometry;
    * **operator-supplied, not inferred:** the object identity (`model_id`) and,
      on a crowded bench, the ROI;
    * **simulated RGB-D is a separate acquisition with separate limits:** the
@@ -4352,11 +4468,11 @@ Stated plainly, because a demonstrator that hides its edges is not evidence.
 
 | Step | Work | Maps to |
 |---|---|---|
-| 1 | **Done for planar RGB:** a real camera provider (Faster R-CNN + ArUco) measures x/y/yaw and feeds the ordinary planning path. **Done for RGB-D:** a physical Intel RealSense D435 and FoundationPose measure a 6-DoF pose from real depth, and the CAD-backed batch drives packing, validation and the approval gate over ROS 2 / DDS ([§15a](#15a-real-camera-perception)). What remains on this line: **(a)** synchronize the physical `ObservationBatch` into the Isaac scene via `scene_objects()`, **(b)** the **camera→work-area extrinsic**, so a measured pose becomes placeable and `workarea_pose_available` can be true, **(c)** an external physical pose reference, so the physical 6-DoF result can be scored rather than only shown repeatable, **(d)** a labelled ground-truth trial so KPI1 becomes a measured detection rate rather than `not_measured` | O1, KPI1, MS2 |
+| 1 | **Done for planar RGB:** a real camera provider (Faster R-CNN + ArUco) measures x/y/yaw and feeds the ordinary planning path. **Done for RGB-D:** a physical Intel RealSense D435 and FoundationPose measure a 6-DoF pose from real depth, and the CAD-backed batch drives packing, validation and the approval gate over ROS 2 / DDS ([§15a](#15a-real-camera-perception)). **Done, with a configured demo transform:** the physical `ObservationBatch` is synchronized into the Isaac scene and the robot picks from the transformed observed pose ([§15a](#physical-d435-to-isaac-to-robot-pick-demonstrated)). What remains on this line: **(a)** a **measured camera→robot/work-area calibration** to replace the configured demo transform, so `workarea_pose_available` can be true on a measured basis and a physical placement accuracy can be stated, **(b)** an external physical pose reference, so the physical 6-DoF result can be scored rather than only shown repeatable, **(c)** a labelled ground-truth trial so KPI1 becomes a measured detection rate rather than `not_measured` | O1, KPI1, MS2 |
 | 2 | Exact geometry for the five approximated classes (convex decomposition or voxel masks) instead of bounding boxes | O3, KPI4 |
 | 3 | **Add the real xArm 7 execution backend** using the same ROS 2 execution contract, with hardware drivers, calibrated robot/camera/tool/facility frames, safety integration and hardware-aware motion planning. **Retain Isaac as the pre-deployment and regression-testing environment.** There are now two simulator levels - the lightweight logical simulator and the Isaac physics simulator - and the hardware backend is a **sibling of Isaac, not a replacement for all simulation** | O2, KPI2/KPI3, MS4 |
 | 4 | Add **collision-aware motion planning** to the Isaac execution backend. This is the structural gap the xArm 7 migration exposed: differential IK has no collision model and no null-space control, so a shorter arm working a bench-scale cell folds into the space its own remaining source objects occupy and disturbs them. Moving coordinates further apart took a four-item xArm run from 1/4 to 3/4 and cannot take it further — see [Measured xArm 7 behaviour](#measured-xarm-7-behaviour-and-what-is-not-yet-solid) | O2, MS4 |
-| 5 | Improve **clearance-aware release planning** to further reduce the measured mean final-position error after PhysX settling, currently about **35 mm** in the four-item Panda smoke run (down from about 48 mm, see [§15](#15-isaac-sim-physical-execution)). Then replace the temporary fixed-joint grasp approximation with a friction/contact grasp, and build the Isaac scene from the physical `ObservationBatch` instead of from ground-truth scenario poses | MS4 |
+| 5 | Improve **clearance-aware release planning** to further reduce the measured mean final-position error after PhysX settling, currently about **35 mm** in the four-item Panda smoke run (down from about 48 mm, see [§15](#15-isaac-sim-physical-execution)). Then replace the temporary fixed-joint grasp approximation with a friction/contact grasp, and replace the configured demo camera→work-area transform with a measured calibration so the synchronized Isaac scene is accurate as well as consistent | MS4 |
 | 6 | Calibrate the baseline against real EDF/CEA site practice so KPI4 is measured against reality, not a textbook packer | KPI4, MS6 |
 | 7 | QuantumLeap + CrateDB + Grafana on the existing NGSI-LD entities for true historical retention | O5, MS5 |
 | 8 | Re-attach HARMONY's Vosk voice and MediaPipe gesture modules to the same operator attributes | O4 |
