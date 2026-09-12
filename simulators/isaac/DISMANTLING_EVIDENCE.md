@@ -12,7 +12,11 @@ cut — the fixed remainder stays installed. Everything below is from the run
 whose files sit beside this document in `scene_sync_evidence/dismantling-run-*`
 (2026-09-13, preset `isaac_fixed_pipe_dismantling` seed 7, live Isaac Sim
 6.0.1 execution driven through the dashboard API). README §15c describes the
-same run with the same numbers.
+same run with the same numbers, and the evaluator demo
+(`images/generated/demo/`, storyboard `demo-manifest.json`) shows it as the
+third capability after the whole-scene run (`SCENE_SYNC_EVIDENCE.md`) and the
+loose-pipe cut (`CUT_SKILL_EVIDENCE.md`), from the tracked stills of this run
+only.
 
 **What this is and is not.** The same grip-cut-place skill, cut-aware
 workflow, Human-in-the-Loop approvals, scene synchronization and packing

@@ -362,21 +362,37 @@ def _demo_card(spec: Dict, Image, ImageDraw, ImageFont):
     title_lines = _wrap(str(spec.get("title", "")), title_font, width - 2 * margin, draw)
     body = [w for line in spec.get("lines", []) for w in
             (_wrap(str(line), line_font, width - 2 * margin, draw) or [""])]
+    rows = [(str(head), str(text)) for head, text in spec.get("rows", [])]
+    head_font = _demo_font(ImageFont, int(spec.get("row_size", 24)))
+    row_font = _demo_font(ImageFont, int(spec.get("row_size", 24)), bold=False)
+    row_h = 44
     title_h = 60 * len(title_lines)
     body_h = 40 * len(body)
-    total = title_h + (26 if body else 0) + body_h
+    rows_h = row_h * len(rows)
+    total = title_h + (26 if (body or rows) else 0) + body_h + rows_h
     y = (height - total) // 2
     for line in title_lines:
         w = draw.textlength(line, font=title_font)
         draw.text(((width - w) / 2, y), line, font=title_font, fill=(255, 255, 255))
         y += 60
-    if body:
+    if body or rows:
         draw.rectangle([width // 2 - 40, y + 4, width // 2 + 40, y + 8], fill=(255, 140, 40))
         y += 26
-        for line in body:
-            w = draw.textlength(line, font=line_font)
-            draw.text(((width - w) / 2, y), line, font=line_font, fill=(222, 226, 234))
-            y += 40
+    for line in body:
+        w = draw.textlength(line, font=line_font)
+        draw.text(((width - w) / 2, y), line, font=line_font, fill=(222, 226, 234))
+        y += 40
+    if rows:
+        # Two columns: an accent-coloured heading on the left, the fact on the
+        # right, aligned on one vertical rule — a summary, not a paragraph.
+        head_w = max(draw.textlength(h, font=head_font) for h, _ in rows)
+        text_w = max(draw.textlength(t, font=row_font) for _, t in rows)
+        x_rule = max(head_w + 30, (width - (head_w + 30 + text_w)) / 2 + head_w + 15)
+        for head, text in rows:
+            draw.text((x_rule - 15 - draw.textlength(head, font=head_font), y + 6),
+                      head, font=head_font, fill=(255, 170, 70))
+            draw.text((x_rule + 15, y + 7), text, font=row_font, fill=(235, 238, 244))
+            y += row_h
     return image
 
 
@@ -419,8 +435,60 @@ def _demo_frame(path: str, title: str, sub: str, Image, ImageDraw, ImageFont,
     return canvas
 
 
+def _demo_compare(step: Dict, title: str, sub: str, Image, ImageDraw, ImageFont):
+    """Two evidence stills side by side under one banner, each with a caption.
+
+    For a change of state the eye should compare directly — an installed pipe
+    before the cut, the fixed remainder and the released waste item after it.
+    """
+    width, height = DEMO_CANVAS
+    canvas = Image.new("RGB", DEMO_CANVAS, (238, 241, 246))
+    draw = ImageDraw.Draw(canvas, "RGBA")
+    title_font = _demo_font(ImageFont, 34)
+    sub_font = _demo_font(ImageFont, 22, bold=False)
+    cap_font = _demo_font(ImageFont, 20)
+    margin = 22
+    t_lines = _wrap(title, title_font, width - 2 * margin, draw) if title else []
+    s_lines = _wrap(sub, sub_font, width - 2 * margin, draw) if sub else []
+    band = 14 + 42 * len(t_lines) + 30 * len(s_lines) + (6 if s_lines else 0)
+    gap = 12
+    cap_h = 40
+    top = band + gap
+    pane_w = (width - 3 * gap) // 2
+    pane_h = height - top - gap - cap_h
+    for k, (rel, caption) in enumerate(step["compare"]):
+        source = Image.open(os.path.join(OUT_DIR, rel)).convert("RGB")
+        scale = min(pane_w / source.width, pane_h / source.height)
+        fitted = source.resize((max(1, int(source.width * scale)),
+                                max(1, int(source.height * scale))), Image.LANCZOS)
+        x = gap + k * (pane_w + gap)
+        # Vertically centre the pair in the space under the banner, caption
+        # attached to the bottom edge of its still.
+        y0 = top + max(0, (pane_h + cap_h - fitted.height - cap_h) // 2)
+        canvas.paste(fitted, (x + (pane_w - fitted.width) // 2, y0))
+        cw = draw.textlength(caption, font=cap_font)
+        cy = y0 + fitted.height
+        draw.rectangle([x + (pane_w - fitted.width) // 2, cy,
+                        x + (pane_w - fitted.width) // 2 + fitted.width, cy + cap_h - 4],
+                       fill=(16, 22, 34, 235))
+        draw.text((x + (pane_w - cw) / 2, cy + 6), caption, font=cap_font,
+                  fill=(255, 190, 120) if k else (255, 255, 255))
+    draw.rectangle([0, 0, width, band], fill=(16, 22, 34, 222))
+    y = 10
+    for line in t_lines:
+        draw.text((margin, y), line, font=title_font, fill=(255, 255, 255))
+        y += 42
+    y += 6 if s_lines else 0
+    for line in s_lines:
+        draw.text((margin, y), line, font=sub_font, fill=(255, 190, 120))
+        y += 30
+    return canvas
+
+
 def _demo_step_sources(step: Dict) -> List[str]:
     """The evidence files one storyboard step draws on, in order."""
+    if "compare" in step:
+        return [os.path.join(OUT_DIR, rel) for rel, _ in step["compare"]]
     if "image" in step:
         return [os.path.join(OUT_DIR, step["image"])]
     if "frames" in step:
@@ -470,8 +538,11 @@ def assemble_evaluator_demo(manifest_path: str = DEMO_MANIFEST,
             count = int(round(seconds * fps))
             if count <= 0:
                 continue
-            if "card" in step:
-                frame = _demo_card(step["card"], Image, ImageDraw, ImageFont)
+            if "card" in step or "compare" in step:
+                frame = (_demo_card(step["card"], Image, ImageDraw, ImageFont)
+                         if "card" in step else
+                         _demo_compare(step, str(step.get("title", "")), str(step.get("sub", "")),
+                                       Image, ImageDraw, ImageFont))
                 for _ in range(count):
                     index += 1
                     frame.save(os.path.join(folder, f"f{index:04d}.png"))

@@ -243,7 +243,9 @@ def _demo_manifest():
 def test_demo_manifest_names_only_tracked_evidence_stills():
     manifest = _demo_manifest()
     for step in manifest["steps"]:
-        if "image" in step:
+        if "compare" in step:
+            files = [rel for rel, _caption in step["compare"]]
+        elif "image" in step:
             files = [step["image"]]
         elif "frames" in step:
             files = list(step["frames"])

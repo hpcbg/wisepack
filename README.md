@@ -3,15 +3,23 @@
 **Intelligent Robotic Sorting and Volume-Optimized Packaging of Nuclear Waste
 with Human-in-the-Loop AI**
 
-WISEPACK connects **real-world perception, packing optimization,
-Human-in-the-Loop decision making, Digital Twin synchronization and robotic
-execution in one integrated workflow**. A real RGB-D view of a bench of waste
-parts drives a synchronized robotic Digital Twin; WISEPACK reasons over the
-observed scene, decides when a part is worth processing before it is packed,
-asks the operator, and the robot executes — grip, cut, place, re-plan, pack.
-A running demonstrator: ROS 2 Jazzy modules over DDS with a FIWARE NGSI-LD
-audit trail, geometry-aware packing validated in the Digital Twin, nothing
-executed without operator approval.
+WISEPACK covers the complete chain from **physical scene understanding**,
+through **processing and dismantling decisions**, to **Digital Twin
+synchronization, Human-in-the-Loop approval and robotic waste packing** — one
+integrated workflow, not only a container-packing optimizer. A real RGB-D view
+of a bench of waste parts drives a synchronized robotic Digital Twin; WISEPACK
+reasons over the observed scene, decides when a part is worth cutting before it
+is packed, can start before the waste item even exists by cutting a section
+from an installed pipe, asks the operator, and the robot executes — grip, cut,
+place, re-plan, pack. A running demonstrator: ROS 2 Jazzy modules over DDS with
+a FIWARE NGSI-LD audit trail, geometry-aware packing validated in the Digital
+Twin, nothing executed without operator approval.
+
+| Three demonstrated capabilities | |
+|---|---|
+| **Physical scene → Digital Twin → packing** | 18 physical objects perceived by a D435, synchronized and packed one by one: 18/18 placed |
+| **Packing-driven grip / cut / place** | WISEPACK finds that cutting a long pipe improves the plan; the operator approves; the combined gripper + cutter cuts, places the segment directly, the plan is revalidated, the rest is packed: 4/4 placed, 0 failed |
+| **Installed component → dismantled waste → packing** | a pipe run fixed to a support rig is cut free by the robot; the released section becomes a new WISEPACK waste item and is packed straight from the cut while the remainder stays installed: 4/4 placed, 0 failed |
 
 ## Real perception → Digital Twin → robotic processing
 
@@ -21,26 +29,27 @@ executed without operator approval.
 </p>
 
 *Real RGB-D scene → whole-scene perception → Digital Twin → packing
-optimization → grip + cut → re-plan → robotic packing. Forty-second cut of the
-full demo — [72 s GIF](images/generated/demo/wisepack-end-to-end-demo.gif) ·
+optimization → grip + cut → re-plan → robotic packing → dismantling an
+installed pipe into a new waste item. Forty-second cut of the full demo —
+[75 s GIF](images/generated/demo/wisepack-end-to-end-demo.gif) ·
 [MP4 for presentations](images/generated/demo/wisepack-end-to-end-demo.mp4).*
 
 <p align="center">
   <img src="images/generated/scene-sync/scene-d435-classified.jpg" width="32%"
        alt="The real bench as the D435 sees it: 18 workpieces detected, sized and classified">
-  <img src="images/generated/scene-sync/scene-isaac-synchronized.jpg" width="32%"
-       alt="The Isaac Digital Twin synchronized to that scene: 18 parts at their observed poses">
   <img src="images/generated/scene-sync/cut-isaac-seq-15.jpg" width="32%"
-       alt="The combined gripper and cutter just after the cut: the retained segment in the gripper, the remainder on the bench">
+       alt="The combined gripper and cutter just after the packing-driven cut: the retained segment in the gripper, the remainder on the bench">
+  <img src="images/generated/scene-sync/dism-isaac-seq-14.jpg" width="32%"
+       alt="Dismantling: the released section lifted away in the gripper while the fixed remainder of the installed pipe stays clamped to its support rig">
 </p>
 
-*Left: the real bench — 18 workpieces detected. Centre: the Digital Twin
-synchronized to that scene. Right: the combined gripper + cutter right after
-the cut — the retained segment in the gripper, the remainder on the bench.*
+*Left: the real bench — 18 workpieces detected. Centre: the packing-driven
+cut — the retained segment in the gripper, the remainder on the bench. Right:
+dismantling — the released section in the gripper, the fixed remainder still
+clamped to the installation.*
 
 | | |
 |---|---|
-| **Demonstrated** | 18 physical objects perceived and synchronized · 18/18 placed by the robot in the synchronized Digital Twin · a long pipe identified as worth cutting, cut and packed with the rest: 4/4 placed · 0 failed |
 | **One workflow** | the same perception → optimization → approval → execution chain handles the whole scene, decides that a part is worth processing first, and keeps planning after the part has been physically transformed |
 | **Why it matters** | a foundation for robotic nuclear-decommissioning waste handling: observed scenes, decisions a human can approve, and execution that adapts to the parts it produces |
 

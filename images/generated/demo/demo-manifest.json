@@ -2,13 +2,14 @@
  "_about": [
   "Storyboard of the evaluator-facing end-to-end demo in images/generated/demo/.",
   "Assembled by: python3 scripts/generate_readme_gifs.py --evaluator-demo",
-  "Every still named here is a TRACKED capture from a live run (physical D435 frames of the",
-  "whole-scene run of 2026-09-12, Isaac frames of that run and of the cut-and-place run of",
-  "2026-09-12, dashboard panels of the cut-aware decision for the same scenario); the assembler",
-  "records nothing and refuses a missing still. `seconds` is the duration in the long asset,",
-  "`short_seconds` in the README cut (0 = not shown there). `subs` change the subtitle at a",
-  "given source-frame offset of a sequence.",
-  "`below_banner` fits a still under the title band instead of behind it (dashboard panels)."
+  "Three capabilities from three LIVE runs: the whole-scene D435 run of 2026-09-12 (18 objects,",
+  "physical frames + Isaac frames), the cut-and-place run of 2026-09-12 (isaac_cut_demo) and the",
+  "dismantling run of 2026-09-13 (isaac_fixed_pipe_dismantling); dashboard panels of the cut-aware",
+  "decision are captured for the same scenarios. The assembler records nothing and refuses a",
+  "missing still. `seconds` is the duration in the long asset, `short_seconds` in the README cut",
+  "(0 = not shown there). `subs` change the subtitle at a source-frame offset of a sequence;",
+  "`below_banner` fits a still under the title band (dashboard panels); `compare` shows two",
+  "stills side by side with captions; a card's `rows` render a two-column summary."
  ],
  "outputs": {
   "wisepack-end-to-end-demo.gif": {
@@ -29,47 +30,33 @@
     "title": "WISEPACK",
     "lines": [
      "Real perception  →  Digital Twin  →  robotic processing",
-     "One integrated workflow: perception, optimization, human approval, execution"
+     "Perception, optimization, human approval, dismantling and execution in one workflow"
     ]
    },
-   "seconds": 3.5,
-   "short_seconds": 2.5
+   "seconds": 3,
+   "short_seconds": 2
   },
   {
    "image": "scene-sync/scene-d435-rgb.jpg",
    "title": "Real RGB-D scene",
    "sub": "Intel RealSense D435 over a bench of steel waste parts",
-   "seconds": 3.5,
-   "short_seconds": 2.5,
-   "source": "whole-scene run 2026-09-12, capture scene-20260912-091535"
-  },
-  {
-   "image": "scene-sync/scene-d435-masks.jpg",
-   "title": "Whole-scene perception",
-   "sub": "Every workpiece segmented on the work plane",
-   "seconds": 2,
-   "short_seconds": 0
+   "seconds": 3,
+   "short_seconds": 1.5,
+   "source": "whole-scene run 2026-09-12"
   },
   {
    "image": "scene-sync/scene-d435-classified.jpg",
    "title": "Whole-scene perception",
    "sub": "18 physical objects detected and synchronized",
-   "seconds": 3.5,
-   "short_seconds": 2.5
-  },
-  {
-   "image": "scene-sync/scene-isaac-before.jpg",
-   "title": "Physical scene  →  synchronized Digital Twin",
-   "sub": "Before: the twin holds a generated placeholder",
-   "seconds": 1.5,
-   "short_seconds": 0
+   "seconds": 3,
+   "short_seconds": 2
   },
   {
    "image": "scene-sync/scene-isaac-synchronized.jpg",
    "title": "Physical scene  →  synchronized Digital Twin",
    "sub": "18 observed parts instantiated at their measured poses",
-   "seconds": 3.5,
-   "short_seconds": 2.5
+   "seconds": 3,
+   "short_seconds": 2
   },
   {
    "range": [
@@ -79,8 +66,8 @@
    ],
    "title": "WISEPACK plans, the operator approves, the robot packs",
    "sub": "The observed scene, picked one by one",
-   "seconds": 6,
-   "short_seconds": 2
+   "seconds": 4.5,
+   "short_seconds": 1.0
   },
   {
    "range": [
@@ -90,14 +77,14 @@
    ],
    "title": "WISEPACK plans, the operator approves, the robot packs",
    "sub": "Sequential picks, time-lapse",
-   "seconds": 3.5,
+   "seconds": 2.5,
    "short_seconds": 1
   },
   {
    "image": "scene-sync/scene-isaac-seq-54.jpg",
    "title": "Whole scene packed",
    "sub": "18/18 observed parts placed  ·  0 failed",
-   "seconds": 3,
+   "seconds": 2.5,
    "short_seconds": 2
   },
   {
@@ -108,32 +95,24 @@
      "WISEPACK asks: is processing it before packing worth it?"
     ]
    },
-   "seconds": 3.5,
-   "short_seconds": 2
-  },
-  {
-   "image": "scene-sync/cut-isaac-seq-01.jpg",
-   "title": "Long pipe on the bench",
-   "sub": "Two short tubes fit; the long pipe fits the container nowhere whole",
    "seconds": 2.5,
-   "short_seconds": 1,
-   "source": "cut-and-place run 2026-09-12 (isaac_cut_demo seed 7)"
+   "short_seconds": 1.0
   },
   {
    "image": "demo/dashboard-cut-recommended.png",
    "title": "WISEPACK optimizes packing",
    "sub": "Cutting the long pipe improves the packing plan: one cut, 150 + 267 mm",
-   "seconds": 4,
-   "short_seconds": 3,
-   "source": "dashboard cut-aware panel for isaac_cut_demo seed 7",
-   "below_banner": true
+   "seconds": 3,
+   "short_seconds": 2,
+   "below_banner": true,
+   "source": "dashboard cut-aware panel for isaac_cut_demo seed 7"
   },
   {
    "image": "demo/dashboard-cut-approved.png",
    "title": "Operator approves the proposed cut",
    "sub": "Human-in-the-Loop: cut approval is separate from packing approval",
-   "seconds": 3,
-   "short_seconds": 2,
+   "seconds": 2,
+   "short_seconds": 1.5,
    "below_banner": true
   },
   {
@@ -143,14 +122,16 @@
     16
    ],
    "title": "Integrated grip-cut-place skill",
+   "sub": "Approach: combined gripper + cutter on the Panda",
+   "seconds": 6.5,
+   "short_seconds": 3.5,
    "subs": {
     "0": "Approach: combined gripper + cutter on the Panda",
     "3": "Grip: the fingers close on the segment to keep",
     "6": "Cutter closes  ·  discrete cut on the planned plane",
     "10": "Two segments: retained piece in the gripper, remainder on the bench"
    },
-   "seconds": 8,
-   "short_seconds": 5
+   "source": "cut-and-place run 2026-09-12 (isaac_cut_demo seed 7)"
   },
   {
    "range": [
@@ -160,8 +141,8 @@
    ],
    "title": "Cut segment transferred directly to the container",
    "sub": "No regrasp: the retained segment travels straight from the cut",
-   "seconds": 4.5,
-   "short_seconds": 3
+   "seconds": 3.5,
+   "short_seconds": 2
   },
   {
    "card": {
@@ -172,8 +153,8 @@
      "Packing plan revalidated  ·  operator approves packing"
     ]
    },
-   "seconds": 4,
-   "short_seconds": 2.5
+   "seconds": 3,
+   "short_seconds": 2
   },
   {
    "range": [
@@ -183,31 +164,122 @@
    ],
    "title": "Remaining items packed",
    "sub": "Short tube",
+   "seconds": 3.5,
+   "short_seconds": 1.5,
    "subs": {
     "6": "The remainder of the cut, picked from where it lay",
     "12": "Last tube"
-   },
-   "seconds": 5,
-   "short_seconds": 2
+   }
   },
   {
    "image": "scene-sync/cut-isaac-seq-42.jpg",
    "title": "Complete autonomous execution",
    "sub": "4/4 planned items placed  ·  0 failed",
+   "seconds": 2.5,
+   "short_seconds": 2
+  },
+  {
+   "card": {
+    "title": "Before the waste item exists",
+    "lines": [
+     "An installed steel pipe run, clamped to its support rig above the bench",
+     "WISEPACK proposes a dismantling cut; the operator approves it"
+    ]
+   },
+   "seconds": 2.5,
+   "short_seconds": 1.5
+  },
+  {
+   "image": "scene-sync/dism-isaac-seq-01.jpg",
+   "title": "Installed component: fixed infrastructure, not yet waste",
+   "sub": "Steel pipe run clamped to an aluminium support rig, free length reaching into the workspace",
+   "seconds": 2.5,
+   "short_seconds": 2,
+   "source": "dismantling run 2026-09-13 (isaac_fixed_pipe_dismantling seed 7)"
+  },
+  {
+   "image": "scene-sync/dism-dashboard-approved.jpg",
+   "title": "Dismantling cut proposed and approved",
+   "sub": "Release the free 150 mm as a waste item; 247 mm stays installed",
+   "seconds": 2.5,
+   "short_seconds": 1.5,
+   "below_banner": true,
+   "source": "dashboard cut-aware panel (Dismantling block) for isaac_fixed_pipe_dismantling seed 7"
+  },
+  {
+   "range": [
+    "scene-sync/dism-isaac-seq-%02d.jpg",
+    4,
+    11
+   ],
+   "title": "Grip, then cut it from the installation",
+   "sub": "Approach: the combined gripper + cutter goes to the removable section",
+   "seconds": 4,
+   "short_seconds": 2.0,
+   "subs": {
+    "0": "Approach: the combined gripper + cutter goes to the removable section",
+    "2": "Grip: the fingers hold the section that will be removed",
+    "5": "Cutter closes  ·  the section is released from the installation"
+   }
+  },
+  {
+   "compare": [
+    [
+     "scene-sync/dism-isaac-seq-01.jpg",
+     "Before: installed infrastructure"
+    ],
+    [
+     "scene-sync/dism-isaac-seq-14.jpg",
+     "After: fixed remainder + new waste item"
+    ]
+   ],
+   "title": "The topology changes at the cut",
+   "sub": "The fixed remainder stays clamped in the rig; the released segment is a new WISEPACK waste item, still in the gripper",
    "seconds": 3.5,
-   "short_seconds": 2.5
+   "short_seconds": 2.0
+  },
+  {
+   "range": [
+    "scene-sync/dism-isaac-seq-%02d.jpg",
+    16,
+    22
+   ],
+   "title": "Released segment transported directly into the container",
+   "sub": "No drop on the bench; the loose parts follow through the same workflow",
+   "seconds": 3,
+   "short_seconds": 2
+  },
+  {
+   "image": "scene-sync/dism-isaac-seq-35.jpg",
+   "title": "Dismantling complete",
+   "sub": "Released section and loose parts packed  ·  4/4 placed  ·  0 failed  ·  the installation keeps its remainder",
+   "seconds": 2.5,
+   "short_seconds": 2
   },
   {
    "card": {
     "title": "WISEPACK",
-    "lines": [
-     "Real-world perception  ·  optimization  ·  Human-in-the-Loop",
-     "Digital Twin synchronization  ·  robotic execution",
-     "A foundation for robotic nuclear-decommissioning waste handling"
+    "rows": [
+     [
+      "REAL PERCEPTION",
+      "18-object physical scene synchronized"
+     ],
+     [
+      "PROCESSING",
+      "cut-aware robotic packing: grip, cut, place, re-plan"
+     ],
+     [
+      "DISMANTLING",
+      "installed component  →  new waste item, packed"
+     ],
+     [
+      "EXECUTION",
+      "Digital Twin  ·  Human-in-the-Loop  ·  robot"
+     ]
     ]
    },
-   "seconds": 4,
-   "short_seconds": 2.5
+   "seconds": 6,
+   "short_seconds": 3.5
   }
  ]
 }
