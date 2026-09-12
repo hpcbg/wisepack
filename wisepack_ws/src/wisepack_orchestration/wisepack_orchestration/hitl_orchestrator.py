@@ -386,7 +386,12 @@ class HitLOrchestrator(Node):
         self._camera_capability_at = None
 
         events = []
-        if bool(self.get_parameter("dynamic_events").value):
+        # NO SYNTHETIC ARRIVALS IN A PHYSICAL RUN. The late-arrival event
+        # injects an item nobody observed; in a camera run the scene is what
+        # the camera saw, and a fabricated 1200 mm component would derail the
+        # synchronized Isaac scene at the fourth pick.
+        if (bool(self.get_parameter("dynamic_events").value)
+                and not self.perception_source.is_physical):
             events = [DynamicEvent(
                 event_type=DynamicEventType.ITEM_INJECT,
                 trigger="placement:4",
@@ -1797,7 +1802,10 @@ class HitLOrchestrator(Node):
                                       else value)
 
         events = []
-        if args.get("dynamic_events_enabled", True):
+        # NO SYNTHETIC ARRIVALS IN A PHYSICAL RUN — see __init__: the scene of
+        # a camera run is what the camera saw, and an injected item that no
+        # observation backs would be a fabricated object in a physical scene.
+        if args.get("dynamic_events_enabled", True) and not object_source.is_physical:
             events = [DynamicEvent(
                 event_type=DynamicEventType.ITEM_INJECT,
                 trigger="placement:4",

@@ -20,53 +20,76 @@ trail.
 
 ## Real-world perception now drives robot execution in the Digital Twin
 
-A physical Intel RealSense D435 observes the steel tube. FoundationPose
-estimates its 6-DoF pose using the model-free representation learned from
-simulated reference views. WISEPACK transforms the observation into the
-workcell, synchronizes the Isaac scene, and the existing robot backend
-approaches, grasps, transports and places **that same observed object**.
+A physical Intel RealSense D435 looks at the whole bench: long and short steel
+tubes, small cylinders, flat plates and bolts. WISEPACK segments every
+workpiece on the work plane, sizes it, matches it to its engineering CAD model,
+transforms every observation into the workcell and synchronizes the Isaac
+scene — **eighteen objects in one acquisition**. The existing WISEPACK planner
+packs them into one container, the operator approves, and the existing robot
+backend picks **each observed object, one by one**, and places it. 18 of 18
+placed, none failed, about three and a half minutes from approval to an empty
+bench.
 
-This closes the loop from real perception to planning and robotic execution:
+This closes the loop from real perception to planning and robotic execution,
+for a whole scene:
 
 ```text
-real object -> RGB-D perception -> 6-DoF pose -> synchronized Digital Twin
-            -> WISEPACK planning -> robot pick-and-place
+real bench -> RGB-D scene perception -> per-object pose + CAD identity
+           -> synchronized Digital Twin -> WISEPACK packing plan -> approval
+           -> sequential robot pick-and-place into one container
 ```
 
 <p align="center">
-  <img src="images/generated/scene-sync/physical-to-isaac-pick.gif" width="720"
-       alt="Physical D435 observation synchronized into the Isaac workcell; the Panda approaches, grasps, transports and places the observed tube into the WISEPACK container">
+  <img src="images/generated/scene-sync/physical-scene-to-isaac-picks.gif" width="720"
+       alt="The Isaac workcell synchronized to 18 workpieces observed by the physical D435; the Panda picks them one by one into the single WISEPACK container">
 </p>
 
-*Physical D435 → FoundationPose (model-free) → synchronized Isaac workcell →
-Panda pick-and-place. The final frame shows the tube settled in the container
-by PhysX, with the settling error reported as measured.*
+*Physical D435 → whole-scene RGB-D perception → synchronized Isaac workcell →
+the Panda picks all 18 observed workpieces into one container. Frames from the
+live run; the placement error of each part is reported as measured.*
 
 <p align="center">
-  <img src="images/generated/scene-sync/run1-d435-pose-overlay.jpg" width="48%"
-       alt="The real D435 frame with the Cylinder5 pose FoundationPose estimated, drawn on the physical tube">
-  <img src="images/generated/scene-sync/run1-isaac-synchronized.jpg" width="48%"
-       alt="The Isaac workcell synchronized to that observation: the Cylinder5 lies on the table at the observed pose before the robot moves">
+  <img src="images/generated/scene-sync/scene-d435-classified.jpg" width="48%"
+       alt="The real D435 frame of the bench with every workpiece outlined and labelled by class and footprint">
+  <img src="images/generated/scene-sync/scene-isaac-synchronized.jpg" width="48%"
+       alt="The Isaac workcell synchronized to that scene: 18 CAD bodies resting on the table at their observed poses, before the robot moves">
 </p>
 
-*Left: the real D435 frame with the estimated 6-DoF pose drawn on the physical
-tube. Right: the Isaac workcell synchronized to that observation — the tube is
-instantiated at its observed pose before the robot moves.*
+*Left: the real bench as the D435 sees it, every workpiece segmented, sized and
+classified. Right: the Isaac workcell synchronized to that scene — 18 CAD
+bodies at their observed poses, before the robot moves.*
+
+<p align="center">
+  <img src="images/generated/scene-sync/scene-isaac-final.jpg" width="48%"
+       alt="The Isaac workcell after the run: the table is empty and every workpiece is inside the single container">
+  <img src="images/generated/scene-sync/scene-dashboard-execution.png" width="48%"
+       alt="The dashboard's physical execution panel after the run: 18 settled, 0 failed, with the planned and measured pose of every item">
+</p>
+
+*Left: the bench after the run — empty. Right: the dashboard's execution
+record: 18 settled, 0 failed, planned and measured pose per item, mean
+placement error 43 mm as PhysX settled the parts.*
 
 **Why this matters.**
 
-* The Digital Twin is no longer initialized only from generated source poses:
-  the physical environment now drives the simulated robotic workcell.
-* The WISEPACK planning, approval and execution architecture is preserved
-  unchanged; the observation simply enters it as a new scene revision.
-* Simulation and real perception are connected through one observation
-  contract, so a camera and a simulated sensor are interchangeable inputs.
-* This establishes the foundation for autonomous scene understanding, object
-  selection, cutting and eventual physical-cell deployment.
+* The Digital Twin is no longer initialized from generated source poses: the
+  physical environment drives the simulated robotic workcell, object by object.
+* The WISEPACK planning, approval and execution architecture is unchanged; a
+  whole observed scene enters it as one observation batch and one scene
+  revision.
+* Simulation and real perception meet in one observation contract, so a
+  camera, a recorded capture and a simulated sensor are interchangeable inputs
+  to the same planner and the same robot backend.
+* This is the foundation for autonomous scene understanding, object selection,
+  cutting and eventual physical-cell deployment: the perception stage is a
+  replaceable module in front of a working twin-to-robot chain.
 
-The run-by-run numbers, the frame chain and the qualifications are in
-[§15a, Physical D435 → Isaac → robot pick](#physical-d435-to-isaac-to-robot-pick-demonstrated)
-and [`simulators/isaac/SCENE_SYNC_EVIDENCE.md`](simulators/isaac/SCENE_SYNC_EVIDENCE.md).
+The single-object precursor — one Cylinder5 located in full 6-DoF by
+FoundationPose without CAD, synchronized and picked — is documented alongside
+in [§15a](#physical-d435-to-isaac-to-robot-pick-demonstrated), together with
+the whole-scene run's per-object numbers, the assumptions behind the demo and
+what remains manual, and in
+[`simulators/isaac/SCENE_SYNC_EVIDENCE.md`](simulators/isaac/SCENE_SYNC_EVIDENCE.md).
 
 ---
 
@@ -1785,7 +1808,8 @@ and Logistics status panels alongside the ROS topic and FIWARE mapping diagnosti
 | Physical 2-D camera | **live — selectable per run as Object source: Physical RGB camera** | real | detected count |
 | Physical RGB-D camera (the proposal's depth pipeline) | **live — Intel RealSense D435 + FoundationPose, acquired from the dashboard** | **measured 6-DoF pose** in the camera frame; no external physical pose ground truth | detected count |
 | Simulated RGB-D camera (quantitative pose error) | **live — Isaac-rendered D435-compatible RGB-D + FoundationPose, acquired from the dashboard** | estimate is **real**; the frame is **simulated**. Pose error **measured against simulator ground truth**, read only after the estimate | no |
-| Physical `ObservationBatch` → Isaac scene synchronization | **live — configured demo camera→work-area transform** ([§15a](#physical-d435-to-isaac-to-robot-pick-demonstrated)) | **demonstrated**: the Isaac object is instantiated at the transformed physical pose and picked from it; the transform is a stated assumption, not a measured calibration | no |
+| Physical `ObservationBatch` → Isaac scene synchronization | **live — configured demo camera→work-area transform** ([§15a](#physical-d435-to-isaac-to-robot-pick-demonstrated)) | **demonstrated**, for one object in 6-DoF and for a whole bench of 18 objects picked one by one ([whole scene](#whole-scene-physical-to-isaac-demonstrated)); the transform is a stated assumption, not a measured calibration | no |
+| Whole-scene RGB-D perception (`rgbd_scene_depth_plane`) | **live — physical D435, every workpiece on the work plane** | **measured footprints and planar poses; identity assigned by size** against a configured class table, not recognised | no |
 | Measured camera→robot/work-area calibration (physical) | future | not implemented — the demo transform stands in for it; no physical accuracy is claimed | no |
 | MoveIt2 execution | future | not implemented | no |
 
@@ -4217,7 +4241,9 @@ camera_color_optical_frame   FoundationPose reports here (+Z forward, +Y down)
                              depth-plane fit from the bench, used as a constant
     -> table                 the Isaac workcell frame, mm, origin at the robot
                              base on the table top: work-area origin placed
-                             650 mm in front of the base BY CHOICE
+                             500 mm in front of the base BY CHOICE
+                             (650 mm in the single-object runs of
+                             2026-09-11, revision demo-2026-09-11)
     -> world                 metres, from the selected robot's SceneLayout
 ```
 
@@ -4354,6 +4380,135 @@ carries it to the WISEPACK container.*
 synchronized Isaac object and pick target followed it (about 8, 21 and 12 mm
 from placement 1 in x, y and z).*
 
+<a id="whole-scene-physical-to-isaac-demonstrated"></a>
+#### Whole scene: 18 physical workpieces → Isaac → 18 sequential picks
+
+**What was built.** A fourth perception method, `rgbd_scene_depth_plane`
+(*RGB-D scene — all objects on the work plane*), selectable beside the three
+existing ones for the physical D435. One aligned RGB-D frame of the bench is
+segmented into instances on the fitted work plane (depth above the plane, or
+the blue-grey hue of bare steel against the bench), each instance is measured
+by its footprint — length along its principal axis, width across it, height
+above the plane — and matched to a **demo object class** in
+`config/scene_demo_classes.yaml`, which names the engineering CAD model to
+instantiate. Each classified object becomes one ordinary `PhysicalObservation`
+in `camera_color_optical_frame`, with the CAD model's declared dimensions and an
+orientation that lays the model's task axis along the measured heading and its
+thin axis along the plane normal. The batch then travels the existing chain
+unchanged: `to_waste_items` → packing → Digital Twin → approval →
+`synchronize_scene` → `SYNC_SCENE` → one `EXECUTE_ITEM` per placement. Nothing
+downstream branches on the method; the scene simply holds N objects.
+
+```text
+physical D435 (one aligned RGB-D frame)
+  -> work-plane fit (RANSAC), instance segmentation (depth ∪ steel hue)
+  -> per-instance footprint: centroid, heading, length x width x height
+  -> demo class by footprint  -> engineering CAD model (cylinder1..5, plate2)
+                                 or a measured proxy (bolts: no CAD in the registry)
+  -> ObservationBatch of N   -> configured demo camera-to-workarea transform
+  -> synchronized Isaac scene (N CAD bodies at their observed poses)
+  -> WISEPACK packing into ONE container -> operator approval
+  -> N sequential picks by the existing Panda backend
+```
+
+**Demo classes.** `long_tube` (Cylinder5 D25 x L342 and Cylinder4 D25 x L316,
+told apart by length), `medium_tube` (Cylinder3 D35 x L190), `short_tube`
+(Cylinder2 D35 x L70), `plate` (Plate2 60 x 40 x 8, told from a short tube by
+its height), `small_cylinder` (Cylinder1 D20 x L40) and `bolt` (no CAD in the
+registry: a measured proxy of D6 x the measured length, told from a small
+cylinder by its height). The ranges are measured footprints from this bench,
+deliberately wide, and are the whole of the identification.
+
+**The live run** (2026-09-12, capture `scene-20260912-091535`, preset
+`isaac_scene_physical`, Panda): 20 instances measured, **18 observed** and
+carried into the batch, 1 ignored (a non-workpiece kept at the lower-left
+corner of the bench, inside a configured ignore region), 1 unclassified (the
+desk edge beyond the bench), 0 excluded. All 18 were synchronized into Isaac
+(acknowledged 18 objects, every read-back within 7-19 mm of the commanded pose,
+all of it the drop onto the table), the packer placed all 18 in the one
+380 x 220 x 150 mm bin, and the Panda picked and placed **18 of 18, 0 failed**,
+mean placement error 42.9 mm (max 182 mm: a medium tube that rolled after
+release, still inside the bin). Approval to last placement: 3 min 43 s.
+
+| item | class | model | footprint L x W x H (mm) | camera-frame centre (mm) | table pose (mm) | spawn settle (mm) | `[isaac-robot]` pick (m) | outcome |
+|---|---|---|---|---|---|---|---|---|
+| item-001 | medium_tube | cylinder3 | 209 x 41 x 28 | (-28, -121, 510) | (472, 121, 32) | 14 | `0.472 0.121 0.432` | 14 mm, 5 deg |
+| item-002 | plate | plate2 | 61 x 40 x 9 | (142, -172, 520) | (642, 172, 22) | 18 | `0.642 0.172 0.422` | 36 mm, 4 deg |
+| item-003 | long_tube | cylinder5 | 357 x 32 x 19 | (-171, -14, 520) | (329, 14, 22) | 7 | `0.329 0.014 0.422` | 69 mm, 8 deg |
+| item-004 | small_cylinder | cylinder1 | 46 x 22 x 13 | (44, -141, 516) | (544, 141, 26) | 16 | `0.544 0.141 0.426` | 32 mm, 8 deg |
+| item-005 | long_tube | cylinder4 | 333 x 34 x 20 | (169, -3, 514) | (669, 3, 28) | 16 | `0.669 0.003 0.428` | 29 mm, 17 deg |
+| item-006 | plate | plate2 | 62 x 42 x 8 | (153, -105, 521) | (653, 105, 21) | 17 | `0.653 0.105 0.421` | 9 mm, 55 deg |
+| item-007 | short_tube | cylinder2 | 80 x 41 x 30 | (80, -90, 509) | (580, 90, 33) | 16 | `0.58 0.09 0.433` | 89 mm, 29 deg |
+| item-008 | short_tube | cylinder2 | 80 x 43 x 28 | (-105, -78, 512) | (395, 78, 30) | 12 | `0.395 0.078 0.43` | 56 mm, 18 deg |
+| item-009 | plate | plate2 | 66 x 44 x 9 | (233, -4, 521) | (733, 4, 21) | 17 | `0.733 0.004 0.421` | 49 mm, 7 deg |
+| item-010 | small_cylinder | cylinder1 | 46 x 22 x 14 | (113, -1, 517) | (613, 1, 25) | 15 | `0.613 0.001 0.425` | 43 mm, 60 deg |
+| item-011 | medium_tube | cylinder3 | 207 x 39 x 32 | (-17, 21, 512) | (483, -21, 30) | 12 | `0.483 -0.021 0.43` | 182 mm, 2 deg |
+| item-012 | bolt | measured proxy | 40 x 15 x 10 | (217, 59, 523) | (717, -59, 19) | 16 | `0.717 -0.059 0.419` | 31 mm, 23 deg |
+| item-013 | small_cylinder | cylinder1 | 49 x 24 x 18 | (66, 73, 519) | (566, -73, 23) | 13 | `0.566 -0.073 0.423` | 12 mm, 6 deg |
+| item-014 | bolt | measured proxy | 46 x 8 x 4 | (179, 85, 525) | (679, -85, 17) | 14 | `0.679 -0.085 0.417` | 11 mm, 26 deg |
+| item-015 | bolt | measured proxy | 56 x 12 x 5 | (18, 91, 528) | (518, -91, 14) | 12 | `0.518 -0.091 0.414` | 18 mm, 2 deg |
+| item-016 | short_tube | cylinder2 | 88 x 41 x 32 | (-69, 120, 515) | (431, -120, 27) | 9 | `0.431 -0.12 0.427` | 28 mm, 3 deg |
+| item-017 | bolt | measured proxy | 59 x 14 x 8 | (181, 122, 525) | (681, -122, 17) | 14 | `0.681 -0.122 0.417` | 35 mm, 3 deg |
+| item-018 | bolt | measured proxy | 45 x 12 x 4 | (32, 124, 528) | (532, -124, 14) | 11 | `0.532 -0.124 0.414` | 29 mm, 28 deg |
+
+**Assumptions used, stated once.**
+
+* **The camera/workcell transform is a configured demo assumption**
+  (`config/isaac_workcell.yaml`, provenance `configured_demo`, revision
+  `demo-2026-09-12`): top-down camera 542 mm above the table, work-area origin
+  **500 mm** in front of the robot base. The offset was moved from the 650 mm
+  of the single-object runs so that the whole bench lies inside the Panda's
+  0.78 m reach; it is a choice, not a measurement, and no physical placement
+  accuracy is claimed.
+* **Object identity is assigned by footprint size**, not recognised: two parts
+  with the same footprint are the same class. The ranges, the bench crop
+  (`scene_roi_px`, the right edge of the frame looks past the bench) and the
+  ignore region are demonstrator configuration in one tracked file.
+* **The pose is planar**: x, y and heading measured on the fitted plane, z from
+  the plane and the part's own radius or thickness, tilt assumed zero because
+  the part rests on the bench. No 6-DoF estimator runs in this method and no
+  CAD is given to one; the CAD is instantiated *after* classification.
+* **One container**, `isaac_c5_bin`, as the demo workcell holds one; a second
+  bin no longer appears at the edge of the table (the simulator builds as many
+  bins as the scenario allows).
+* **No synthetic dynamic events in a physical run.** The late-arrival
+  demonstration event injects an item nobody observed; the first live attempt
+  ran into it at the fourth pick, and camera runs now carry none.
+* Plates and bolts are packed by their conservative bounding box (WasteItem is
+  length x diameter); a plate's pick height is the CAD's, not a grasp model.
+
+**Manual versus automatic.** Automatic: the capture (re-taken once when the
+depth stream has not settled), the plane fit, segmentation, sizing,
+classification, the batch, the transform, the scene, the plan, the 18 picks.
+Manual: the operator selects the method and presses *Acquire scene*, approves
+the plan once, and the demo configuration (classes, ignore region, bench crop,
+transform) was written by hand for this bench. Nothing is confirmed per object.
+
+**Verified live.** Two live acquisitions on 2026-09-12 (the first exposed the
+dynamic-event fault after four successful picks, the second ran to
+completion), plus the recorded capture of the same bench replayed through the
+same code as a regression fixture (`tests/test_scene_perception.py`). The
+dashboard's scene panel lists every measured instance and what became of it:
+
+<p align="center">
+  <img src="images/generated/scene-sync/scene-dashboard-scene.png" width="46%"
+       alt="The dashboard's whole-scene panel: every measured instance with its status, class, model, footprint and table pose">
+  <img src="images/generated/scene-sync/scene-d435-masks.jpg" width="50%"
+       alt="The D435 frame with every instance mask tinted, the ignored object in red">
+</p>
+
+*Left: the scene panel after the run — 20 measured, 18 observed, 1 ignored,
+1 unclassified, each with its footprint and table pose. Right: the instance
+masks on the real frame; the object in the configured ignore region is red.*
+
+**What it is not, yet.** Not calibrated camera-to-robot accuracy; not object
+recognition (a different part of the same size would be classified the same);
+not multi-layer or occluded scenes (leaning, stacked or touching parts merge
+into one region); not physical robot execution. Raw JSON for the run —
+the scene document, the execution state after synchronization and after the
+picks, the pick outcomes and the pick log — is in
+`simulators/isaac/scene_sync_evidence/scene-run-*`.
+
 ## 16. Tests and evidence
 
 ```bash
@@ -4436,6 +4591,12 @@ Stated plainly, because a demonstrator that hides its edges is not evidence.
      calibration remains future work, so `workarea_pose_available` stays false
      on the perception panel and no physical placement accuracy is claimed.
      Container packing is unaffected because it uses the CAD geometry;
+   * **identity by size, in the whole-scene method:** `rgbd_scene_depth_plane`
+     classifies each segmented workpiece by its measured footprint against
+     `config/scene_demo_classes.yaml` and instantiates that class's CAD model.
+     A different part of the same size is the same class; touching, stacked or
+     leaning parts merge into one region; the pose is planar. Object
+     recognition and 6-DoF per object remain future work;
    * **operator-supplied, not inferred:** the object identity (`model_id`) and,
      on a crowded bench, the ROI;
    * **simulated RGB-D is a separate acquisition with separate limits:** the

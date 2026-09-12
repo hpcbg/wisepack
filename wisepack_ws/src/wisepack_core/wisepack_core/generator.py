@@ -359,6 +359,12 @@ _PRESET_DESCRIPTIONS = {
         "Cylinder5. The generated item is a placeholder — a physical RGB-D "
         "observation batch REPLACES it and the Isaac scene is synchronized "
         "from that batch. NOT a packing benchmark."),
+    "isaac_scene_physical": (
+        "WHOLE-SCENE PHYSICAL PERCEPTION DEMONSTRATION for the Isaac Sim "
+        "backend: every workpiece the D435 sees on the bench, classified by "
+        "footprint, synchronized into the workcell and picked one by one into "
+        "ONE bin. The generated item is a placeholder the scene batch "
+        "replaces. NOT a packing benchmark."),
     "cut_avoids_extra_container": (
         "CURATED CUT-AWARE DATASET — hand-built so one cuttable pipe forces a "
         "second container whole but its segments fit residual cavities in the "
@@ -475,7 +481,22 @@ PRESETS: Dict[str, Dict[str, Any]] = {
         diameter_range_mm=(40, 70),
         container_spec="isaac_c5_bin",
         permitted_axes=("x", "y"),
-        max_containers=2,
+        # ONE CONTAINER. The demo workcell holds one bin; the simulator builds
+        # as many as the scenario allows, so this is also what keeps a second
+        # bin from appearing at the edge of the table.
+        max_containers=1,
+    ),
+    # The whole-scene physical demonstration: the same bin, the same bounds,
+    # one placeholder, and ONE container for every object the scene batch
+    # brings. Objects that do not fit stay on the table and are reported as
+    # unplaced rather than opening a bin the workcell does not have.
+    "isaac_scene_physical": dict(
+        item_count=1,
+        length_range_mm=(150, 250),
+        diameter_range_mm=(40, 70),
+        container_spec="isaac_c5_bin",
+        permitted_axes=("x", "y"),
+        max_containers=1,
     ),
     # curated_volume_reduction is not generated from ranges — see
     # build_curated_scenario(), which is used instead.

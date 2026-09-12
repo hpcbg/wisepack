@@ -1,0 +1,348 @@
+{
+ "picks": [
+  {
+   "item_id": "item-001",
+   "index": 0,
+   "pick_world_m": [
+    "0.472",
+    "0.121",
+    "0.432"
+   ],
+   "place_world_m": [
+    "0.203",
+    "0.356",
+    "0.426"
+   ]
+  },
+  {
+   "item_id": "item-002",
+   "index": 1,
+   "pick_world_m": [
+    "0.642",
+    "0.172",
+    "0.422"
+   ],
+   "place_world_m": [
+    "0.318",
+    "0.358",
+    "0.428"
+   ]
+  },
+  {
+   "item_id": "item-003",
+   "index": 2,
+   "pick_world_m": [
+    "0.329",
+    "0.014",
+    "0.422"
+   ],
+   "place_world_m": [
+    "0.297",
+    "0.391",
+    "0.421"
+   ]
+  },
+  {
+   "item_id": "item-004",
+   "index": 3,
+   "pick_world_m": [
+    "0.544",
+    "0.141",
+    "0.426"
+   ],
+   "place_world_m": [
+    "0.128",
+    "0.403",
+    "0.418"
+   ]
+  },
+  {
+   "item_id": "item-005",
+   "index": 4,
+   "pick_world_m": [
+    "0.669",
+    "0.003",
+    "0.428"
+   ],
+   "place_world_m": [
+    "0.31",
+    "0.424",
+    "0.421"
+   ]
+  },
+  {
+   "item_id": "item-006",
+   "index": 5,
+   "pick_world_m": [
+    "0.653",
+    "0.105",
+    "0.421"
+   ],
+   "place_world_m": [
+    "0.138",
+    "0.451",
+    "0.428"
+   ]
+  },
+  {
+   "item_id": "item-007",
+   "index": 6,
+   "pick_world_m": [
+    "0.58",
+    "0.09",
+    "0.433"
+   ],
+   "place_world_m": [
+    "0.216",
+    "0.436",
+    "0.426"
+   ]
+  },
+  {
+   "item_id": "item-008",
+   "index": 7,
+   "pick_world_m": [
+    "0.395",
+    "0.078",
+    "0.43"
+   ],
+   "place_world_m": [
+    "0.294",
+    "0.436",
+    "0.426"
+   ]
+  },
+  {
+   "item_id": "item-009",
+   "index": 8,
+   "pick_world_m": [
+    "0.733",
+    "0.004",
+    "0.421"
+   ],
+   "place_world_m": [
+    "0.378",
+    "0.439",
+    "0.428"
+   ]
+  },
+  {
+   "item_id": "item-010",
+   "index": 9,
+   "pick_world_m": [
+    "0.613",
+    "0.001",
+    "0.425"
+   ],
+   "place_world_m": [
+    "0.378",
+    "0.411",
+    "0.418"
+   ]
+  },
+  {
+   "item_id": "item-011",
+   "index": 10,
+   "pick_world_m": [
+    "0.483",
+    "-0.021",
+    "0.43"
+   ],
+   "place_world_m": [
+    "0.373",
+    "0.482",
+    "0.426"
+   ]
+  },
+  {
+   "item_id": "item-012",
+   "index": 11,
+   "pick_world_m": [
+    "0.717",
+    "-0.059",
+    "0.419"
+   ],
+   "place_world_m": [
+    "0.308",
+    "0.461",
+    "0.411"
+   ]
+  },
+  {
+   "item_id": "item-013",
+   "index": 12,
+   "pick_world_m": [
+    "0.566",
+    "-0.073",
+    "0.423"
+   ],
+   "place_world_m": [
+    "0.357",
+    "0.468",
+    "0.418"
+   ]
+  },
+  {
+   "item_id": "item-014",
+   "index": 13,
+   "pick_world_m": [
+    "0.679",
+    "-0.085",
+    "0.417"
+   ],
+   "place_world_m": [
+    "0.41",
+    "0.461",
+    "0.411"
+   ]
+  },
+  {
+   "item_id": "item-015",
+   "index": 14,
+   "pick_world_m": [
+    "0.518",
+    "-0.091",
+    "0.414"
+   ],
+   "place_world_m": [
+    "0.44",
+    "0.461",
+    "0.411"
+   ]
+  },
+  {
+   "item_id": "item-016",
+   "index": 15,
+   "pick_world_m": [
+    "0.431",
+    "-0.12",
+    "0.427"
+   ],
+   "place_world_m": [
+    "0.143",
+    "0.51",
+    "0.426"
+   ]
+  },
+  {
+   "item_id": "item-017",
+   "index": 16,
+   "pick_world_m": [
+    "0.681",
+    "-0.122",
+    "0.417"
+   ],
+   "place_world_m": [
+    "0.198",
+    "0.496",
+    "0.411"
+   ]
+  },
+  {
+   "item_id": "item-018",
+   "index": 17,
+   "pick_world_m": [
+    "0.532",
+    "-0.124",
+    "0.414"
+   ],
+   "place_world_m": [
+    "0.25",
+    "0.496",
+    "0.411"
+   ]
+  }
+ ],
+ "outcomes": [
+  {
+   "item_id": "item-001",
+   "position_error_mm": 14,
+   "axis_error_deg": 5
+  },
+  {
+   "item_id": "item-002",
+   "position_error_mm": 36,
+   "axis_error_deg": 4
+  },
+  {
+   "item_id": "item-003",
+   "position_error_mm": 69,
+   "axis_error_deg": 8
+  },
+  {
+   "item_id": "item-004",
+   "position_error_mm": 32,
+   "axis_error_deg": 8
+  },
+  {
+   "item_id": "item-005",
+   "position_error_mm": 29,
+   "axis_error_deg": 17
+  },
+  {
+   "item_id": "item-006",
+   "position_error_mm": 9,
+   "axis_error_deg": 55
+  },
+  {
+   "item_id": "item-007",
+   "position_error_mm": 89,
+   "axis_error_deg": 29
+  },
+  {
+   "item_id": "item-008",
+   "position_error_mm": 56,
+   "axis_error_deg": 18
+  },
+  {
+   "item_id": "item-009",
+   "position_error_mm": 49,
+   "axis_error_deg": 7
+  },
+  {
+   "item_id": "item-010",
+   "position_error_mm": 43,
+   "axis_error_deg": 60
+  },
+  {
+   "item_id": "item-011",
+   "position_error_mm": 182,
+   "axis_error_deg": 2
+  },
+  {
+   "item_id": "item-012",
+   "position_error_mm": 31,
+   "axis_error_deg": 23
+  },
+  {
+   "item_id": "item-013",
+   "position_error_mm": 12,
+   "axis_error_deg": 6
+  },
+  {
+   "item_id": "item-014",
+   "position_error_mm": 11,
+   "axis_error_deg": 26
+  },
+  {
+   "item_id": "item-015",
+   "position_error_mm": 18,
+   "axis_error_deg": 2
+  },
+  {
+   "item_id": "item-016",
+   "position_error_mm": 28,
+   "axis_error_deg": 3
+  },
+  {
+   "item_id": "item-017",
+   "position_error_mm": 35,
+   "axis_error_deg": 3
+  },
+  {
+   "item_id": "item-018",
+   "position_error_mm": 29,
+   "axis_error_deg": 28
+  }
+ ]
+}

@@ -948,6 +948,12 @@ def available_perception_methods(capability: Optional[Dict[str, Any]] = None
                 PerceptionMethod.FOUNDATIONPOSE_RGBD_MODEL_FREE.value):
             methods.append(
                 PerceptionMethod.FOUNDATIONPOSE_RGBD_MODEL_FREE.value)
+    # THE WHOLE-SCENE METHOD NEEDS THE CAMERA, NOT THE ESTIMATOR. It reads the
+    # worker's aligned capture and measures footprints on the host, so it is
+    # available whenever the worker can open the D435 — GPU, weights and CAD
+    # readiness are the FoundationPose methods' business, not this one's.
+    if document.get("rgbd_camera_available"):
+        methods.append(PerceptionMethod.RGBD_SCENE_DEPTH_PLANE.value)
     return methods
 
 
@@ -999,6 +1005,10 @@ def perception_method_state(capability: Optional[Dict[str, Any]] = None
             reasons[model_free] = (
                 representation_registry().unavailable_reason(model_free)
                 or "no learned representation is ready on this machine")
+    scene = PerceptionMethod.RGBD_SCENE_DEPTH_PLANE.value
+    if scene not in available:
+        reasons[scene] = ("the physical D435 is not available through the "
+                          "FoundationPose worker: " + worker_reason)
     return PerceptionMethodState(current=current, selected=selected,
                                  available=available,
                                  unavailable_reasons=reasons)
@@ -2271,7 +2281,12 @@ def api_perception_physical_acquire(payload: Optional[Dict[str, Any]] = None):
     """
     body = payload or {}
     model_id = str(body.get("model_id", "")).strip()
-    if not model_id:
+    from wisepack_core.perception import PerceptionMethod as _PM     # noqa: PLC0415
+    requested = PERCEPTION_METHOD_ALIASES.get(
+        str(body.get("perception_method", "")).strip().lower(),
+        str(body.get("perception_method", "")).strip().lower())
+    scene_method = requested == _PM.RGBD_SCENE_DEPTH_PLANE.value
+    if not model_id and not scene_method:
         raise HTTPException(
             400, "`model_id` is required: FoundationPose estimates the pose OF "
                  "A KNOWN SHAPE, and which part is on the table is stated by "
@@ -2296,6 +2311,12 @@ def api_perception_physical_acquire(payload: Optional[Dict[str, Any]] = None):
         str(body.get("perception_method", "")).strip(), model_id)
     if refusal:
         return {"ok": False, **refusal}
+    if chosen == _PM.RGBD_SCENE_DEPTH_PLANE.value:
+        # THE WHOLE SCENE. No model is named: every workpiece the camera sees
+        # is segmented, sized, classified and carried into ONE batch, and the
+        # batch enters the workflow through exactly the call below the
+        # single-object path uses. `roi_px`, if given, restricts the scene.
+        return _acquire_scene_batch(roi, body)
     # WHICH RUN THIS ACQUISITION IS FOR, captured BEFORE the slow part. A
     # capture plus an inference pass is still seconds of wall clock, and the
     # operator can start a different run in that time.
@@ -2359,6 +2380,163 @@ def api_perception_physical_acquire(payload: Optional[Dict[str, Any]] = None):
             "known CAD geometry and does not require the source work-area pose."),
         "planning": planning,
     }
+
+
+def _acquire_scene_batch(roi: Optional[List[int]],
+                            body: Dict[str, Any]) -> Dict[str, Any]:
+    """Whole-scene acquisition: N observed workpieces -> one batch -> the run."""
+    _ensure_perception_path()
+    from physical_pipeline import PhysicalAcquisitionError          # noqa: PLC0415
+    from scene_pipeline import run_scene                             # noqa: PLC0415
+    from wisepack_core.pose import CAMERA_OPTICAL_FRAME              # noqa: PLC0415
+    token = run_token()
+    try:
+        result = run_scene(roi_px=roi, frames=int(body.get("frames", 1)),
+                           dataset=str(body.get("dataset", "")).strip())
+    except PhysicalAcquisitionError as exc:
+        return {"ok": False, **exc.to_dict()}
+    document = result.document
+    planning = _apply_physical_batch(result.batch, token)
+    counts = document.get("counts") or {}
+    return {
+        "ok": True,
+        "dataset": document.get("dataset", ""),
+        "model_id": "",
+        "perception_method": document.get("perception_method", ""),
+        "run_mode": document.get("run_mode", ""),
+        "completed_at": document.get("completed_at", ""),
+        "frame_id": CAMERA_OPTICAL_FRAME,
+        "pose_valid": bool(counts.get("observed")),
+        "objects": counts,
+        "timing_ms": dict(document.get("timing_ms") or {}),
+        "workarea_pose_available": False,
+        "source_frame_note": (
+            "Source poses are in camera coordinates; the Isaac scene "
+            "synchronizer carries each one through the configured demo "
+            "transform. Container placement uses the CAD geometry of the "
+            "classified part."),
+        "planning": planning,
+    }
+
+
+SCENE_DIR = os.path.join(REPO, ".cache-perception", "physical-scene")
+SCENE_RESULT = os.path.join(SCENE_DIR, "physical_scene.json")
+SCENE_IMAGES = {
+    "rgb": "rgb.jpg",
+    "depth": "depth_aligned.jpg",
+    "mask": "mask_overlay.jpg",
+    "overlay": "scene_overlay.jpg",
+}
+
+
+def _physical_scene_document() -> Optional[Dict[str, Any]]:
+    """The last whole-scene D435 result, or None. NEVER raises."""
+    if not os.path.isfile(SCENE_RESULT):
+        return None
+    try:
+        with open(SCENE_RESULT, encoding="utf-8") as handle:
+            return json.load(handle)
+    except Exception:                                            # noqa: BLE001
+        return None
+
+
+@app.get("/api/perception/scene")
+def api_perception_scene():
+    """The whole-scene D435 result, as the scene pipeline wrote it.
+
+    READ, NEVER RECOMPUTED, like the single-object route. One table of what was
+    measured on the bench: each instance's footprint, the demo class it was
+    matched to, the CAD model instantiated for it, and — for the objects the
+    configured workcell can place — where it landed in the work area and on
+    the table. What was ignored, unclassified or excluded is listed with its
+    reason rather than dropped.
+    """
+    from wisepack_core.pose import CAMERA_OPTICAL_FRAME              # noqa: PLC0415
+    document = _physical_scene_document()
+    if document is None:
+        return {"available": False,
+                "reason": ("no whole-scene D435 result yet. Select the RGB-D "
+                           "scene method and press Acquire, or run "
+                           "./scripts/physical_scene.sh")}
+    with STATE.lock:
+        engine = STATE.engine
+    batch = getattr(engine, "observation_batch", None) if engine else None
+    current_run = (getattr(batch, "acquisition", "") == ACQUISITION_REALSENSE
+                   and getattr(batch, "perception_method", "")
+                   == document.get("perception_method"))
+    if engine is None:
+        with STATE.lock:
+            mirror = STATE.ros_mirror
+        published = (mirror or {}).get("perception_status") or {}
+        current_run = (str(published.get("run_perception_method") or "")
+                       == document.get("perception_method"))
+    current_physical = bool(
+        document.get("run_mode") == "live"
+        and str(document.get("completed_at", "")) >= _DASHBOARD_STARTED_AT)
+    placeability = document.get("placeability") or {}
+    objects = []
+    for entry in document.get("objects") or []:
+        verdict = placeability.get(entry.get("observation_id") or "", {})
+        objects.append({
+            "index": entry.get("index"),
+            "status": entry.get("status"),
+            "reason": entry.get("reason", ""),
+            "demo_type": entry.get("demo_type", ""),
+            "model_id": entry.get("model_id", ""),
+            "observation_id": entry.get("observation_id", ""),
+            "length_mm": entry.get("length_mm"),
+            "width_mm": entry.get("width_mm"),
+            "height_mm": entry.get("height_mm"),
+            "centre_camera_mm": entry.get("centre_mm"),
+            "workarea_mm": verdict.get("workarea_mm"),
+            "table_mm": verdict.get("table_mm"),
+        })
+    return {
+        "available": True,
+        "reason": "",
+        "acquisition": "Intel RealSense D435",
+        "provenance": document.get("provenance", "measured"),
+        "perception_method": document.get("perception_method", ""),
+        "is_current_run": current_run,
+        "is_current_physical": current_physical,
+        "status_label": (
+            "Physical D435 scene — current run" if current_run else
+            ("CURRENT PHYSICAL D435 SCENE — acquired live from this dashboard"
+             if current_physical else
+             "Recorded physical D435 scene — not the current run")),
+        "acquired_how": ("acquired live from the camera"
+                         if document.get("run_mode") == "live"
+                         else "replayed from a recorded capture"),
+        "run_mode": document.get("run_mode", ""),
+        "run_label": document.get("run_label", ""),
+        "dataset": document.get("dataset", ""),
+        "completed_at": document.get("completed_at", ""),
+        "operator_roi_px": document.get("operator_roi_px"),
+        "plane": (document.get("segmentation") or {}).get("plane"),
+        "counts": document.get("counts", {}),
+        "objects": objects,
+        "catalogue": (document.get("catalogue") or {}).get("path", ""),
+        "identity_note": document.get("identity_note", ""),
+        "pose_note": document.get("pose_note", ""),
+        "timing_ms": dict(document.get("timing_ms") or {}),
+        "images": sorted(k for k, name in SCENE_IMAGES.items()
+                         if os.path.isfile(os.path.join(SCENE_DIR, name))),
+        "frame_id": CAMERA_OPTICAL_FRAME,
+        "accuracy_note": document.get("accuracy_note", ""),
+    }
+
+
+@app.get("/api/perception/scene/image/{kind}")
+def api_perception_scene_image(kind: str):
+    name = SCENE_IMAGES.get(kind)
+    if not name:
+        raise HTTPException(status_code=404, detail=f"unknown image {kind!r}")
+    from fastapi.responses import FileResponse                    # noqa: PLC0415
+    path = os.path.join(SCENE_DIR, name)
+    if not os.path.isfile(path):
+        raise HTTPException(status_code=404,
+                            detail=f"no {kind!r} scene image yet")
+    return FileResponse(path, media_type="image/jpeg")
 
 
 def _acquire_simulated_rgbd(model_id: str = "", acquire: bool = False,

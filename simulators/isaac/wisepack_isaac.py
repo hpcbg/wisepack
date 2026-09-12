@@ -422,9 +422,12 @@ class WisepackIsaacApp:
         SimulationManager.set_physics_sim_device(cfg.physics.device)
         simulation_app.update()
 
-        # Containers the plan may use. The scenario names one template; a plan
-        # that opens a second gets one, so a two-container run still renders.
-        container_ids = [f"CNT-{n:02d}" for n in (1, 2)]
+        # Containers the plan may use: as many as the SCENARIO allows, so a
+        # preset that packs into one bin shows one bin, and a plan that is
+        # allowed to open a second gets one. A container the plan could name
+        # but the scene did not build would be a placement into thin air.
+        allowed = int(getattr(self.scenario, "max_containers", 2) or 2)
+        container_ids = [f"CNT-{n:02d}" for n in range(1, max(1, min(allowed, 2)) + 1)]
         self.scene.build(self.scenario, container_ids)
         # WHERE THE CAMERA AND THE WORK AREA ARE ASSUMED TO BE, drawn so a wrong
         # assumption is visible before a wrong pick is. Markers only: no

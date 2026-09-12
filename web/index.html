@@ -661,6 +661,30 @@
         <img id="phys-image" alt="real frame from the physical Intel RealSense D435"
              style="max-width:100%;border-radius:6px;display:none;margin-top:6px"/>
       </div>
+
+      <!-- WHOLE-SCENE PHYSICAL RGB-D RUN — every workpiece the D435 sees on
+           the bench, segmented on the fitted work plane, sized by footprint,
+           matched to a configured demo class and carried into ONE batch. The
+           table lists what was measured and what became of it: observed and
+           synchronized, ignored (configured region), unclassified (no class
+           fits) or excluded (the configured workcell cannot place it). -->
+      <div id="scene-block" style="display:none;margin-top:10px;border-top:1px solid var(--line);padding-top:8px">
+        <h4 style="margin:0 0 6px 0">Physical RGB-D scene — Intel RealSense D435
+          <span class="badge" id="scene-badge">RECORDED EVIDENCE</span></h4>
+        <div id="scene-status" class="percep-info" style="margin-bottom:6px"></div>
+        <div id="scene-provenance" class="note" style="margin-bottom:6px"></div>
+        <div id="scene-counts" class="note" style="margin-bottom:6px"></div>
+        <div style="overflow-x:auto"><table id="scene-table" class="tbl" style="font-size:12px"></table></div>
+        <div id="scene-notes" class="note" style="margin-top:6px"></div>
+        <div class="btns" id="scene-views" style="margin-top:6px">
+          <button data-v="overlay" aria-pressed="true">classified objects</button>
+          <button data-v="mask">instance masks</button>
+          <button data-v="rgb">RGB</button>
+          <button data-v="depth">aligned depth</button>
+        </div>
+        <img id="scene-image" alt="real frame from the physical Intel RealSense D435 with every classified workpiece outlined"
+             style="max-width:100%;border-radius:6px;display:none;margin-top:6px"/>
+      </div>
     </div>
 
     <!-- Physical execution diagnostics. HIDDEN unless a physical backend is
@@ -1665,6 +1689,7 @@ async function onDraftChanged() {
   // refreshed here for the same reason. Neither ACQUIRES anything — this only
   // decides what is on screen.
   refreshPhysicalD435();
+  refreshPhysicalScene();
   refreshPerception();
 }
 
@@ -1881,6 +1906,21 @@ function applyPhysicalEstimatorInput(doc, method) {
   const label = $("#phys-model-label");
   const rep = $("#phys-representation");
   if (!label || !rep) return;
+  // THE SCENE METHOD NAMES NO MODEL: every workpiece in view is classified by
+  // its footprint, so the selector would be a control that does nothing.
+  const modelSel = $("#phys-model");
+  const sceneMethod = method === SCENE_METHOD;
+  if (modelSel) modelSel.style.display = sceneMethod ? "none" : "";
+  if (sceneMethod) {
+    label.textContent = "Objects: every workpiece on the bench, classified by footprint — no model to choose";
+    rep.textContent = "";
+    rep.style.display = "none";
+    const btn = $("#c-phys-acquire");
+    if (btn && !btn.disabled) btn.textContent = "Acquire scene";
+    return;
+  }
+  const btnBack = $("#c-phys-acquire");
+  if (btnBack && !btnBack.disabled) btnBack.textContent = "Acquire & estimate";
   const options = ((doc || {}).perception_method || {}).options || [];
   const chosen = options.find(o => o.value === method) || {};
   if (chosen.requires_representation) {
@@ -2771,6 +2811,79 @@ const PHYS_CAPTIONS = {
 // belongs to the PLANAR camera panel. Two function declarations of one name do
 // not collide loudly — the later one silently wins — so the one that never ran
 // would have been this, and the panel would simply have stayed empty.
+const SCENE_METHOD = "rgbd_scene_depth_plane";
+let SCENE_VIEW = "overlay";
+
+// THE WHOLE-SCENE PANEL. Shown when the run on screen came from the scene
+// method, or when the operator has selected it for the NEXT run. Every row is
+// one measured instance and says what became of it; nothing measured is
+// dropped from the table.
+async function refreshPhysicalScene() {
+  let doc = null;
+  try {
+    const res = await fetch("/api/perception/scene");
+    doc = await res.json();
+  } catch (e) { doc = null; }
+  const block = $("#scene-block");
+  if (!block) return;
+  const acq = (STATE && STATE.acquisition_choice) || {};
+  const wantsScene = acq.selected === "realsense_d435" && visibleMethod() === SCENE_METHOD;
+  const relevant = Boolean(doc && doc.available) && (doc.is_current_run || wantsScene);
+  block.style.display = relevant ? "" : "none";
+  if (!relevant) return;
+
+  const badge = $("#scene-badge");
+  if (badge) {
+    badge.textContent = doc.is_current_run ? "CURRENT RUN"
+      : (doc.is_current_physical ? "CURRENT PHYSICAL RESULT" : "RECORDED EVIDENCE");
+    badge.title = doc.status_label || "";
+  }
+  $("#scene-status").textContent = doc.status_label || "";
+  const plane = doc.plane || {};
+  $("#scene-provenance").textContent = [
+    `Acquisition: ${doc.acquisition}`,
+    `Provenance: ${doc.provenance} / physical`,
+    "Perception: RGB-D scene — depth-plane instances, identity by footprint",
+    doc.acquired_how,
+    doc.dataset ? `capture ${doc.dataset}` : "",
+    doc.completed_at ? `measured ${doc.completed_at}` : "",
+    plane.residual_mm !== undefined ? `work plane fitted, residual ${plane.residual_mm} mm` : "",
+    (doc.timing_ms || {}).total_ms !== undefined ? `${Math.round(doc.timing_ms.total_ms)} ms total` : "",
+  ].filter(Boolean).join(" · ");
+  const c = doc.counts || {};
+  $("#scene-counts").textContent =
+    `${c.measured || 0} instances measured · ${c.observed || 0} observed and carried into the batch`
+    + ` · ${c.excluded || 0} excluded (outside the configured workcell)`
+    + ` · ${c.ignored || 0} ignored (configured region) · ${c.unclassified || 0} unclassified`;
+
+  const table = $("#scene-table");
+  table.textContent = "";
+  const head = el("tr", {}, ["#", "status", "class", "model", "footprint L x W x H (mm)",
+                             "table pose (mm)", "note"].map(h => el("th", {}, h)));
+  table.append(head);
+  for (const o of (doc.objects || [])) {
+    const fp = `${Math.round(o.length_mm)} x ${Math.round(o.width_mm)} x ${Math.round(o.height_mm)}`;
+    const t = o.table_mm ? `(${o.table_mm.map(v => Math.round(v)).join(", ")})` : "—";
+    const row = el("tr", { class: o.status === "observed" ? "" : "muted" }, [
+      el("td", {}, String(o.index)),
+      el("td", {}, o.status),
+      el("td", {}, o.demo_type || "—"),
+      el("td", {}, o.model_id || (o.status === "observed" ? "measured proxy" : "—")),
+      el("td", {}, fp),
+      el("td", {}, t),
+      el("td", {}, o.reason || ""),
+    ]);
+    table.append(row);
+  }
+  $("#scene-notes").textContent = [doc.identity_note, doc.pose_note].filter(Boolean).join(" · ");
+  const img = $("#scene-image");
+  if (img) {
+    img.src = `/api/perception/scene/image/${SCENE_VIEW}?t=${Date.now()}`;
+    img.style.display = "";
+    img.onerror = () => { img.style.display = "none"; };
+  }
+}
+
 async function refreshPhysicalD435() {
   let doc = null;
   try {
@@ -2990,6 +3103,15 @@ function showPhysicalImage(kind) {
 for (const b of document.querySelectorAll("#phys-views button")) {
   b.onclick = () => showPhysicalImage(b.dataset.v);
 }
+for (const b of document.querySelectorAll("#scene-views button")) {
+  b.onclick = () => {
+    SCENE_VIEW = b.dataset.v;
+    for (const other of document.querySelectorAll("#scene-views button"))
+      other.setAttribute("aria-pressed", String(other.dataset.v === SCENE_VIEW));
+    const img = $("#scene-image");
+    if (img) img.src = `/api/perception/scene/image/${SCENE_VIEW}?t=${Date.now()}`;
+  };
+}
 
 // ------------------------------------------- acquiring a NEW physical result
 //
@@ -3026,9 +3148,10 @@ async function fillPhysicalModels() {
 async function acquirePhysical() {
   const btn = $("#c-phys-acquire");
   const note = $("#phys-acquire-note");
-  const model = $("#phys-model") ? $("#phys-model").value : "";
+  const sceneMethod = visibleMethod() === SCENE_METHOD;
+  const model = sceneMethod ? "" : ($("#phys-model") ? $("#phys-model").value : "");
   const roiRaw = ($("#phys-roi") ? $("#phys-roi").value : "").trim();
-  if (!model) {
+  if (!model && !sceneMethod) {
     const why = "Choose the CAD model that is on the table, in the Physical "
       + "Perception panel. FoundationPose estimates the pose OF A KNOWN SHAPE, "
       + "and which part is on the table is the operator's to state.";
@@ -3048,8 +3171,11 @@ async function acquirePhysical() {
     }
   }
   if (btn) { btn.disabled = true; btn.textContent = "Acquiring…"; }
-  if (note) note.textContent = "warming the D435, capturing one aligned RGB-D "
-    + "frame, segmenting it, then ONE FoundationPose pass";
+  if (note) note.textContent = sceneMethod
+    ? "warming the D435, capturing one aligned RGB-D frame, fitting the work "
+      + "plane, segmenting and classifying every workpiece on it"
+    : "warming the D435, capturing one aligned RGB-D frame, segmenting it, "
+      + "then ONE FoundationPose pass";
   try {
     const res = await fetch("/api/perception/physical/acquire", {
       method: "POST", headers: { "Content-Type": "application/json" },
@@ -3084,8 +3210,13 @@ async function acquirePhysical() {
         + `${Math.round(t.segmentation_ms)} ms, ${passes} FoundationPose `
         + `pass${passes === 1 ? "" : "es"} ${Math.round(t.inference_total_ms)} `
         + `ms, total ${Math.round(t.total_ms)} ms`;
-      note.textContent = `Acquired ${doc.dataset} — ${doc.model_id}, `
-        + `pose_valid ${doc.pose_valid}, frame ${doc.frame_id}` + timing;
+      const objs = doc.objects || null;
+      note.textContent = objs
+        ? `Acquired scene ${doc.dataset} — ${objs.observed} object(s) carried into `
+          + `the batch, ${objs.excluded} excluded, ${objs.ignored} ignored, `
+          + `${objs.unclassified} unclassified` + timing
+        : `Acquired ${doc.dataset} — ${doc.model_id}, `
+          + `pose_valid ${doc.pose_valid}, frame ${doc.frame_id}` + timing;
     }
   } catch (e) {
     if (note) note.textContent = "Failed — " + e;
@@ -3094,6 +3225,7 @@ async function acquirePhysical() {
     // The panel re-reads the artefact either way, so a refusal cannot leave a
     // new result on screen and success cannot leave an old one.
     await refreshPhysicalD435();
+    await refreshPhysicalScene();
     // AND THE RUN'S OWN PROVENANCE IS RE-READ, because a successful
     // acquisition applies its batch to the workflow. Refreshing only this
     // panel left the CURRENT RUN line still naming the PREVIOUS method for as
@@ -3111,6 +3243,7 @@ if ($("#c-phys-acquire")) $("#c-phys-acquire").onclick = acquirePhysical;
 // estimator-input block follows this control too. It acquires nothing.
 if ($("#phys-model")) $("#phys-model").addEventListener("change", () => {
   refreshPhysicalD435();
+  refreshPhysicalScene();
 });
 
 // The FoundationPose block. EVERY PREREQUISITE IS ITS OWN LINE, because each
@@ -3256,6 +3389,7 @@ async function refreshState() {
       }
       syncScenarioControls(STATE);
       refreshPhysicalD435();
+      refreshPhysicalScene();
     });
   }
   // THE OBJECT SOURCE GOES THROUGH THE COMMAND PATH, not through the local
@@ -3360,7 +3494,17 @@ function renderSceneSync(sync) {
         : "";
       return `${model} [${o.geometry_source || "?"}]${where}`;
     });
-    rows.push(["Object", objects.length ? objects.join("; ") : "—"]);
+    if (objects.length > 3) {
+      const tally = {};
+      for (const o of (sync.objects || [])) {
+        const key = o.model_id || "proxy";
+        tally[key] = (tally[key] || 0) + 1;
+      }
+      const summary = Object.entries(tally).map(([k, n]) => `${n} x ${k}`).join(", ");
+      rows.push(["Objects", `${objects.length} synchronized from the observation batch: ${summary}`]);
+    } else {
+      rows.push(["Object", objects.length ? objects.join("; ") : "—"]);
+    }
     if (sync.observation_batch_id)
       rows.push(["Observation batch", `${sync.observation_batch_id} (revision ${sync.scenario_revision})`]);
   } else {
@@ -3831,6 +3975,7 @@ function startPolling() {
   // changes only when ./scripts/physical_c5.sh runs, so it is polled slowly and
   // in its own panel, where a failure cannot take the run view down with it.
   setInterval(() => panel("physical-d435", refreshPhysicalD435), 5000);
+  setInterval(() => panel("physical-scene", refreshPhysicalScene), 5000);
   setInterval(() => panel("simnav", refreshSimulatorNav), 5000);
 })();
 </script>

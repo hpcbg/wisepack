@@ -77,11 +77,11 @@ def _read(path: str) -> str:
 C5_CENTRE = (-130.0, -54.44, 0.0)
 C5_AXIS = (0.9284, -0.3716, 0.0)
 
-#: The demo chain: camera looking straight down from 542 mm, work area 650 mm
+#: The demo chain: camera looking straight down from 542 mm, work area 500 mm
 #: in front of the robot base. Written out here INDEPENDENTLY of the YAML so
 #: the tracked file is checked against these expectations, not assumed.
 CAMERA_HEIGHT_MM = 542.0
-WORKAREA_X_MM = 650.0
+WORKAREA_X_MM = 500.0
 
 
 def _frames(provenance: str = PROVENANCE_CONFIGURED_DEMO,
@@ -170,7 +170,7 @@ def test_the_tracked_demo_config_loads_and_is_the_expected_chain():
 
 
 def test_the_object_centre_is_carried_through_every_frame_of_the_chain():
-    """Hand-computed: R = diag(1,-1,-1), t = (0,0,H); then +650 along table X."""
+    """Hand-computed: R = diag(1,-1,-1), t = (0,0,H); then +500 along table X."""
     obs = _observation()
     result = transform_observation(obs, _frames(), radius_mm=12.5)
     cx, cy, cz = obs.object_center            # the BODY centre, not the model origin
@@ -252,7 +252,7 @@ def test_a_planar_observation_already_in_the_work_area_needs_only_one_link():
     assert result.camera is None
     # Height was not measured: the body rests on the plane, one radius up, and
     # the provenance says the height was assumed rather than measured.
-    assert result.table.centre_mm == pytest.approx((690.0, -30.0, 32.5))
+    assert result.table.centre_mm == pytest.approx((540.0, -30.0, 32.5))
     assert result.pose_provenance["height_assumed_on_source_plane"] is True
     rgbd = transform_observation(_observation(), _frames(), radius_mm=12.5)
     assert rgbd.pose_provenance["height_assumed_on_source_plane"] is False
@@ -587,7 +587,7 @@ def test_scene_items_carry_cad_identity_and_mass_for_the_simulator():
     assert item.model_id == "cylinder5"
     assert (item.length_mm, item.outer_diameter_mm, item.inner_diameter_mm) == (342, 25, 19)
     assert item.weight_kg > 0.0
-    assert item.source_position == Vec3(481, 10, 22)
+    assert item.source_position == Vec3(331, 10, 22)
 
 
 # =========================================================================== #

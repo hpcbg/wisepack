@@ -129,9 +129,10 @@ def test_every_method_is_offered_with_a_reason_when_unavailable():
     state = PerceptionMethodState(
         current="", selected=PLANAR, available=[PLANAR],
         unavailable_reasons={CAD: "worker down",
-                             MODEL_FREE: "representation not built"})
+                             MODEL_FREE: "representation not built",
+                             "rgbd_scene_depth_plane": "camera not available"})
     options = {o["value"]: o for o in state.to_dict()["options"]}
-    assert set(options) == {PLANAR, CAD, MODEL_FREE}
+    assert set(options) == {PLANAR, CAD, MODEL_FREE, "rgbd_scene_depth_plane"}
     assert options[MODEL_FREE]["available"] is False
     assert options[MODEL_FREE]["reason"] == "representation not built"
 

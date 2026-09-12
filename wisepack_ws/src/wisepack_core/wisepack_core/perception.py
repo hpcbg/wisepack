@@ -265,6 +265,14 @@ class PerceptionMethod(str, Enum):
     #: see `wisepack_core.representation`, where the reconstruction records that
     #: it is not authoritative for packing.
     FOUNDATIONPOSE_RGBD_MODEL_FREE = "foundationpose_rgbd_model_free"
+    #: THE WHOLE-SCENE METHOD. Every object standing on the fitted work plane
+    #: is segmented from one physical RGB-D frame (depth above the plane, or
+    #: the colour of bare steel against the bench), measured by its footprint
+    #: and matched to a configured DEMO OBJECT CLASS that names the engineering
+    #: CAD model to instantiate. The pose is planar — x, y, z and heading on
+    #: the plane — and no estimator is given a mesh. Multi-object by
+    #: construction; identity by size, stated as such everywhere it appears.
+    RGBD_SCENE_DEPTH_PLANE = "rgbd_scene_depth_plane"
 
     @property
     def provider_module(self) -> str:
@@ -277,6 +285,7 @@ class PerceptionMethod(str, Enum):
         return {"planar_fasterrcnn": "fasterrcnn_bottle",
                 "foundationpose_rgbd": "foundationpose_rgbd",
                 "foundationpose_rgbd_model_free": "foundationpose_rgbd",
+                "rgbd_scene_depth_plane": "scene_depth_plane",
                 }[self.value]
 
     @property
@@ -285,6 +294,8 @@ class PerceptionMethod(str, Enum):
                 "foundationpose_rgbd": "RGB-D 6-DoF — FoundationPose (CAD)",
                 "foundationpose_rgbd_model_free":
                     "RGB-D 6-DoF — FoundationPose (model-free)",
+                "rgbd_scene_depth_plane":
+                    "RGB-D scene — all objects on the work plane",
                 }[self.value]
 
     @property
@@ -307,6 +318,12 @@ class PerceptionMethod(str, Enum):
                 "a full 6-DoF pose is estimated from RGB-D against a learned "
                 "representation built from reference views; no CAD mesh is "
                 "supplied to the estimator"),
+            "rgbd_scene_depth_plane": (
+                "every object standing on the fitted work plane is segmented "
+                "from depth and colour, sized by its footprint and matched to a "
+                "configured demo object class; each gets a planar pose (x, y, "
+                "z and heading on the plane) and its CAD model is instantiated "
+                "in the twin. Identity by size, not recognition"),
         }[self.value]
 
     @property
@@ -321,6 +338,7 @@ class PerceptionMethod(str, Enum):
                 "foundationpose_rgbd": ("x", "y", "z", "orientation"),
                 "foundationpose_rgbd_model_free":
                     ("x", "y", "z", "orientation"),
+                "rgbd_scene_depth_plane": ("x", "y", "z", "yaw"),
                 }[self.value]
 
     @property
@@ -331,7 +349,12 @@ class PerceptionMethod(str, Enum):
 
     @property
     def requires_depth(self) -> bool:
-        return self.is_foundationpose
+        return self.is_foundationpose or self is PerceptionMethod.RGBD_SCENE_DEPTH_PLANE
+
+    @property
+    def is_multi_object(self) -> bool:
+        """Produces one observation PER OBJECT in view rather than one per run."""
+        return self is PerceptionMethod.RGBD_SCENE_DEPTH_PLANE
 
     @property
     def requires_object_model(self) -> bool:
@@ -363,6 +386,9 @@ class PerceptionMethod(str, Enum):
         return {"planar_fasterrcnn": "",
                 "foundationpose_rgbd": "cad",
                 "foundationpose_rgbd_model_free": "learned_representation",
+                # No estimator is given any geometry: the footprint IS the
+                # measurement, and the CAD is looked up afterwards.
+                "rgbd_scene_depth_plane": "",
                 }[self.value]
 
 
@@ -390,6 +416,8 @@ PERCEPTION_METHOD_ALIASES = {
     "foundationpose_model_free":
         PerceptionMethod.FOUNDATIONPOSE_RGBD_MODEL_FREE.value,
     "model_free": PerceptionMethod.FOUNDATIONPOSE_RGBD_MODEL_FREE.value,
+    "scene": PerceptionMethod.RGBD_SCENE_DEPTH_PLANE.value,
+    "rgbd_scene": PerceptionMethod.RGBD_SCENE_DEPTH_PLANE.value,
 }
 
 
@@ -633,6 +661,12 @@ class BatchStatus(str, Enum):
     ERROR = "error"
 
 
+#: A part with no CAD whose dimensions were MEASURED from its footprint on the
+#: bench by the whole-scene method — kept as measured, never replaced by the
+#: configured proxy geometry.
+GEOMETRY_SOURCE_MEASURED_FOOTPRINT = "measured_footprint"
+
+
 @dataclass
 class ObservationBatch:
     """The complete result of ONE detection request. Replaces its predecessor.
@@ -804,11 +838,22 @@ class ObservationBatch:
             # part with an anonymous cylinder — and would then plan the wrong
             # geometry into a container.
             cad_backed = bool(obs.object_model_id)
+            measured_footprint = (
+                obs.geometry_source == GEOMETRY_SOURCE_MEASURED_FOOTPRINT
+                and bool(obs.diameter_mm) and bool(obs.length_mm))
             if cad_backed:
                 diameter = obs.diameter_mm or geometry.diameter_mm
                 length = obs.length_mm or geometry.length_mm
                 inner = obs.inner_diameter_mm if hasattr(
                     obs, "inner_diameter_mm") else geometry.inner_diameter_mm
+            elif measured_footprint:
+                # A FOOTPRINT MEASURED ON THE BENCH, for a part with no CAD in
+                # the registry (a bolt): the whole-scene method sized it, and
+                # replacing that with the configured proxy would plan a 215 mm
+                # cylinder where a 45 mm bolt lies.
+                diameter = int(obs.diameter_mm)
+                length = int(obs.length_mm)
+                inner = None
             else:
                 # Stamp the CONFIGURED geometry onto the observation too, so an
                 # observation that travels alone (to the Isaac synchronizer,

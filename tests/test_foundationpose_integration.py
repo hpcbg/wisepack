@@ -147,6 +147,9 @@ def test_the_method_names_describe_capabilities_not_implementations():
         # term for the capability, not a WISEPACK module name — the provider
         # behind it is the same `foundationpose_rgbd` one.
         "foundationpose_rgbd_model_free",
+        # THE WHOLE SCENE, named for what it measures: every object on the
+        # fitted work plane of an RGB-D frame. Multi-object by construction.
+        "rgbd_scene_depth_plane",
     }
 
 

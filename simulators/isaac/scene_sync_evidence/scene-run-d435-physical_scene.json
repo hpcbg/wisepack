@@ -1,0 +1,4610 @@
+{
+ "dataset": "scene-20260912-091535",
+ "perception_method": "rgbd_scene_depth_plane",
+ "estimator_geometry": "",
+ "selected_profile": {
+  "width": 1280,
+  "height": 720,
+  "fps": 30
+ },
+ "acquisition_backend": "realsense",
+ "provenance": "measured",
+ "run_mode": "live",
+ "run_label": "LIVE PHYSICAL D435",
+ "run_note": "Acquired from the physical D435 during this run.",
+ "operator_roi_px": [
+  0,
+  0,
+  1120,
+  720
+ ],
+ "completed_at": "2026-09-12T09:15:38Z",
+ "capture": {
+  "model_id": "scene",
+  "root": "/captures/scene-20260912-091535",
+  "frames": [
+   {
+    "file": "000000.png",
+    "device_timestamp_ms": 1789204537180.7393,
+    "frame_number": 29
+   }
+  ],
+  "captured_at": "2026-09-12T09:15:38Z",
+  "depth_encoding": "uint16 PNG; multiply by depth_scale_mm_per_unit for mm",
+  "invalid_depth_value": 0,
+  "masks_present": false,
+  "masks_note": "register() needs a mask of the object. Segmentation is a perception decision, not a capture one, and is not guessed here.",
+  "camera_to_workarea_extrinsic": null,
+  "extrinsic_note": "No validated SE(3) camera-to-work-area transform. Poses from this dataset stay in the camera optical frame until one is measured.",
+  "width": 1280,
+  "height": 720,
+  "fps": 30,
+  "aligned": true,
+  "alignment_method": "librealsense rs.align(rs.stream.color)",
+  "alignment_verified": true,
+  "colour_intrinsics": {
+   "width": 1280,
+   "height": 720,
+   "fx": 913.13855,
+   "fy": 911.734314,
+   "cx": 648.312073,
+   "cy": 374.915131,
+   "model": "distortion.inverse_brown_conrady",
+   "coeffs": [
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "matrix": [
+    [
+     913.13855,
+     0.0,
+     648.312073
+    ],
+    [
+     0.0,
+     911.734314,
+     374.915131
+    ],
+    [
+     0.0,
+     0.0,
+     1.0
+    ]
+   ]
+  },
+  "depth_intrinsics": {
+   "width": 1280,
+   "height": 720,
+   "fx": 913.13855,
+   "fy": 911.734314,
+   "cx": 648.312073,
+   "cy": 374.915131,
+   "model": "distortion.inverse_brown_conrady",
+   "coeffs": [
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "matrix": [
+    [
+     913.13855,
+     0.0,
+     648.312073
+    ],
+    [
+     0.0,
+     911.734314,
+     374.915131
+    ],
+    [
+     0.0,
+     0.0,
+     1.0
+    ]
+   ]
+  },
+  "depth_scale_m_per_unit": 0.001,
+  "depth_scale_mm_per_unit": 1.0
+ },
+ "capture_attempts": [
+  {
+   "dataset": "scene-20260912-091533",
+   "valid_depth_fraction": 0.7227
+  },
+  {
+   "dataset": "scene-20260912-091535",
+   "valid_depth_fraction": 0.9904
+  }
+ ],
+ "timing_ms": {
+  "capture_ms": 4874.5,
+  "capture_attempts": 2,
+  "segmentation_ms": 141.0,
+  "classification_ms": 15.1,
+  "artifacts_ms": 74.2,
+  "total_ms": 5107.2
+ },
+ "segmentation": {
+  "plane": {
+   "normal": [
+    -0.01767,
+    0.01775,
+    -0.99969
+   ],
+   "d_mm": 529.07,
+   "residual_mm": 1.73,
+   "inlier_fraction": 0.919
+  },
+  "instances": [
+   {
+    "index": 1,
+    "area_px": 24453,
+    "centroid_px": [
+     600.8,
+     164.6
+    ],
+    "bbox_px": [
+     494,
+     0,
+     708,
+     336
+    ],
+    "centre_mm": [
+     -27.41,
+     -121.63,
+     527.56
+    ],
+    "axis_line": [
+     -0.45865,
+     -0.88858,
+     -0.00767
+    ],
+    "length_mm": 209.2,
+    "width_mm": 41.1,
+    "height_mm": 27.9,
+    "height_median_mm": 22.8,
+    "ignored": ""
+   },
+   {
+    "index": 2,
+    "area_px": 7081,
+    "centroid_px": [
+     895.8,
+     75.0
+    ],
+    "bbox_px": [
+     842,
+     39,
+     952,
+     114
+    ],
+    "centre_mm": [
+     141.91,
+     -172.27,
+     523.67
+    ],
+    "axis_line": [
+     -0.99827,
+     -0.05633,
+     0.01664
+    ],
+    "length_mm": 60.6,
+    "width_mm": 39.6,
+    "height_mm": 9.0,
+    "height_median_mm": 6.5,
+    "ignored": ""
+   },
+   {
+    "index": 3,
+    "area_px": 30883,
+    "centroid_px": [
+     356.0,
+     350.3
+    ],
+    "bbox_px": [
+     305,
+     43,
+     411,
+     658
+    ],
+    "centre_mm": [
+     -170.29,
+     -14.03,
+     532.0
+    ],
+    "axis_line": [
+     -0.089,
+     -0.9959,
+     -0.01611
+    ],
+    "length_mm": 356.7,
+    "width_mm": 31.6,
+    "height_mm": 18.9,
+    "height_median_mm": 15.9,
+    "ignored": ""
+   },
+   {
+    "index": 4,
+    "area_px": 2805,
+    "centroid_px": [
+     724.2,
+     129.9
+    ],
+    "bbox_px": [
+     703,
+     89,
+     748,
+     171
+    ],
+    "centre_mm": [
+     43.71,
+     -141.34,
+     525.96
+    ],
+    "axis_line": [
+     -0.1476,
+     -0.98893,
+     -0.01495
+    ],
+    "length_mm": 46.2,
+    "width_mm": 22.1,
+    "height_mm": 12.8,
+    "height_median_mm": 10.1,
+    "ignored": ""
+   },
+   {
+    "index": 5,
+    "area_px": 30707,
+    "centroid_px": [
+     942.7,
+     368.7
+    ],
+    "bbox_px": [
+     797,
+     116,
+     1091,
+     640
+    ],
+    "centre_mm": [
+     169.48,
+     -3.24,
+     526.19
+    ],
+    "axis_line": [
+     0.43713,
+     -0.89909,
+     -0.02369
+    ],
+    "length_mm": 333.2,
+    "width_mm": 33.6,
+    "height_mm": 20.4,
+    "height_median_mm": 17.0,
+    "ignored": ""
+   },
+   {
+    "index": 6,
+    "area_px": 7369,
+    "centroid_px": [
+     914.4,
+     192.4
+    ],
+    "bbox_px": [
+     872,
+     134,
+     958,
+     251
+    ],
+    "centre_mm": [
+     152.89,
+     -105.01,
+     524.67
+    ],
+    "axis_line": [
+     -0.13545,
+     -0.99067,
+     -0.01519
+    ],
+    "length_mm": 62.4,
+    "width_mm": 42.4,
+    "height_mm": 7.9,
+    "height_median_mm": 6.4,
+    "ignored": ""
+   },
+   {
+    "index": 7,
+    "area_px": 9186,
+    "centroid_px": [
+     787.9,
+     218.1
+    ],
+    "bbox_px": [
+     716,
+     160,
+     861,
+     275
+    ],
+    "centre_mm": [
+     80.4,
+     -90.47,
+     526.21
+    ],
+    "axis_line": [
+     -0.86833,
+     0.49539,
+     0.02414
+    ],
+    "length_mm": 80.1,
+    "width_mm": 40.6,
+    "height_mm": 29.9,
+    "height_median_mm": 27.1,
+    "ignored": ""
+   },
+   {
+    "index": 8,
+    "area_px": 9593,
+    "centroid_px": [
+     467.0,
+     240.3
+    ],
+    "bbox_px": [
+     430,
+     171,
+     506,
+     311
+    ],
+    "centre_mm": [
+     -105.16,
+     -78.21,
+     529.71
+    ],
+    "axis_line": [
+     0.02562,
+     -0.99951,
+     -0.0182
+    ],
+    "length_mm": 80.3,
+    "width_mm": 42.9,
+    "height_mm": 27.7,
+    "height_median_mm": 21.0,
+    "ignored": ""
+   },
+   {
+    "index": 9,
+    "area_px": 7902,
+    "centroid_px": [
+     1053.4,
+     368.0
+    ],
+    "bbox_px": [
+     992,
+     326,
+     1112,
+     409
+    ],
+    "centre_mm": [
+     232.92,
+     -3.98,
+     525.05
+    ],
+    "axis_line": [
+     -0.99333,
+     0.11364,
+     0.01957
+    ],
+    "length_mm": 66.0,
+    "width_mm": 43.5,
+    "height_mm": 9.2,
+    "height_median_mm": 7.7,
+    "ignored": ""
+   },
+   {
+    "index": 10,
+    "area_px": 2659,
+    "centroid_px": [
+     844.4,
+     373.1
+    ],
+    "bbox_px": [
+     806,
+     351,
+     884,
+     395
+    ],
+    "centre_mm": [
+     113.2,
+     -1.07,
+     527.22
+    ],
+    "axis_line": [
+     -0.97528,
+     -0.22057,
+     0.01332
+    ],
+    "length_mm": 45.8,
+    "width_mm": 22.0,
+    "height_mm": 13.5,
+    "height_median_mm": 8.2,
+    "ignored": ""
+   },
+   {
+    "index": 11,
+    "area_px": 22313,
+    "centroid_px": [
+     620.2,
+     410.9
+    ],
+    "bbox_px": [
+     438,
+     372,
+     800,
+     452
+    ],
+    "centre_mm": [
+     -16.42,
+     20.93,
+     529.9
+    ],
+    "axis_line": [
+     -0.99854,
+     -0.05139,
+     0.01674
+    ],
+    "length_mm": 207.0,
+    "width_mm": 38.6,
+    "height_mm": 32.1,
+    "height_median_mm": 28.8,
+    "ignored": ""
+   },
+   {
+    "index": 12,
+    "area_px": 1224,
+    "centroid_px": [
+     1025.1,
+     476.2
+    ],
+    "bbox_px": [
+     988,
+     460,
+     1056,
+     495
+    ],
+    "centre_mm": [
+     217.24,
+     58.47,
+     526.44
+    ],
+    "axis_line": [
+     -0.94156,
+     -0.33668,
+     0.01067
+    ],
+    "length_mm": 40.5,
+    "width_mm": 14.6,
+    "height_mm": 10.3,
+    "height_median_mm": 6.5,
+    "ignored": ""
+   },
+   {
+    "index": 13,
+    "area_px": 3097,
+    "centroid_px": [
+     761.7,
+     500.1
+    ],
+    "bbox_px": [
+     720,
+     470,
+     804,
+     531
+    ],
+    "centre_mm": [
+     65.71,
+     72.72,
+     529.37
+    ],
+    "axis_line": [
+     -0.92698,
+     0.3744,
+     0.02303
+    ],
+    "length_mm": 49.0,
+    "width_mm": 23.6,
+    "height_mm": 18.4,
+    "height_median_mm": 14.3,
+    "ignored": ""
+   },
+   {
+    "index": 14,
+    "area_px": 6145,
+    "centroid_px": [
+     45.9,
+     553.7
+    ],
+    "bbox_px": [
+     11,
+     489,
+     84,
+     621
+    ],
+    "centre_mm": [
+     -354.55,
+     105.37,
+     537.38
+    ],
+    "axis_line": [
+     0.31274,
+     -0.94957,
+     -0.02238
+    ],
+    "length_mm": 82.4,
+    "width_mm": 30.6,
+    "height_mm": 19.3,
+    "height_median_mm": 14.2,
+    "ignored": "inside a configured ignore region: lower-left corner of the bench: the small non-metal object kept there is not a workpiece and is out of scope for detection, synchronization and picking."
+   },
+   {
+    "index": 15,
+    "area_px": 822,
+    "centroid_px": [
+     958.0,
+     522.0
+    ],
+    "bbox_px": [
+     924,
+     498,
+     996,
+     546
+    ],
+    "centre_mm": [
+     178.92,
+     85.14,
+     527.59
+    ],
+    "axis_line": [
+     -0.85259,
+     -0.52254,
+     0.00579
+    ],
+    "length_mm": 46.0,
+    "width_mm": 8.5,
+    "height_mm": 3.7,
+    "height_median_mm": 1.5,
+    "ignored": ""
+   },
+   {
+    "index": 16,
+    "area_px": 1203,
+    "centroid_px": [
+     680.2,
+     531.2
+    ],
+    "bbox_px": [
+     638,
+     505,
+     728,
+     557
+    ],
+    "centre_mm": [
+     18.52,
+     90.94,
+     530.53
+    ],
+    "axis_line": [
+     -0.90062,
+     -0.43453,
+     0.0082
+    ],
+    "length_mm": 55.5,
+    "width_mm": 11.6,
+    "height_mm": 4.8,
+    "height_median_mm": 1.5,
+    "ignored": ""
+   },
+   {
+    "index": 17,
+    "area_px": 9391,
+    "centroid_px": [
+     530.2,
+     580.6
+    ],
+    "bbox_px": [
+     460,
+     512,
+     599,
+     647
+    ],
+    "centre_mm": [
+     -68.9,
+     120.16,
+     532.59
+    ],
+    "axis_line": [
+     -0.72373,
+     0.68963,
+     0.02503
+    ],
+    "length_mm": 87.7,
+    "width_mm": 40.6,
+    "height_mm": 31.9,
+    "height_median_mm": 26.1,
+    "ignored": ""
+   },
+   {
+    "index": 18,
+    "area_px": 1332,
+    "centroid_px": [
+     961.4,
+     585.4
+    ],
+    "bbox_px": [
+     906,
+     573,
+     1010,
+     598
+    ],
+    "centre_mm": [
+     181.12,
+     121.91,
+     528.2
+    ],
+    "axis_line": [
+     -0.99982,
+     0.00628,
+     0.01778
+    ],
+    "length_mm": 59.2,
+    "width_mm": 14.0,
+    "height_mm": 7.9,
+    "height_median_mm": 4.7,
+    "ignored": ""
+   },
+   {
+    "index": 19,
+    "area_px": 1033,
+    "centroid_px": [
+     703.4,
+     588.0
+    ],
+    "bbox_px": [
+     668,
+     578,
+     746,
+     600
+    ],
+    "centre_mm": [
+     32.02,
+     124.04,
+     530.87
+    ],
+    "axis_line": [
+     -0.99903,
+     0.03992,
+     0.01837
+    ],
+    "length_mm": 44.9,
+    "width_mm": 12.3,
+    "height_mm": 3.6,
+    "height_median_mm": 1.4,
+    "ignored": ""
+   },
+   {
+    "index": 20,
+    "area_px": 419,
+    "centroid_px": [
+     1109.8,
+     626.9
+    ],
+    "bbox_px": [
+     1098,
+     614,
+     1120,
+     644
+    ],
+    "centre_mm": [
+     266.41,
+     145.7,
+     527.12
+    ],
+    "axis_line": [
+     -0.57948,
+     -0.81498,
+     -0.00423
+    ],
+    "length_mm": 18.7,
+    "width_mm": 11.0,
+    "height_mm": 6.2,
+    "height_median_mm": 5.2,
+    "ignored": ""
+   }
+  ],
+  "method": "depth_plane_instances",
+  "image_size": [
+   1280,
+   720
+  ],
+  "settings": {
+   "plane_tolerance_mm": 6.0,
+   "ransac_iterations": 300,
+   "ransac_samples": 60000,
+   "ransac_seed": 0,
+   "min_plane_inlier_fraction": 0.25,
+   "min_height_mm": 5.0,
+   "max_height_mm": 300.0,
+   "colour_foreground": true,
+   "metal_hue_range": [
+    80,
+    125
+   ],
+   "metal_min_saturation": 20,
+   "metal_min_value": 40,
+   "open_kernel_px": 3,
+   "close_kernel_px": 5,
+   "min_component_area_px": 300,
+   "max_component_area_fraction": 0.2,
+   "roi_px": [
+    0,
+    0,
+    1120,
+    720
+   ]
+  },
+  "ignore_regions_px": [
+   {
+    "rect": [
+     0,
+     400,
+     150,
+     720
+    ],
+    "note": "lower-left corner of the bench: the small non-metal object kept there is not a workpiece and is out of scope for detection, synchronization and picking."
+   }
+  ],
+  "valid_depth_fraction": 0.9904,
+  "foreground_pixels": 180374,
+  "components": 35,
+  "dropped": {
+   "too_small": 15,
+   "too_large": 0,
+   "outside_roi": 0
+  },
+  "instances_measured": 20,
+  "note": "footprints are measured on the fitted plane from the mask outline; heights are the 95th percentile of depth above the plane inside the mask. Sizes, not identities."
+ },
+ "catalogue": {
+  "path": "/data/jarvis/wisepack/wisepack/config/scene_demo_classes.yaml",
+  "provenance": "configured_demo",
+  "classes": [
+   {
+    "demo_type": "long_tube",
+    "model_id": "cylinder5",
+    "length_mm": [
+     340.0,
+     378.0
+    ],
+    "width_mm": [
+     18.0,
+     36.0
+    ],
+    "min_height_mm": null,
+    "max_height_mm": null,
+    "proxy_diameter_mm": null
+   },
+   {
+    "demo_type": "long_tube",
+    "model_id": "cylinder4",
+    "length_mm": [
+     292.0,
+     340.0
+    ],
+    "width_mm": [
+     18.0,
+     36.0
+    ],
+    "min_height_mm": null,
+    "max_height_mm": null,
+    "proxy_diameter_mm": null
+   },
+   {
+    "demo_type": "medium_tube",
+    "model_id": "cylinder3",
+    "length_mm": [
+     160.0,
+     230.0
+    ],
+    "width_mm": [
+     28.0,
+     48.0
+    ],
+    "min_height_mm": null,
+    "max_height_mm": null,
+    "proxy_diameter_mm": null
+   },
+   {
+    "demo_type": "short_tube",
+    "model_id": "cylinder2",
+    "length_mm": [
+     58.0,
+     100.0
+    ],
+    "width_mm": [
+     28.0,
+     48.0
+    ],
+    "min_height_mm": 12.0,
+    "max_height_mm": null,
+    "proxy_diameter_mm": null
+   },
+   {
+    "demo_type": "plate",
+    "model_id": "plate2",
+    "length_mm": [
+     44.0,
+     88.0
+    ],
+    "width_mm": [
+     28.0,
+     50.0
+    ],
+    "min_height_mm": null,
+    "max_height_mm": 12.0,
+    "proxy_diameter_mm": null
+   },
+   {
+    "demo_type": "small_cylinder",
+    "model_id": "cylinder1",
+    "length_mm": [
+     30.0,
+     58.0
+    ],
+    "width_mm": [
+     16.0,
+     27.0
+    ],
+    "min_height_mm": 11.5,
+    "max_height_mm": null,
+    "proxy_diameter_mm": null
+   },
+   {
+    "demo_type": "bolt",
+    "model_id": "",
+    "length_mm": [
+     34.0,
+     66.0
+    ],
+    "width_mm": [
+     3.0,
+     17.0
+    ],
+    "min_height_mm": null,
+    "max_height_mm": 11.5,
+    "proxy_diameter_mm": 6
+   }
+  ],
+  "ignore_regions_px": [
+   {
+    "rect": [
+     0,
+     400,
+     150,
+     720
+    ],
+    "note": "lower-left corner of the bench: the small non-metal object kept there is not a workpiece and is out of scope for detection, synchronization and picking."
+   }
+  ],
+  "scene_roi_px": [
+   0,
+   0,
+   1120,
+   720
+  ]
+ },
+ "objects": [
+  {
+   "index": 1,
+   "area_px": 24453,
+   "centroid_px": [
+    600.8,
+    164.6
+   ],
+   "bbox_px": [
+    494,
+    0,
+    708,
+    336
+   ],
+   "centre_mm": [
+    -27.41,
+    -121.63,
+    527.56
+   ],
+   "axis_line": [
+    -0.45865,
+    -0.88858,
+    -0.00767
+   ],
+   "length_mm": 209.2,
+   "width_mm": 41.1,
+   "height_mm": 27.9,
+   "height_median_mm": 22.8,
+   "ignored": "",
+   "demo_type": "medium_tube",
+   "model_id": "cylinder3",
+   "status": "observed",
+   "reason": "",
+   "observation_id": "physical-scene-1-obj-1"
+  },
+  {
+   "index": 2,
+   "area_px": 7081,
+   "centroid_px": [
+    895.8,
+    75.0
+   ],
+   "bbox_px": [
+    842,
+    39,
+    952,
+    114
+   ],
+   "centre_mm": [
+    141.91,
+    -172.27,
+    523.67
+   ],
+   "axis_line": [
+    -0.99827,
+    -0.05633,
+    0.01664
+   ],
+   "length_mm": 60.6,
+   "width_mm": 39.6,
+   "height_mm": 9.0,
+   "height_median_mm": 6.5,
+   "ignored": "",
+   "demo_type": "plate",
+   "model_id": "plate2",
+   "status": "observed",
+   "reason": "",
+   "observation_id": "physical-scene-1-obj-2"
+  },
+  {
+   "index": 3,
+   "area_px": 30883,
+   "centroid_px": [
+    356.0,
+    350.3
+   ],
+   "bbox_px": [
+    305,
+    43,
+    411,
+    658
+   ],
+   "centre_mm": [
+    -170.29,
+    -14.03,
+    532.0
+   ],
+   "axis_line": [
+    -0.089,
+    -0.9959,
+    -0.01611
+   ],
+   "length_mm": 356.7,
+   "width_mm": 31.6,
+   "height_mm": 18.9,
+   "height_median_mm": 15.9,
+   "ignored": "",
+   "demo_type": "long_tube",
+   "model_id": "cylinder5",
+   "status": "observed",
+   "reason": "",
+   "observation_id": "physical-scene-1-obj-3"
+  },
+  {
+   "index": 4,
+   "area_px": 2805,
+   "centroid_px": [
+    724.2,
+    129.9
+   ],
+   "bbox_px": [
+    703,
+    89,
+    748,
+    171
+   ],
+   "centre_mm": [
+    43.71,
+    -141.34,
+    525.96
+   ],
+   "axis_line": [
+    -0.1476,
+    -0.98893,
+    -0.01495
+   ],
+   "length_mm": 46.2,
+   "width_mm": 22.1,
+   "height_mm": 12.8,
+   "height_median_mm": 10.1,
+   "ignored": "",
+   "demo_type": "small_cylinder",
+   "model_id": "cylinder1",
+   "status": "observed",
+   "reason": "",
+   "observation_id": "physical-scene-1-obj-4"
+  },
+  {
+   "index": 5,
+   "area_px": 30707,
+   "centroid_px": [
+    942.7,
+    368.7
+   ],
+   "bbox_px": [
+    797,
+    116,
+    1091,
+    640
+   ],
+   "centre_mm": [
+    169.48,
+    -3.24,
+    526.19
+   ],
+   "axis_line": [
+    0.43713,
+    -0.89909,
+    -0.02369
+   ],
+   "length_mm": 333.2,
+   "width_mm": 33.6,
+   "height_mm": 20.4,
+   "height_median_mm": 17.0,
+   "ignored": "",
+   "demo_type": "long_tube",
+   "model_id": "cylinder4",
+   "status": "observed",
+   "reason": "",
+   "observation_id": "physical-scene-1-obj-5"
+  },
+  {
+   "index": 6,
+   "area_px": 7369,
+   "centroid_px": [
+    914.4,
+    192.4
+   ],
+   "bbox_px": [
+    872,
+    134,
+    958,
+    251
+   ],
+   "centre_mm": [
+    152.89,
+    -105.01,
+    524.67
+   ],
+   "axis_line": [
+    -0.13545,
+    -0.99067,
+    -0.01519
+   ],
+   "length_mm": 62.4,
+   "width_mm": 42.4,
+   "height_mm": 7.9,
+   "height_median_mm": 6.4,
+   "ignored": "",
+   "demo_type": "plate",
+   "model_id": "plate2",
+   "status": "observed",
+   "reason": "",
+   "observation_id": "physical-scene-1-obj-6"
+  },
+  {
+   "index": 7,
+   "area_px": 9186,
+   "centroid_px": [
+    787.9,
+    218.1
+   ],
+   "bbox_px": [
+    716,
+    160,
+    861,
+    275
+   ],
+   "centre_mm": [
+    80.4,
+    -90.47,
+    526.21
+   ],
+   "axis_line": [
+    -0.86833,
+    0.49539,
+    0.02414
+   ],
+   "length_mm": 80.1,
+   "width_mm": 40.6,
+   "height_mm": 29.9,
+   "height_median_mm": 27.1,
+   "ignored": "",
+   "demo_type": "short_tube",
+   "model_id": "cylinder2",
+   "status": "observed",
+   "reason": "",
+   "observation_id": "physical-scene-1-obj-7"
+  },
+  {
+   "index": 8,
+   "area_px": 9593,
+   "centroid_px": [
+    467.0,
+    240.3
+   ],
+   "bbox_px": [
+    430,
+    171,
+    506,
+    311
+   ],
+   "centre_mm": [
+    -105.16,
+    -78.21,
+    529.71
+   ],
+   "axis_line": [
+    0.02562,
+    -0.99951,
+    -0.0182
+   ],
+   "length_mm": 80.3,
+   "width_mm": 42.9,
+   "height_mm": 27.7,
+   "height_median_mm": 21.0,
+   "ignored": "",
+   "demo_type": "short_tube",
+   "model_id": "cylinder2",
+   "status": "observed",
+   "reason": "",
+   "observation_id": "physical-scene-1-obj-8"
+  },
+  {
+   "index": 9,
+   "area_px": 7902,
+   "centroid_px": [
+    1053.4,
+    368.0
+   ],
+   "bbox_px": [
+    992,
+    326,
+    1112,
+    409
+   ],
+   "centre_mm": [
+    232.92,
+    -3.98,
+    525.05
+   ],
+   "axis_line": [
+    -0.99333,
+    0.11364,
+    0.01957
+   ],
+   "length_mm": 66.0,
+   "width_mm": 43.5,
+   "height_mm": 9.2,
+   "height_median_mm": 7.7,
+   "ignored": "",
+   "demo_type": "plate",
+   "model_id": "plate2",
+   "status": "observed",
+   "reason": "",
+   "observation_id": "physical-scene-1-obj-9"
+  },
+  {
+   "index": 10,
+   "area_px": 2659,
+   "centroid_px": [
+    844.4,
+    373.1
+   ],
+   "bbox_px": [
+    806,
+    351,
+    884,
+    395
+   ],
+   "centre_mm": [
+    113.2,
+    -1.07,
+    527.22
+   ],
+   "axis_line": [
+    -0.97528,
+    -0.22057,
+    0.01332
+   ],
+   "length_mm": 45.8,
+   "width_mm": 22.0,
+   "height_mm": 13.5,
+   "height_median_mm": 8.2,
+   "ignored": "",
+   "demo_type": "small_cylinder",
+   "model_id": "cylinder1",
+   "status": "observed",
+   "reason": "",
+   "observation_id": "physical-scene-1-obj-10"
+  },
+  {
+   "index": 11,
+   "area_px": 22313,
+   "centroid_px": [
+    620.2,
+    410.9
+   ],
+   "bbox_px": [
+    438,
+    372,
+    800,
+    452
+   ],
+   "centre_mm": [
+    -16.42,
+    20.93,
+    529.9
+   ],
+   "axis_line": [
+    -0.99854,
+    -0.05139,
+    0.01674
+   ],
+   "length_mm": 207.0,
+   "width_mm": 38.6,
+   "height_mm": 32.1,
+   "height_median_mm": 28.8,
+   "ignored": "",
+   "demo_type": "medium_tube",
+   "model_id": "cylinder3",
+   "status": "observed",
+   "reason": "",
+   "observation_id": "physical-scene-1-obj-11"
+  },
+  {
+   "index": 12,
+   "area_px": 1224,
+   "centroid_px": [
+    1025.1,
+    476.2
+   ],
+   "bbox_px": [
+    988,
+    460,
+    1056,
+    495
+   ],
+   "centre_mm": [
+    217.24,
+    58.47,
+    526.44
+   ],
+   "axis_line": [
+    -0.94156,
+    -0.33668,
+    0.01067
+   ],
+   "length_mm": 40.5,
+   "width_mm": 14.6,
+   "height_mm": 10.3,
+   "height_median_mm": 6.5,
+   "ignored": "",
+   "demo_type": "bolt",
+   "model_id": "",
+   "status": "observed",
+   "reason": "",
+   "observation_id": "physical-scene-1-obj-12"
+  },
+  {
+   "index": 13,
+   "area_px": 3097,
+   "centroid_px": [
+    761.7,
+    500.1
+   ],
+   "bbox_px": [
+    720,
+    470,
+    804,
+    531
+   ],
+   "centre_mm": [
+    65.71,
+    72.72,
+    529.37
+   ],
+   "axis_line": [
+    -0.92698,
+    0.3744,
+    0.02303
+   ],
+   "length_mm": 49.0,
+   "width_mm": 23.6,
+   "height_mm": 18.4,
+   "height_median_mm": 14.3,
+   "ignored": "",
+   "demo_type": "small_cylinder",
+   "model_id": "cylinder1",
+   "status": "observed",
+   "reason": "",
+   "observation_id": "physical-scene-1-obj-13"
+  },
+  {
+   "index": 14,
+   "area_px": 6145,
+   "centroid_px": [
+    45.9,
+    553.7
+   ],
+   "bbox_px": [
+    11,
+    489,
+    84,
+    621
+   ],
+   "centre_mm": [
+    -354.55,
+    105.37,
+    537.38
+   ],
+   "axis_line": [
+    0.31274,
+    -0.94957,
+    -0.02238
+   ],
+   "length_mm": 82.4,
+   "width_mm": 30.6,
+   "height_mm": 19.3,
+   "height_median_mm": 14.2,
+   "ignored": "inside a configured ignore region: lower-left corner of the bench: the small non-metal object kept there is not a workpiece and is out of scope for detection, synchronization and picking.",
+   "demo_type": "",
+   "model_id": "",
+   "status": "ignored",
+   "reason": "inside a configured ignore region: lower-left corner of the bench: the small non-metal object kept there is not a workpiece and is out of scope for detection, synchronization and picking.",
+   "observation_id": ""
+  },
+  {
+   "index": 15,
+   "area_px": 822,
+   "centroid_px": [
+    958.0,
+    522.0
+   ],
+   "bbox_px": [
+    924,
+    498,
+    996,
+    546
+   ],
+   "centre_mm": [
+    178.92,
+    85.14,
+    527.59
+   ],
+   "axis_line": [
+    -0.85259,
+    -0.52254,
+    0.00579
+   ],
+   "length_mm": 46.0,
+   "width_mm": 8.5,
+   "height_mm": 3.7,
+   "height_median_mm": 1.5,
+   "ignored": "",
+   "demo_type": "bolt",
+   "model_id": "",
+   "status": "observed",
+   "reason": "",
+   "observation_id": "physical-scene-1-obj-14"
+  },
+  {
+   "index": 16,
+   "area_px": 1203,
+   "centroid_px": [
+    680.2,
+    531.2
+   ],
+   "bbox_px": [
+    638,
+    505,
+    728,
+    557
+   ],
+   "centre_mm": [
+    18.52,
+    90.94,
+    530.53
+   ],
+   "axis_line": [
+    -0.90062,
+    -0.43453,
+    0.0082
+   ],
+   "length_mm": 55.5,
+   "width_mm": 11.6,
+   "height_mm": 4.8,
+   "height_median_mm": 1.5,
+   "ignored": "",
+   "demo_type": "bolt",
+   "model_id": "",
+   "status": "observed",
+   "reason": "",
+   "observation_id": "physical-scene-1-obj-15"
+  },
+  {
+   "index": 17,
+   "area_px": 9391,
+   "centroid_px": [
+    530.2,
+    580.6
+   ],
+   "bbox_px": [
+    460,
+    512,
+    599,
+    647
+   ],
+   "centre_mm": [
+    -68.9,
+    120.16,
+    532.59
+   ],
+   "axis_line": [
+    -0.72373,
+    0.68963,
+    0.02503
+   ],
+   "length_mm": 87.7,
+   "width_mm": 40.6,
+   "height_mm": 31.9,
+   "height_median_mm": 26.1,
+   "ignored": "",
+   "demo_type": "short_tube",
+   "model_id": "cylinder2",
+   "status": "observed",
+   "reason": "",
+   "observation_id": "physical-scene-1-obj-16"
+  },
+  {
+   "index": 18,
+   "area_px": 1332,
+   "centroid_px": [
+    961.4,
+    585.4
+   ],
+   "bbox_px": [
+    906,
+    573,
+    1010,
+    598
+   ],
+   "centre_mm": [
+    181.12,
+    121.91,
+    528.2
+   ],
+   "axis_line": [
+    -0.99982,
+    0.00628,
+    0.01778
+   ],
+   "length_mm": 59.2,
+   "width_mm": 14.0,
+   "height_mm": 7.9,
+   "height_median_mm": 4.7,
+   "ignored": "",
+   "demo_type": "bolt",
+   "model_id": "",
+   "status": "observed",
+   "reason": "",
+   "observation_id": "physical-scene-1-obj-17"
+  },
+  {
+   "index": 19,
+   "area_px": 1033,
+   "centroid_px": [
+    703.4,
+    588.0
+   ],
+   "bbox_px": [
+    668,
+    578,
+    746,
+    600
+   ],
+   "centre_mm": [
+    32.02,
+    124.04,
+    530.87
+   ],
+   "axis_line": [
+    -0.99903,
+    0.03992,
+    0.01837
+   ],
+   "length_mm": 44.9,
+   "width_mm": 12.3,
+   "height_mm": 3.6,
+   "height_median_mm": 1.4,
+   "ignored": "",
+   "demo_type": "bolt",
+   "model_id": "",
+   "status": "observed",
+   "reason": "",
+   "observation_id": "physical-scene-1-obj-18"
+  },
+  {
+   "index": 20,
+   "area_px": 419,
+   "centroid_px": [
+    1109.8,
+    626.9
+   ],
+   "bbox_px": [
+    1098,
+    614,
+    1120,
+    644
+   ],
+   "centre_mm": [
+    266.41,
+    145.7,
+    527.12
+   ],
+   "axis_line": [
+    -0.57948,
+    -0.81498,
+    -0.00423
+   ],
+   "length_mm": 18.7,
+   "width_mm": 11.0,
+   "height_mm": 6.2,
+   "height_median_mm": 5.2,
+   "ignored": "",
+   "demo_type": "",
+   "model_id": "",
+   "status": "unclassified",
+   "reason": "footprint 19 x 11 mm, height 6 mm matches no demo class",
+   "observation_id": ""
+  }
+ ],
+ "placeability": {
+  "physical-scene-1-obj-1": {
+   "placeable": true,
+   "reason": "",
+   "workarea_mm": [
+    -27.7,
+    121.3,
+    31.9
+   ],
+   "table_mm": [
+    472.3,
+    121.3,
+    31.9
+   ],
+   "world_m": [
+    0.4723,
+    0.1213,
+    0.4319
+   ],
+   "transform_source": "configured_demo"
+  },
+  "physical-scene-1-obj-2": {
+   "placeable": true,
+   "reason": "",
+   "workarea_mm": [
+    141.8,
+    172.2,
+    22.3
+   ],
+   "table_mm": [
+    641.8,
+    172.2,
+    22.3
+   ],
+   "world_m": [
+    0.6418,
+    0.1722,
+    0.4223
+   ],
+   "transform_source": "configured_demo"
+  },
+  "physical-scene-1-obj-3": {
+   "placeable": true,
+   "reason": "",
+   "workarea_mm": [
+    -170.5,
+    13.8,
+    22.5
+   ],
+   "table_mm": [
+    329.5,
+    13.8,
+    22.5
+   ],
+   "world_m": [
+    0.3295,
+    0.0138,
+    0.4225
+   ],
+   "transform_source": "configured_demo"
+  },
+  "physical-scene-1-obj-4": {
+   "placeable": true,
+   "reason": "",
+   "workarea_mm": [
+    43.5,
+    141.2,
+    26.0
+   ],
+   "table_mm": [
+    543.5,
+    141.2,
+    26.0
+   ],
+   "world_m": [
+    0.5435,
+    0.1412,
+    0.426
+   ],
+   "transform_source": "configured_demo"
+  },
+  "physical-scene-1-obj-5": {
+   "placeable": true,
+   "reason": "",
+   "workarea_mm": [
+    169.3,
+    3.0,
+    28.3
+   ],
+   "table_mm": [
+    669.3,
+    3.0,
+    28.3
+   ],
+   "world_m": [
+    0.6693,
+    0.003,
+    0.4283
+   ],
+   "transform_source": "configured_demo"
+  },
+  "physical-scene-1-obj-6": {
+   "placeable": true,
+   "reason": "",
+   "workarea_mm": [
+    152.8,
+    104.9,
+    21.3
+   ],
+   "table_mm": [
+    652.8,
+    104.9,
+    21.3
+   ],
+   "world_m": [
+    0.6528,
+    0.1049,
+    0.4213
+   ],
+   "transform_source": "configured_demo"
+  },
+  "physical-scene-1-obj-7": {
+   "placeable": true,
+   "reason": "",
+   "workarea_mm": [
+    80.1,
+    90.2,
+    33.3
+   ],
+   "table_mm": [
+    580.1,
+    90.2,
+    33.3
+   ],
+   "world_m": [
+    0.5801,
+    0.0902,
+    0.4333
+   ],
+   "transform_source": "configured_demo"
+  },
+  "physical-scene-1-obj-8": {
+   "placeable": true,
+   "reason": "",
+   "workarea_mm": [
+    -105.5,
+    77.9,
+    29.8
+   ],
+   "table_mm": [
+    394.5,
+    77.9,
+    29.8
+   ],
+   "world_m": [
+    0.3945,
+    0.0779,
+    0.4298
+   ],
+   "transform_source": "configured_demo"
+  },
+  "physical-scene-1-obj-9": {
+   "placeable": true,
+   "reason": "",
+   "workarea_mm": [
+    232.8,
+    3.9,
+    20.9
+   ],
+   "table_mm": [
+    732.8,
+    3.9,
+    20.9
+   ],
+   "world_m": [
+    0.7328,
+    0.0039,
+    0.4209
+   ],
+   "transform_source": "configured_demo"
+  },
+  "physical-scene-1-obj-10": {
+   "placeable": true,
+   "reason": "",
+   "workarea_mm": [
+    113.0,
+    0.9,
+    24.8
+   ],
+   "table_mm": [
+    613.0,
+    0.9,
+    24.8
+   ],
+   "world_m": [
+    0.613,
+    0.0009,
+    0.4248
+   ],
+   "transform_source": "configured_demo"
+  },
+  "physical-scene-1-obj-11": {
+   "placeable": true,
+   "reason": "",
+   "workarea_mm": [
+    -16.7,
+    -21.2,
+    29.6
+   ],
+   "table_mm": [
+    483.3,
+    -21.2,
+    29.6
+   ],
+   "world_m": [
+    0.4833,
+    -0.0212,
+    0.4296
+   ],
+   "transform_source": "configured_demo"
+  },
+  "physical-scene-1-obj-12": {
+   "placeable": true,
+   "reason": "",
+   "workarea_mm": [
+    217.2,
+    -58.5,
+    18.6
+   ],
+   "table_mm": [
+    717.2,
+    -58.5,
+    18.6
+   ],
+   "world_m": [
+    0.7172,
+    -0.0585,
+    0.4186
+   ],
+   "transform_source": "configured_demo"
+  },
+  "physical-scene-1-obj-13": {
+   "placeable": true,
+   "reason": "",
+   "workarea_mm": [
+    65.5,
+    -72.9,
+    22.6
+   ],
+   "table_mm": [
+    565.5,
+    -72.9,
+    22.6
+   ],
+   "world_m": [
+    0.5655,
+    -0.0729,
+    0.4226
+   ],
+   "transform_source": "configured_demo"
+  },
+  "physical-scene-1-obj-14": {
+   "placeable": true,
+   "reason": "",
+   "workarea_mm": [
+    178.9,
+    -85.2,
+    17.4
+   ],
+   "table_mm": [
+    678.9,
+    -85.2,
+    17.4
+   ],
+   "world_m": [
+    0.6789,
+    -0.0852,
+    0.4174
+   ],
+   "transform_source": "configured_demo"
+  },
+  "physical-scene-1-obj-15": {
+   "placeable": true,
+   "reason": "",
+   "workarea_mm": [
+    18.5,
+    -91.0,
+    14.5
+   ],
+   "table_mm": [
+    518.5,
+    -91.0,
+    14.5
+   ],
+   "world_m": [
+    0.5185,
+    -0.091,
+    0.4145
+   ],
+   "transform_source": "configured_demo"
+  },
+  "physical-scene-1-obj-16": {
+   "placeable": true,
+   "reason": "",
+   "workarea_mm": [
+    -69.2,
+    -120.5,
+    26.9
+   ],
+   "table_mm": [
+    430.8,
+    -120.5,
+    26.9
+   ],
+   "world_m": [
+    0.4308,
+    -0.1205,
+    0.4269
+   ],
+   "transform_source": "configured_demo"
+  },
+  "physical-scene-1-obj-17": {
+   "placeable": true,
+   "reason": "",
+   "workarea_mm": [
+    181.1,
+    -122.0,
+    16.8
+   ],
+   "table_mm": [
+    681.1,
+    -122.0,
+    16.8
+   ],
+   "world_m": [
+    0.6811,
+    -0.122,
+    0.4168
+   ],
+   "transform_source": "configured_demo"
+  },
+  "physical-scene-1-obj-18": {
+   "placeable": true,
+   "reason": "",
+   "workarea_mm": [
+    32.0,
+    -124.1,
+    14.1
+   ],
+   "table_mm": [
+    532.0,
+    -124.1,
+    14.1
+   ],
+   "world_m": [
+    0.532,
+    -0.1241,
+    0.4141
+   ],
+   "transform_source": "configured_demo"
+  }
+ },
+ "counts": {
+  "measured": 20,
+  "observed": 18,
+  "ignored": 1,
+  "unclassified": 1,
+  "excluded": 0
+ },
+ "batch": {
+  "batch_id": "physical-scene-1",
+  "source": "camera",
+  "status": "ok",
+  "count": 18,
+  "frame_id": "camera_color_optical_frame",
+  "captured_at": "2026-09-12T09:15:38Z",
+  "requested_at": "2026-09-12T09:15:38Z",
+  "detector": "scene/depth_plane_footprint",
+  "perception_method": "rgbd_scene_depth_plane",
+  "acquisition": "realsense_d435",
+  "model_id": "",
+  "calibration_status": "not_applicable",
+  "calibration_revision": "",
+  "error": "",
+  "mean_confidence": null,
+  "observations": [
+   {
+    "observation_id": "physical-scene-1-obj-1",
+    "object_type": "pipe_section",
+    "source": "camera",
+    "frame_id": "camera_color_optical_frame",
+    "pose": {
+     "x_mm": -43.068,
+     "y_mm": -153.125,
+     "z_mm": 549.788,
+     "reference_point": "model_frame_origin",
+     "yaw_deg": 134.875,
+     "orientation": {
+      "x": -0.679535,
+      "y": 0.162208,
+      "z": 0.694639,
+      "w": 0.171455
+     },
+     "rpy_deg": [
+      -17.829,
+      88.565,
+      134.875
+     ],
+     "valid": true,
+     "workarea_transform_valid": false,
+     "workarea_pose_available": false,
+     "measured_dof": [
+      "x",
+      "y",
+      "z",
+      "yaw"
+     ]
+    },
+    "task": {
+     "object_center_mm": [
+      -27.721,
+      -121.315,
+      510.069
+     ],
+     "tube_axis_line": [
+      -0.458652,
+      -0.888583,
+      -0.007668
+     ],
+     "tube_axis_is_a_line_not_a_direction": true,
+     "diameter_mm": 35,
+     "length_mm": 190,
+     "frame_id": "camera_color_optical_frame",
+     "note": "object_center_mm is the physical body centre and is what a grasp targets. It is NOT pose.model_frame_origin_mm, which is where the CAD model's own origin lands and can be outside the object."
+    },
+    "model_center_mm": [
+     40.0,
+     -35.0,
+     0.0
+    ],
+    "task_axis_vector": [
+     0.0,
+     1.0,
+     0.0
+    ],
+    "confidence": null,
+    "perception_method": "rgbd_scene_depth_plane",
+    "object_model_id": "cylinder3",
+    "symmetry": {
+     "type": "axial",
+     "axis": "y",
+     "fold": null,
+     "rotation_observable": false,
+     "ambiguous_dof": [
+      "rotation_about_y"
+     ]
+    },
+    "orientation_raw": null,
+    "detector": "scene/depth_plane_footprint",
+    "model_id": "depth_plane_footprint/1.0",
+    "detector_class": "medium_tube",
+    "detector_object_index": 1,
+    "captured_at": "2026-09-12T09:15:38Z",
+    "calibration_status": "not_applicable",
+    "calibration_revision": "",
+    "geometry": {
+     "diameter_mm": 35,
+     "length_mm": 190,
+     "inner_diameter_mm": 29,
+     "source": "cad_model"
+    }
+   },
+   {
+    "observation_id": "physical-scene-1-obj-2",
+    "object_type": "plate",
+    "source": "camera",
+    "frame_id": "camera_color_optical_frame",
+    "pose": {
+     "x_mm": 141.914,
+     "y_mm": -172.275,
+     "z_mm": 523.672,
+     "reference_point": "model_frame_origin",
+     "yaw_deg": -176.771,
+     "orientation": {
+      "x": -0.028099,
+      "y": 0.999527,
+      "z": 0.009119,
+      "w": -0.008583
+     },
+     "rpy_deg": [
+      178.928,
+      -0.954,
+      -176.771
+     ],
+     "valid": true,
+     "workarea_transform_valid": false,
+     "workarea_pose_available": false,
+     "measured_dof": [
+      "x",
+      "y",
+      "z",
+      "yaw"
+     ]
+    },
+    "task": {
+     "object_center_mm": [
+      141.844,
+      -172.204,
+      519.673
+     ],
+     "tube_axis_line": [
+      -0.998274,
+      -0.056327,
+      0.016644
+     ],
+     "tube_axis_is_a_line_not_a_direction": true,
+     "diameter_mm": 40,
+     "length_mm": 60,
+     "frame_id": "camera_color_optical_frame",
+     "note": "object_center_mm is the physical body centre and is what a grasp targets. It is NOT pose.model_frame_origin_mm, which is where the CAD model's own origin lands and can be outside the object."
+    },
+    "model_center_mm": [
+     0.0,
+     0.0,
+     4.0
+    ],
+    "task_axis_vector": [
+     1.0,
+     0.0,
+     0.0
+    ],
+    "confidence": null,
+    "perception_method": "rgbd_scene_depth_plane",
+    "object_model_id": "plate2",
+    "symmetry": {
+     "type": "discrete",
+     "axis": "z",
+     "fold": 2,
+     "rotation_observable": true,
+     "ambiguous_dof": [
+      "rotation_about_z_modulo_180deg"
+     ]
+    },
+    "orientation_raw": null,
+    "detector": "scene/depth_plane_footprint",
+    "model_id": "depth_plane_footprint/1.0",
+    "detector_class": "plate",
+    "detector_object_index": 2,
+    "captured_at": "2026-09-12T09:15:38Z",
+    "calibration_status": "not_applicable",
+    "calibration_revision": "",
+    "geometry": {
+     "diameter_mm": 40,
+     "length_mm": 60,
+     "inner_diameter_mm": null,
+     "source": "cad_model"
+    }
+   },
+   {
+    "observation_id": "physical-scene-1-obj-3",
+    "object_type": "pipe_section",
+    "source": "camera",
+    "frame_id": "camera_color_optical_frame",
+    "pose": {
+     "x_mm": -277.893,
+     "y_mm": -105.09,
+     "z_mm": 519.78,
+     "reference_point": "model_frame_origin",
+     "yaw_deg": -116.917,
+     "orientation": {
+      "x": -0.523113,
+      "y": 0.852171,
+      "z": 0.012185,
+      "w": -0.002887
+     },
+     "rpy_deg": [
+      178.637,
+      0.448,
+      -116.917
+     ],
+     "valid": true,
+     "workarea_transform_valid": false,
+     "workarea_pose_available": false,
+     "measured_dof": [
+      "x",
+      "y",
+      "z",
+      "yaw"
+     ]
+    },
+    "task": {
+     "object_center_mm": [
+      -170.51,
+      -13.806,
+      519.503
+     ],
+     "tube_axis_line": [
+      -0.088997,
+      -0.995902,
+      -0.016107
+     ],
+     "tube_axis_is_a_line_not_a_direction": true,
+     "diameter_mm": 25,
+     "length_mm": 342,
+     "frame_id": "camera_color_optical_frame",
+     "note": "object_center_mm is the physical body centre and is what a grasp targets. It is NOT pose.model_frame_origin_mm, which is where the CAD model's own origin lands and can be outside the object."
+    },
+    "model_center_mm": [
+     -130.0,
+     -54.44,
+     0.0
+    ],
+    "task_axis_vector": [
+     0.9284,
+     -0.3716,
+     0.0
+    ],
+    "confidence": null,
+    "perception_method": "rgbd_scene_depth_plane",
+    "object_model_id": "cylinder5",
+    "symmetry": {
+     "type": "discrete",
+     "axis": "z",
+     "fold": 2,
+     "rotation_observable": true,
+     "ambiguous_dof": [
+      "rotation_about_z_modulo_180deg"
+     ]
+    },
+    "orientation_raw": null,
+    "detector": "scene/depth_plane_footprint",
+    "model_id": "depth_plane_footprint/1.0",
+    "detector_class": "long_tube",
+    "detector_object_index": 3,
+    "captured_at": "2026-09-12T09:15:38Z",
+    "calibration_status": "not_applicable",
+    "calibration_revision": "",
+    "geometry": {
+     "diameter_mm": 25,
+     "length_mm": 342,
+     "inner_diameter_mm": 19,
+     "source": "cad_model"
+    }
+   },
+   {
+    "observation_id": "physical-scene-1-obj-4",
+    "object_type": "pipe_section",
+    "source": "camera",
+    "frame_id": "camera_color_optical_frame",
+    "pose": {
+     "x_mm": 46.487,
+     "y_mm": -121.38,
+     "z_mm": 516.259,
+     "reference_point": "model_frame_origin",
+     "yaw_deg": 134.875,
+     "orientation": {
+      "x": -0.534922,
+      "y": -0.470459,
+      "z": 0.536193,
+      "w": -0.452795
+     },
+     "rpy_deg": [
+      -126.645,
+      88.565,
+      134.875
+     ],
+     "valid": true,
+     "workarea_transform_valid": false,
+     "workarea_pose_available": false,
+     "measured_dof": [
+      "x",
+      "y",
+      "z",
+      "yaw"
+     ]
+    },
+    "task": {
+     "object_center_mm": [
+      43.535,
+      -141.159,
+      515.96
+     ],
+     "tube_axis_line": [
+      -0.147599,
+      -0.988934,
+      -0.014947
+     ],
+     "tube_axis_is_a_line_not_a_direction": true,
+     "diameter_mm": 20,
+     "length_mm": 40,
+     "frame_id": "camera_color_optical_frame",
+     "note": "object_center_mm is the physical body centre and is what a grasp targets. It is NOT pose.model_frame_origin_mm, which is where the CAD model's own origin lands and can be outside the object."
+    },
+    "model_center_mm": [
+     0.0,
+     0.0,
+     20.0
+    ],
+    "task_axis_vector": [
+     0.0,
+     0.0,
+     1.0
+    ],
+    "confidence": null,
+    "perception_method": "rgbd_scene_depth_plane",
+    "object_model_id": "cylinder1",
+    "symmetry": {
+     "type": "axial",
+     "axis": "z",
+     "fold": null,
+     "rotation_observable": false,
+     "ambiguous_dof": [
+      "rotation_about_z"
+     ]
+    },
+    "orientation_raw": null,
+    "detector": "scene/depth_plane_footprint",
+    "model_id": "depth_plane_footprint/1.0",
+    "detector_class": "small_cylinder",
+    "detector_object_index": 4,
+    "captured_at": "2026-09-12T09:15:38Z",
+    "calibration_status": "not_applicable",
+    "calibration_revision": "",
+    "geometry": {
+     "diameter_mm": 20,
+     "length_mm": 40,
+     "inner_diameter_mm": 16,
+     "source": "cad_model"
+    }
+   },
+   {
+    "observation_id": "physical-scene-1-obj-5",
+    "object_type": "pipe_section",
+    "source": "camera",
+    "frame_id": "camera_color_optical_frame",
+    "pose": {
+     "x_mm": 226.792,
+     "y_mm": -120.609,
+     "z_mm": 550.597,
+     "reference_point": "model_frame_origin",
+     "yaw_deg": -64.071,
+     "orientation": {
+      "x": -0.597392,
+      "y": 0.38365,
+      "z": -0.366401,
+      "w": 0.601404
+     },
+     "rpy_deg": [
+      -90.466,
+      1.357,
+      -64.071
+     ],
+     "valid": true,
+     "workarea_transform_valid": false,
+     "workarea_pose_available": false,
+     "measured_dof": [
+      "x",
+      "y",
+      "z",
+      "yaw"
+     ]
+    },
+    "task": {
+     "object_center_mm": [
+      169.259,
+      -3.018,
+      513.689
+     ],
+     "tube_axis_line": [
+      0.437127,
+      -0.899088,
+      -0.023687
+     ],
+     "tube_axis_is_a_line_not_a_direction": true,
+     "diameter_mm": 25,
+     "length_mm": 316,
+     "frame_id": "camera_color_optical_frame",
+     "note": "object_center_mm is the physical body centre and is what a grasp targets. It is NOT pose.model_frame_origin_mm, which is where the CAD model's own origin lands and can be outside the object."
+    },
+    "model_center_mm": [
+     -130.0,
+     40.0,
+     0.0
+    ],
+    "task_axis_vector": [
+     1.0,
+     0.0,
+     0.0
+    ],
+    "confidence": null,
+    "perception_method": "rgbd_scene_depth_plane",
+    "object_model_id": "cylinder4",
+    "symmetry": {
+     "type": "discrete",
+     "axis": "z",
+     "fold": 2,
+     "rotation_observable": true,
+     "ambiguous_dof": [
+      "rotation_about_z_modulo_180deg"
+     ]
+    },
+    "orientation_raw": null,
+    "detector": "scene/depth_plane_footprint",
+    "model_id": "depth_plane_footprint/1.0",
+    "detector_class": "long_tube",
+    "detector_object_index": 5,
+    "captured_at": "2026-09-12T09:15:38Z",
+    "calibration_status": "not_applicable",
+    "calibration_revision": "",
+    "geometry": {
+     "diameter_mm": 25,
+     "length_mm": 316,
+     "inner_diameter_mm": 19,
+     "source": "cad_model"
+    }
+   },
+   {
+    "observation_id": "physical-scene-1-obj-6",
+    "object_type": "plate",
+    "source": "camera",
+    "frame_id": "camera_color_optical_frame",
+    "pose": {
+     "x_mm": 152.886,
+     "y_mm": -105.011,
+     "z_mm": 524.672,
+     "reference_point": "model_frame_origin",
+     "yaw_deg": -97.786,
+     "orientation": {
+      "x": -0.657474,
+      "y": 0.753373,
+      "z": 0.012496,
+      "w": -0.000822
+     },
+     "rpy_deg": [
+      178.859,
+      0.87,
+      -97.786
+     ],
+     "valid": true,
+     "workarea_transform_valid": false,
+     "workarea_pose_available": false,
+     "measured_dof": [
+      "x",
+      "y",
+      "z",
+      "yaw"
+     ]
+    },
+    "task": {
+     "object_center_mm": [
+      152.815,
+      -104.94,
+      520.673
+     ],
+     "tube_axis_line": [
+      -0.135454,
+      -0.990667,
+      -0.015192
+     ],
+     "tube_axis_is_a_line_not_a_direction": true,
+     "diameter_mm": 40,
+     "length_mm": 60,
+     "frame_id": "camera_color_optical_frame",
+     "note": "object_center_mm is the physical body centre and is what a grasp targets. It is NOT pose.model_frame_origin_mm, which is where the CAD model's own origin lands and can be outside the object."
+    },
+    "model_center_mm": [
+     0.0,
+     0.0,
+     4.0
+    ],
+    "task_axis_vector": [
+     1.0,
+     0.0,
+     0.0
+    ],
+    "confidence": null,
+    "perception_method": "rgbd_scene_depth_plane",
+    "object_model_id": "plate2",
+    "symmetry": {
+     "type": "discrete",
+     "axis": "z",
+     "fold": 2,
+     "rotation_observable": true,
+     "ambiguous_dof": [
+      "rotation_about_z_modulo_180deg"
+     ]
+    },
+    "orientation_raw": null,
+    "detector": "scene/depth_plane_footprint",
+    "model_id": "depth_plane_footprint/1.0",
+    "detector_class": "plate",
+    "detector_object_index": 6,
+    "captured_at": "2026-09-12T09:15:38Z",
+    "calibration_status": "not_applicable",
+    "calibration_revision": "",
+    "geometry": {
+     "diameter_mm": 40,
+     "length_mm": 60,
+     "inner_diameter_mm": null,
+     "source": "cad_model"
+    }
+   },
+   {
+    "observation_id": "physical-scene-1-obj-7",
+    "object_type": "pipe_section",
+    "source": "camera",
+    "frame_id": "camera_color_optical_frame",
+    "pose": {
+     "x_mm": 96.498,
+     "y_mm": -97.219,
+     "z_mm": 208.207,
+     "reference_point": "model_frame_origin",
+     "yaw_deg": 134.875,
+     "orientation": {
+      "x": -0.346512,
+      "y": 0.613678,
+      "z": 0.36364,
+      "w": 0.609175
+     },
+     "rpy_deg": [
+      74.585,
+      88.565,
+      134.875
+     ],
+     "valid": true,
+     "workarea_transform_valid": false,
+     "workarea_pose_available": false,
+     "measured_dof": [
+      "x",
+      "y",
+      "z",
+      "yaw"
+     ]
+    },
+    "task": {
+     "object_center_mm": [
+      80.091,
+      -90.158,
+      508.717
+     ],
+     "tube_axis_line": [
+      -0.868335,
+      0.495391,
+      0.024142
+     ],
+     "tube_axis_is_a_line_not_a_direction": true,
+     "diameter_mm": 35,
+     "length_mm": 70,
+     "frame_id": "camera_color_optical_frame",
+     "note": "object_center_mm is the physical body centre and is what a grasp targets. It is NOT pose.model_frame_origin_mm, which is where the CAD model's own origin lands and can be outside the object."
+    },
+    "model_center_mm": [
+     -300.0,
+     25.0,
+     0.0
+    ],
+    "task_axis_vector": [
+     0.0,
+     1.0,
+     0.0
+    ],
+    "confidence": null,
+    "perception_method": "rgbd_scene_depth_plane",
+    "object_model_id": "cylinder2",
+    "symmetry": {
+     "type": "axial",
+     "axis": "y",
+     "fold": null,
+     "rotation_observable": false,
+     "ambiguous_dof": [
+      "rotation_about_y"
+     ]
+    },
+    "orientation_raw": null,
+    "detector": "scene/depth_plane_footprint",
+    "model_id": "depth_plane_footprint/1.0",
+    "detector_class": "short_tube",
+    "detector_object_index": 7,
+    "captured_at": "2026-09-12T09:15:38Z",
+    "calibration_status": "not_applicable",
+    "calibration_revision": "",
+    "geometry": {
+     "diameter_mm": 35,
+     "length_mm": 70,
+     "inner_diameter_mm": 29,
+     "source": "cad_model"
+    }
+   },
+   {
+    "observation_id": "physical-scene-1-obj-8",
+    "object_type": "pipe_section",
+    "source": "camera",
+    "frame_id": "camera_color_optical_frame",
+    "pose": {
+     "x_mm": -111.409,
+     "y_mm": -47.591,
+     "z_mm": 212.763,
+     "reference_point": "model_frame_origin",
+     "yaw_deg": 134.875,
+     "orientation": {
+      "x": -0.700826,
+      "y": -0.01547,
+      "z": 0.713159,
+      "w": -0.00276
+     },
+     "rpy_deg": [
+      -46.602,
+      88.565,
+      134.875
+     ],
+     "valid": true,
+     "workarea_transform_valid": false,
+     "workarea_pose_available": false,
+     "measured_dof": [
+      "x",
+      "y",
+      "z",
+      "yaw"
+     ]
+    },
+    "task": {
+     "object_center_mm": [
+      -105.468,
+      -77.903,
+      512.214
+     ],
+     "tube_axis_line": [
+      0.025621,
+      -0.999506,
+      -0.018196
+     ],
+     "tube_axis_is_a_line_not_a_direction": true,
+     "diameter_mm": 35,
+     "length_mm": 70,
+     "frame_id": "camera_color_optical_frame",
+     "note": "object_center_mm is the physical body centre and is what a grasp targets. It is NOT pose.model_frame_origin_mm, which is where the CAD model's own origin lands and can be outside the object."
+    },
+    "model_center_mm": [
+     -300.0,
+     25.0,
+     0.0
+    ],
+    "task_axis_vector": [
+     0.0,
+     1.0,
+     0.0
+    ],
+    "confidence": null,
+    "perception_method": "rgbd_scene_depth_plane",
+    "object_model_id": "cylinder2",
+    "symmetry": {
+     "type": "axial",
+     "axis": "y",
+     "fold": null,
+     "rotation_observable": false,
+     "ambiguous_dof": [
+      "rotation_about_y"
+     ]
+    },
+    "orientation_raw": null,
+    "detector": "scene/depth_plane_footprint",
+    "model_id": "depth_plane_footprint/1.0",
+    "detector_class": "short_tube",
+    "detector_object_index": 8,
+    "captured_at": "2026-09-12T09:15:38Z",
+    "calibration_status": "not_applicable",
+    "calibration_revision": "",
+    "geometry": {
+     "diameter_mm": 35,
+     "length_mm": 70,
+     "inner_diameter_mm": 29,
+     "source": "cad_model"
+    }
+   },
+   {
+    "observation_id": "physical-scene-1-obj-9",
+    "object_type": "plate",
+    "source": "camera",
+    "frame_id": "camera_color_optical_frame",
+    "pose": {
+     "x_mm": 232.916,
+     "y_mm": -3.975,
+     "z_mm": 525.051,
+     "reference_point": "model_frame_origin",
+     "yaw_deg": 173.473,
+     "orientation": {
+      "x": 0.056996,
+      "y": 0.998296,
+      "z": 0.008356,
+      "w": -0.009327
+     },
+     "rpy_deg": [
+      179.105,
+      -1.122,
+      173.473
+     ],
+     "valid": true,
+     "workarea_transform_valid": false,
+     "workarea_pose_available": false,
+     "measured_dof": [
+      "x",
+      "y",
+      "z",
+      "yaw"
+     ]
+    },
+    "task": {
+     "object_center_mm": [
+      232.845,
+      -3.905,
+      521.052
+     ],
+     "tube_axis_line": [
+      -0.993329,
+      0.113641,
+      0.019574
+     ],
+     "tube_axis_is_a_line_not_a_direction": true,
+     "diameter_mm": 40,
+     "length_mm": 60,
+     "frame_id": "camera_color_optical_frame",
+     "note": "object_center_mm is the physical body centre and is what a grasp targets. It is NOT pose.model_frame_origin_mm, which is where the CAD model's own origin lands and can be outside the object."
+    },
+    "model_center_mm": [
+     0.0,
+     0.0,
+     4.0
+    ],
+    "task_axis_vector": [
+     1.0,
+     0.0,
+     0.0
+    ],
+    "confidence": null,
+    "perception_method": "rgbd_scene_depth_plane",
+    "object_model_id": "plate2",
+    "symmetry": {
+     "type": "discrete",
+     "axis": "z",
+     "fold": 2,
+     "rotation_observable": true,
+     "ambiguous_dof": [
+      "rotation_about_z_modulo_180deg"
+     ]
+    },
+    "orientation_raw": null,
+    "detector": "scene/depth_plane_footprint",
+    "model_id": "depth_plane_footprint/1.0",
+    "detector_class": "plate",
+    "detector_object_index": 9,
+    "captured_at": "2026-09-12T09:15:38Z",
+    "calibration_status": "not_applicable",
+    "calibration_revision": "",
+    "geometry": {
+     "diameter_mm": 40,
+     "length_mm": 60,
+     "inner_diameter_mm": null,
+     "source": "cad_model"
+    }
+   },
+   {
+    "observation_id": "physical-scene-1-obj-10",
+    "object_type": "pipe_section",
+    "source": "camera",
+    "frame_id": "camera_color_optical_frame",
+    "pose": {
+     "x_mm": 132.526,
+     "y_mm": 3.523,
+     "z_mm": 516.955,
+     "reference_point": "model_frame_origin",
+     "yaw_deg": 134.875,
+     "orientation": {
+      "x": -0.697176,
+      "y": -0.085347,
+      "z": 0.708202,
+      "w": -0.071488
+     },
+     "rpy_deg": [
+      -57.86,
+      88.565,
+      134.875
+     ],
+     "valid": true,
+     "workarea_transform_valid": false,
+     "workarea_pose_available": false,
+     "measured_dof": [
+      "x",
+      "y",
+      "z",
+      "yaw"
+     ]
+    },
+    "task": {
+     "object_center_mm": [
+      113.02,
+      -0.888,
+      517.222
+     ],
+     "tube_axis_line": [
+      -0.975281,
+      -0.220566,
+      0.013323
+     ],
+     "tube_axis_is_a_line_not_a_direction": true,
+     "diameter_mm": 20,
+     "length_mm": 40,
+     "frame_id": "camera_color_optical_frame",
+     "note": "object_center_mm is the physical body centre and is what a grasp targets. It is NOT pose.model_frame_origin_mm, which is where the CAD model's own origin lands and can be outside the object."
+    },
+    "model_center_mm": [
+     0.0,
+     0.0,
+     20.0
+    ],
+    "task_axis_vector": [
+     0.0,
+     0.0,
+     1.0
+    ],
+    "confidence": null,
+    "perception_method": "rgbd_scene_depth_plane",
+    "object_model_id": "cylinder1",
+    "symmetry": {
+     "type": "axial",
+     "axis": "z",
+     "fold": null,
+     "rotation_observable": false,
+     "ambiguous_dof": [
+      "rotation_about_z"
+     ]
+    },
+    "orientation_raw": null,
+    "detector": "scene/depth_plane_footprint",
+    "model_id": "depth_plane_footprint/1.0",
+    "detector_class": "small_cylinder",
+    "detector_object_index": 10,
+    "captured_at": "2026-09-12T09:15:38Z",
+    "calibration_status": "not_applicable",
+    "calibration_revision": "",
+    "geometry": {
+     "diameter_mm": 20,
+     "length_mm": 40,
+     "inner_diameter_mm": 16,
+     "source": "cad_model"
+    }
+   },
+   {
+    "observation_id": "physical-scene-1-obj-11",
+    "object_type": "pipe_section",
+    "source": "camera",
+    "frame_id": "camera_color_optical_frame",
+    "pose": {
+     "x_mm": -50.973,
+     "y_mm": 18.728,
+     "z_mm": 552.979,
+     "reference_point": "model_frame_origin",
+     "yaw_deg": 134.875,
+     "orientation": {
+      "x": -0.503758,
+      "y": 0.486737,
+      "z": 0.521461,
+      "w": 0.48723
+     },
+     "rpy_deg": [
+      41.938,
+      88.565,
+      134.875
+     ],
+     "valid": true,
+     "workarea_transform_valid": false,
+     "workarea_pose_available": false,
+     "measured_dof": [
+      "x",
+      "y",
+      "z",
+      "yaw"
+     ]
+    },
+    "task": {
+     "object_center_mm": [
+      -16.731,
+      21.236,
+      512.405
+     ],
+     "tube_axis_line": [
+      -0.998539,
+      -0.051388,
+      0.016737
+     ],
+     "tube_axis_is_a_line_not_a_direction": true,
+     "diameter_mm": 35,
+     "length_mm": 190,
+     "frame_id": "camera_color_optical_frame",
+     "note": "object_center_mm is the physical body centre and is what a grasp targets. It is NOT pose.model_frame_origin_mm, which is where the CAD model's own origin lands and can be outside the object."
+    },
+    "model_center_mm": [
+     40.0,
+     -35.0,
+     0.0
+    ],
+    "task_axis_vector": [
+     0.0,
+     1.0,
+     0.0
+    ],
+    "confidence": null,
+    "perception_method": "rgbd_scene_depth_plane",
+    "object_model_id": "cylinder3",
+    "symmetry": {
+     "type": "axial",
+     "axis": "y",
+     "fold": null,
+     "rotation_observable": false,
+     "ambiguous_dof": [
+      "rotation_about_y"
+     ]
+    },
+    "orientation_raw": null,
+    "detector": "scene/depth_plane_footprint",
+    "model_id": "depth_plane_footprint/1.0",
+    "detector_class": "medium_tube",
+    "detector_object_index": 11,
+    "captured_at": "2026-09-12T09:15:38Z",
+    "calibration_status": "not_applicable",
+    "calibration_revision": "",
+    "geometry": {
+     "diameter_mm": 35,
+     "length_mm": 190,
+     "inner_diameter_mm": 29,
+     "source": "cad_model"
+    }
+   },
+   {
+    "observation_id": "physical-scene-1-obj-12",
+    "object_type": "bolt",
+    "source": "camera",
+    "frame_id": "camera_color_optical_frame",
+    "pose": {
+     "x_mm": 217.182,
+     "y_mm": 58.528,
+     "z_mm": 523.438,
+     "reference_point": "model_frame_origin",
+     "yaw_deg": -160.324,
+     "orientation": {
+      "x": -0.125849,
+      "y": 0.703911,
+      "z": -0.689412,
+      "w": 0.115681
+     },
+     "rpy_deg": [
+      -91.298,
+      -0.611,
+      -160.324
+     ],
+     "valid": true,
+     "workarea_transform_valid": false,
+     "workarea_pose_available": false,
+     "measured_dof": [
+      "x",
+      "y",
+      "z",
+      "yaw"
+     ]
+    },
+    "task": {
+     "object_center_mm": [
+      217.182,
+      58.528,
+      523.438
+     ],
+     "tube_axis_line": [
+      -0.94156,
+      -0.336677,
+      0.010665
+     ],
+     "tube_axis_is_a_line_not_a_direction": true,
+     "diameter_mm": 6,
+     "length_mm": 41,
+     "frame_id": "camera_color_optical_frame",
+     "note": "object_center_mm is the physical body centre and is what a grasp targets. It is NOT pose.model_frame_origin_mm, which is where the CAD model's own origin lands and can be outside the object."
+    },
+    "model_center_mm": [
+     0.0,
+     0.0,
+     0.0
+    ],
+    "task_axis_vector": [
+     1.0,
+     0.0,
+     0.0
+    ],
+    "confidence": null,
+    "perception_method": "rgbd_scene_depth_plane",
+    "object_model_id": "",
+    "symmetry": {
+     "type": "axial",
+     "axis": "x",
+     "fold": null,
+     "rotation_observable": false,
+     "ambiguous_dof": [
+      "rotation_about_x"
+     ]
+    },
+    "orientation_raw": null,
+    "detector": "scene/depth_plane_footprint",
+    "model_id": "depth_plane_footprint/1.0",
+    "detector_class": "bolt",
+    "detector_object_index": 12,
+    "captured_at": "2026-09-12T09:15:38Z",
+    "calibration_status": "not_applicable",
+    "calibration_revision": "",
+    "geometry": {
+     "diameter_mm": 6,
+     "length_mm": 41,
+     "inner_diameter_mm": null,
+     "source": "measured_footprint"
+    }
+   },
+   {
+    "observation_id": "physical-scene-1-obj-13",
+    "object_type": "pipe_section",
+    "source": "camera",
+    "frame_id": "camera_color_optical_frame",
+    "pose": {
+     "x_mm": 84.075,
+     "y_mm": 65.406,
+     "z_mm": 518.91,
+     "reference_point": "model_frame_origin",
+     "yaw_deg": 134.875,
+     "orientation": {
+      "x": -0.686731,
+      "y": 0.129945,
+      "z": 0.701391,
+      "w": 0.13988
+     },
+     "rpy_deg": [
+      -23.125,
+      88.565,
+      134.875
+     ],
+     "valid": true,
+     "workarea_transform_valid": false,
+     "workarea_pose_available": false,
+     "measured_dof": [
+      "x",
+      "y",
+      "z",
+      "yaw"
+     ]
+    },
+    "task": {
+     "object_center_mm": [
+      65.536,
+      72.894,
+      519.371
+     ],
+     "tube_axis_line": [
+      -0.92698,
+      0.374404,
+      0.023031
+     ],
+     "tube_axis_is_a_line_not_a_direction": true,
+     "diameter_mm": 20,
+     "length_mm": 40,
+     "frame_id": "camera_color_optical_frame",
+     "note": "object_center_mm is the physical body centre and is what a grasp targets. It is NOT pose.model_frame_origin_mm, which is where the CAD model's own origin lands and can be outside the object."
+    },
+    "model_center_mm": [
+     0.0,
+     0.0,
+     20.0
+    ],
+    "task_axis_vector": [
+     0.0,
+     0.0,
+     1.0
+    ],
+    "confidence": null,
+    "perception_method": "rgbd_scene_depth_plane",
+    "object_model_id": "cylinder1",
+    "symmetry": {
+     "type": "axial",
+     "axis": "z",
+     "fold": null,
+     "rotation_observable": false,
+     "ambiguous_dof": [
+      "rotation_about_z"
+     ]
+    },
+    "orientation_raw": null,
+    "detector": "scene/depth_plane_footprint",
+    "model_id": "depth_plane_footprint/1.0",
+    "detector_class": "small_cylinder",
+    "detector_object_index": 13,
+    "captured_at": "2026-09-12T09:15:38Z",
+    "calibration_status": "not_applicable",
+    "calibration_revision": "",
+    "geometry": {
+     "diameter_mm": 20,
+     "length_mm": 40,
+     "inner_diameter_mm": 16,
+     "source": "cad_model"
+    }
+   },
+   {
+    "observation_id": "physical-scene-1-obj-14",
+    "object_type": "bolt",
+    "source": "camera",
+    "frame_id": "camera_color_optical_frame",
+    "pose": {
+     "x_mm": 178.866,
+     "y_mm": 85.189,
+     "z_mm": 524.588,
+     "reference_point": "model_frame_origin",
+     "yaw_deg": -148.496,
+     "orientation": {
+      "x": -0.196229,
+      "y": 0.688241,
+      "z": -0.672771,
+      "w": 0.18761
+     },
+     "rpy_deg": [
+      -91.396,
+      -0.332,
+      -148.496
+     ],
+     "valid": true,
+     "workarea_transform_valid": false,
+     "workarea_pose_available": false,
+     "measured_dof": [
+      "x",
+      "y",
+      "z",
+      "yaw"
+     ]
+    },
+    "task": {
+     "object_center_mm": [
+      178.866,
+      85.189,
+      524.588
+     ],
+     "tube_axis_line": [
+      -0.852594,
+      -0.522543,
+      0.005793
+     ],
+     "tube_axis_is_a_line_not_a_direction": true,
+     "diameter_mm": 6,
+     "length_mm": 46,
+     "frame_id": "camera_color_optical_frame",
+     "note": "object_center_mm is the physical body centre and is what a grasp targets. It is NOT pose.model_frame_origin_mm, which is where the CAD model's own origin lands and can be outside the object."
+    },
+    "model_center_mm": [
+     0.0,
+     0.0,
+     0.0
+    ],
+    "task_axis_vector": [
+     1.0,
+     0.0,
+     0.0
+    ],
+    "confidence": null,
+    "perception_method": "rgbd_scene_depth_plane",
+    "object_model_id": "",
+    "symmetry": {
+     "type": "axial",
+     "axis": "x",
+     "fold": null,
+     "rotation_observable": false,
+     "ambiguous_dof": [
+      "rotation_about_x"
+     ]
+    },
+    "orientation_raw": null,
+    "detector": "scene/depth_plane_footprint",
+    "model_id": "depth_plane_footprint/1.0",
+    "detector_class": "bolt",
+    "detector_object_index": 15,
+    "captured_at": "2026-09-12T09:15:38Z",
+    "calibration_status": "not_applicable",
+    "calibration_revision": "",
+    "geometry": {
+     "diameter_mm": 6,
+     "length_mm": 46,
+     "inner_diameter_mm": null,
+     "source": "measured_footprint"
+    }
+   },
+   {
+    "observation_id": "physical-scene-1-obj-15",
+    "object_type": "bolt",
+    "source": "camera",
+    "frame_id": "camera_color_optical_frame",
+    "pose": {
+     "x_mm": 18.471,
+     "y_mm": 90.994,
+     "z_mm": 527.526,
+     "reference_point": "model_frame_origin",
+     "yaw_deg": -154.243,
+     "orientation": {
+      "x": -0.162247,
+      "y": 0.696783,
+      "z": -0.681764,
+      "w": 0.152862
+     },
+     "rpy_deg": [
+      -91.356,
+      -0.47,
+      -154.243
+     ],
+     "valid": true,
+     "workarea_transform_valid": false,
+     "workarea_pose_available": false,
+     "measured_dof": [
+      "x",
+      "y",
+      "z",
+      "yaw"
+     ]
+    },
+    "task": {
+     "object_center_mm": [
+      18.471,
+      90.994,
+      527.526
+     ],
+     "tube_axis_line": [
+      -0.900618,
+      -0.434533,
+      0.008204
+     ],
+     "tube_axis_is_a_line_not_a_direction": true,
+     "diameter_mm": 6,
+     "length_mm": 55,
+     "frame_id": "camera_color_optical_frame",
+     "note": "object_center_mm is the physical body centre and is what a grasp targets. It is NOT pose.model_frame_origin_mm, which is where the CAD model's own origin lands and can be outside the object."
+    },
+    "model_center_mm": [
+     0.0,
+     0.0,
+     0.0
+    ],
+    "task_axis_vector": [
+     1.0,
+     0.0,
+     0.0
+    ],
+    "confidence": null,
+    "perception_method": "rgbd_scene_depth_plane",
+    "object_model_id": "",
+    "symmetry": {
+     "type": "axial",
+     "axis": "x",
+     "fold": null,
+     "rotation_observable": false,
+     "ambiguous_dof": [
+      "rotation_about_x"
+     ]
+    },
+    "orientation_raw": null,
+    "detector": "scene/depth_plane_footprint",
+    "model_id": "depth_plane_footprint/1.0",
+    "detector_class": "bolt",
+    "detector_object_index": 16,
+    "captured_at": "2026-09-12T09:15:38Z",
+    "calibration_status": "not_applicable",
+    "calibration_revision": "",
+    "geometry": {
+     "diameter_mm": 6,
+     "length_mm": 55,
+     "inner_diameter_mm": null,
+     "source": "measured_footprint"
+    }
+   },
+   {
+    "observation_id": "physical-scene-1-obj-16",
+    "object_type": "pipe_section",
+    "source": "camera",
+    "frame_id": "camera_color_optical_frame",
+    "pose": {
+     "x_mm": -56.421,
+     "y_mm": 108.552,
+     "z_mm": 214.563,
+     "reference_point": "model_frame_origin",
+     "yaw_deg": 134.875,
+     "orientation": {
+      "x": -0.270206,
+      "y": 0.653192,
+      "z": 0.286662,
+      "w": 0.646648
+     },
+     "rpy_deg": [
+      88.493,
+      88.565,
+      134.875
+     ],
+     "valid": true,
+     "workarea_transform_valid": false,
+     "workarea_pose_available": false,
+     "measured_dof": [
+      "x",
+      "y",
+      "z",
+      "yaw"
+     ]
+    },
+    "task": {
+     "object_center_mm": [
+      -69.213,
+      120.469,
+      515.095
+     ],
+     "tube_axis_line": [
+      -0.723732,
+      0.689627,
+      0.025034
+     ],
+     "tube_axis_is_a_line_not_a_direction": true,
+     "diameter_mm": 35,
+     "length_mm": 70,
+     "frame_id": "camera_color_optical_frame",
+     "note": "object_center_mm is the physical body centre and is what a grasp targets. It is NOT pose.model_frame_origin_mm, which is where the CAD model's own origin lands and can be outside the object."
+    },
+    "model_center_mm": [
+     -300.0,
+     25.0,
+     0.0
+    ],
+    "task_axis_vector": [
+     0.0,
+     1.0,
+     0.0
+    ],
+    "confidence": null,
+    "perception_method": "rgbd_scene_depth_plane",
+    "object_model_id": "cylinder2",
+    "symmetry": {
+     "type": "axial",
+     "axis": "y",
+     "fold": null,
+     "rotation_observable": false,
+     "ambiguous_dof": [
+      "rotation_about_y"
+     ]
+    },
+    "orientation_raw": null,
+    "detector": "scene/depth_plane_footprint",
+    "model_id": "depth_plane_footprint/1.0",
+    "detector_class": "short_tube",
+    "detector_object_index": 17,
+    "captured_at": "2026-09-12T09:15:38Z",
+    "calibration_status": "not_applicable",
+    "calibration_revision": "",
+    "geometry": {
+     "diameter_mm": 35,
+     "length_mm": 70,
+     "inner_diameter_mm": 29,
+     "source": "cad_model"
+    }
+   },
+   {
+    "observation_id": "physical-scene-1-obj-17",
+    "object_type": "bolt",
+    "source": "camera",
+    "frame_id": "camera_color_optical_frame",
+    "pose": {
+     "x_mm": 181.066,
+     "y_mm": 121.968,
+     "z_mm": 525.202,
+     "reference_point": "model_frame_origin",
+     "yaw_deg": 179.64,
+     "orientation": {
+      "x": -0.003993,
+      "y": 0.713302,
+      "z": -0.700793,
+      "w": -0.008542
+     },
+     "rpy_deg": [
+      -91.01,
+      -1.019,
+      179.64
+     ],
+     "valid": true,
+     "workarea_transform_valid": false,
+     "workarea_pose_available": false,
+     "measured_dof": [
+      "x",
+      "y",
+      "z",
+      "yaw"
+     ]
+    },
+    "task": {
+     "object_center_mm": [
+      181.066,
+      121.968,
+      525.202
+     ],
+     "tube_axis_line": [
+      -0.999822,
+      0.006276,
+      0.017783
+     ],
+     "tube_axis_is_a_line_not_a_direction": true,
+     "diameter_mm": 6,
+     "length_mm": 59,
+     "frame_id": "camera_color_optical_frame",
+     "note": "object_center_mm is the physical body centre and is what a grasp targets. It is NOT pose.model_frame_origin_mm, which is where the CAD model's own origin lands and can be outside the object."
+    },
+    "model_center_mm": [
+     0.0,
+     0.0,
+     0.0
+    ],
+    "task_axis_vector": [
+     1.0,
+     0.0,
+     0.0
+    ],
+    "confidence": null,
+    "perception_method": "rgbd_scene_depth_plane",
+    "object_model_id": "",
+    "symmetry": {
+     "type": "axial",
+     "axis": "x",
+     "fold": null,
+     "rotation_observable": false,
+     "ambiguous_dof": [
+      "rotation_about_x"
+     ]
+    },
+    "orientation_raw": null,
+    "detector": "scene/depth_plane_footprint",
+    "model_id": "depth_plane_footprint/1.0",
+    "detector_class": "bolt",
+    "detector_object_index": 18,
+    "captured_at": "2026-09-12T09:15:38Z",
+    "calibration_status": "not_applicable",
+    "calibration_revision": "",
+    "geometry": {
+     "diameter_mm": 6,
+     "length_mm": 59,
+     "inner_diameter_mm": null,
+     "source": "measured_footprint"
+    }
+   },
+   {
+    "observation_id": "physical-scene-1-obj-18",
+    "object_type": "bolt",
+    "source": "camera",
+    "frame_id": "camera_color_optical_frame",
+    "pose": {
+     "x_mm": 31.969,
+     "y_mm": 124.098,
+     "z_mm": 527.875,
+     "reference_point": "model_frame_origin",
+     "yaw_deg": 177.712,
+     "orientation": {
+      "x": 0.007802,
+      "y": 0.713058,
+      "z": -0.700761,
+      "w": -0.020546
+     },
+     "rpy_deg": [
+      -90.976,
+      -1.052,
+      177.712
+     ],
+     "valid": true,
+     "workarea_transform_valid": false,
+     "workarea_pose_available": false,
+     "measured_dof": [
+      "x",
+      "y",
+      "z",
+      "yaw"
+     ]
+    },
+    "task": {
+     "object_center_mm": [
+      31.969,
+      124.098,
+      527.875
+     ],
+     "tube_axis_line": [
+      -0.999034,
+      0.039922,
+      0.018367
+     ],
+     "tube_axis_is_a_line_not_a_direction": true,
+     "diameter_mm": 6,
+     "length_mm": 45,
+     "frame_id": "camera_color_optical_frame",
+     "note": "object_center_mm is the physical body centre and is what a grasp targets. It is NOT pose.model_frame_origin_mm, which is where the CAD model's own origin lands and can be outside the object."
+    },
+    "model_center_mm": [
+     0.0,
+     0.0,
+     0.0
+    ],
+    "task_axis_vector": [
+     1.0,
+     0.0,
+     0.0
+    ],
+    "confidence": null,
+    "perception_method": "rgbd_scene_depth_plane",
+    "object_model_id": "",
+    "symmetry": {
+     "type": "axial",
+     "axis": "x",
+     "fold": null,
+     "rotation_observable": false,
+     "ambiguous_dof": [
+      "rotation_about_x"
+     ]
+    },
+    "orientation_raw": null,
+    "detector": "scene/depth_plane_footprint",
+    "model_id": "depth_plane_footprint/1.0",
+    "detector_class": "bolt",
+    "detector_object_index": 19,
+    "captured_at": "2026-09-12T09:15:38Z",
+    "calibration_status": "not_applicable",
+    "calibration_revision": "",
+    "geometry": {
+     "diameter_mm": 6,
+     "length_mm": 45,
+     "inner_diameter_mm": null,
+     "source": "measured_footprint"
+    }
+   }
+  ],
+  "detector_status": {
+   "acquisition": "realsense_d435",
+   "dataset": "scene-20260912-091535",
+   "intrinsics": {
+    "fx": 913.13855,
+    "fy": 911.734314,
+    "cx": 648.312073,
+    "cy": 374.915131
+   },
+   "plane": {
+    "normal": [
+     -0.01767,
+     0.01775,
+     -0.99969
+    ],
+    "d_mm": 529.07,
+    "residual_mm": 1.73,
+    "inlier_fraction": 0.919
+   },
+   "catalogue": "/data/jarvis/wisepack/wisepack/config/scene_demo_classes.yaml",
+   "catalogue_provenance": "configured_demo",
+   "estimator_geometry": "",
+   "pose_note": "planar pose on the fitted work plane: x, y, z and heading measured; tilt assumed zero (the part rests on the bench). No 6-DoF estimator and no CAD supplied to one.",
+   "identity_note": "object class assigned by FOOTPRINT SIZE against config/scene_demo_classes.yaml, not recognised.",
+   "instances": [
+    {
+     "index": 1,
+     "area_px": 24453,
+     "centroid_px": [
+      600.8,
+      164.6
+     ],
+     "bbox_px": [
+      494,
+      0,
+      708,
+      336
+     ],
+     "centre_mm": [
+      -27.41,
+      -121.63,
+      527.56
+     ],
+     "axis_line": [
+      -0.45865,
+      -0.88858,
+      -0.00767
+     ],
+     "length_mm": 209.2,
+     "width_mm": 41.1,
+     "height_mm": 27.9,
+     "height_median_mm": 22.8,
+     "ignored": "",
+     "demo_type": "medium_tube",
+     "model_id": "cylinder3",
+     "status": "observed",
+     "reason": "",
+     "observation_id": "physical-scene-1-obj-1"
+    },
+    {
+     "index": 2,
+     "area_px": 7081,
+     "centroid_px": [
+      895.8,
+      75.0
+     ],
+     "bbox_px": [
+      842,
+      39,
+      952,
+      114
+     ],
+     "centre_mm": [
+      141.91,
+      -172.27,
+      523.67
+     ],
+     "axis_line": [
+      -0.99827,
+      -0.05633,
+      0.01664
+     ],
+     "length_mm": 60.6,
+     "width_mm": 39.6,
+     "height_mm": 9.0,
+     "height_median_mm": 6.5,
+     "ignored": "",
+     "demo_type": "plate",
+     "model_id": "plate2",
+     "status": "observed",
+     "reason": "",
+     "observation_id": "physical-scene-1-obj-2"
+    },
+    {
+     "index": 3,
+     "area_px": 30883,
+     "centroid_px": [
+      356.0,
+      350.3
+     ],
+     "bbox_px": [
+      305,
+      43,
+      411,
+      658
+     ],
+     "centre_mm": [
+      -170.29,
+      -14.03,
+      532.0
+     ],
+     "axis_line": [
+      -0.089,
+      -0.9959,
+      -0.01611
+     ],
+     "length_mm": 356.7,
+     "width_mm": 31.6,
+     "height_mm": 18.9,
+     "height_median_mm": 15.9,
+     "ignored": "",
+     "demo_type": "long_tube",
+     "model_id": "cylinder5",
+     "status": "observed",
+     "reason": "",
+     "observation_id": "physical-scene-1-obj-3"
+    },
+    {
+     "index": 4,
+     "area_px": 2805,
+     "centroid_px": [
+      724.2,
+      129.9
+     ],
+     "bbox_px": [
+      703,
+      89,
+      748,
+      171
+     ],
+     "centre_mm": [
+      43.71,
+      -141.34,
+      525.96
+     ],
+     "axis_line": [
+      -0.1476,
+      -0.98893,
+      -0.01495
+     ],
+     "length_mm": 46.2,
+     "width_mm": 22.1,
+     "height_mm": 12.8,
+     "height_median_mm": 10.1,
+     "ignored": "",
+     "demo_type": "small_cylinder",
+     "model_id": "cylinder1",
+     "status": "observed",
+     "reason": "",
+     "observation_id": "physical-scene-1-obj-4"
+    },
+    {
+     "index": 5,
+     "area_px": 30707,
+     "centroid_px": [
+      942.7,
+      368.7
+     ],
+     "bbox_px": [
+      797,
+      116,
+      1091,
+      640
+     ],
+     "centre_mm": [
+      169.48,
+      -3.24,
+      526.19
+     ],
+     "axis_line": [
+      0.43713,
+      -0.89909,
+      -0.02369
+     ],
+     "length_mm": 333.2,
+     "width_mm": 33.6,
+     "height_mm": 20.4,
+     "height_median_mm": 17.0,
+     "ignored": "",
+     "demo_type": "long_tube",
+     "model_id": "cylinder4",
+     "status": "observed",
+     "reason": "",
+     "observation_id": "physical-scene-1-obj-5"
+    },
+    {
+     "index": 6,
+     "area_px": 7369,
+     "centroid_px": [
+      914.4,
+      192.4
+     ],
+     "bbox_px": [
+      872,
+      134,
+      958,
+      251
+     ],
+     "centre_mm": [
+      152.89,
+      -105.01,
+      524.67
+     ],
+     "axis_line": [
+      -0.13545,
+      -0.99067,
+      -0.01519
+     ],
+     "length_mm": 62.4,
+     "width_mm": 42.4,
+     "height_mm": 7.9,
+     "height_median_mm": 6.4,
+     "ignored": "",
+     "demo_type": "plate",
+     "model_id": "plate2",
+     "status": "observed",
+     "reason": "",
+     "observation_id": "physical-scene-1-obj-6"
+    },
+    {
+     "index": 7,
+     "area_px": 9186,
+     "centroid_px": [
+      787.9,
+      218.1
+     ],
+     "bbox_px": [
+      716,
+      160,
+      861,
+      275
+     ],
+     "centre_mm": [
+      80.4,
+      -90.47,
+      526.21
+     ],
+     "axis_line": [
+      -0.86833,
+      0.49539,
+      0.02414
+     ],
+     "length_mm": 80.1,
+     "width_mm": 40.6,
+     "height_mm": 29.9,
+     "height_median_mm": 27.1,
+     "ignored": "",
+     "demo_type": "short_tube",
+     "model_id": "cylinder2",
+     "status": "observed",
+     "reason": "",
+     "observation_id": "physical-scene-1-obj-7"
+    },
+    {
+     "index": 8,
+     "area_px": 9593,
+     "centroid_px": [
+      467.0,
+      240.3
+     ],
+     "bbox_px": [
+      430,
+      171,
+      506,
+      311
+     ],
+     "centre_mm": [
+      -105.16,
+      -78.21,
+      529.71
+     ],
+     "axis_line": [
+      0.02562,
+      -0.99951,
+      -0.0182
+     ],
+     "length_mm": 80.3,
+     "width_mm": 42.9,
+     "height_mm": 27.7,
+     "height_median_mm": 21.0,
+     "ignored": "",
+     "demo_type": "short_tube",
+     "model_id": "cylinder2",
+     "status": "observed",
+     "reason": "",
+     "observation_id": "physical-scene-1-obj-8"
+    },
+    {
+     "index": 9,
+     "area_px": 7902,
+     "centroid_px": [
+      1053.4,
+      368.0
+     ],
+     "bbox_px": [
+      992,
+      326,
+      1112,
+      409
+     ],
+     "centre_mm": [
+      232.92,
+      -3.98,
+      525.05
+     ],
+     "axis_line": [
+      -0.99333,
+      0.11364,
+      0.01957
+     ],
+     "length_mm": 66.0,
+     "width_mm": 43.5,
+     "height_mm": 9.2,
+     "height_median_mm": 7.7,
+     "ignored": "",
+     "demo_type": "plate",
+     "model_id": "plate2",
+     "status": "observed",
+     "reason": "",
+     "observation_id": "physical-scene-1-obj-9"
+    },
+    {
+     "index": 10,
+     "area_px": 2659,
+     "centroid_px": [
+      844.4,
+      373.1
+     ],
+     "bbox_px": [
+      806,
+      351,
+      884,
+      395
+     ],
+     "centre_mm": [
+      113.2,
+      -1.07,
+      527.22
+     ],
+     "axis_line": [
+      -0.97528,
+      -0.22057,
+      0.01332
+     ],
+     "length_mm": 45.8,
+     "width_mm": 22.0,
+     "height_mm": 13.5,
+     "height_median_mm": 8.2,
+     "ignored": "",
+     "demo_type": "small_cylinder",
+     "model_id": "cylinder1",
+     "status": "observed",
+     "reason": "",
+     "observation_id": "physical-scene-1-obj-10"
+    },
+    {
+     "index": 11,
+     "area_px": 22313,
+     "centroid_px": [
+      620.2,
+      410.9
+     ],
+     "bbox_px": [
+      438,
+      372,
+      800,
+      452
+     ],
+     "centre_mm": [
+      -16.42,
+      20.93,
+      529.9
+     ],
+     "axis_line": [
+      -0.99854,
+      -0.05139,
+      0.01674
+     ],
+     "length_mm": 207.0,
+     "width_mm": 38.6,
+     "height_mm": 32.1,
+     "height_median_mm": 28.8,
+     "ignored": "",
+     "demo_type": "medium_tube",
+     "model_id": "cylinder3",
+     "status": "observed",
+     "reason": "",
+     "observation_id": "physical-scene-1-obj-11"
+    },
+    {
+     "index": 12,
+     "area_px": 1224,
+     "centroid_px": [
+      1025.1,
+      476.2
+     ],
+     "bbox_px": [
+      988,
+      460,
+      1056,
+      495
+     ],
+     "centre_mm": [
+      217.24,
+      58.47,
+      526.44
+     ],
+     "axis_line": [
+      -0.94156,
+      -0.33668,
+      0.01067
+     ],
+     "length_mm": 40.5,
+     "width_mm": 14.6,
+     "height_mm": 10.3,
+     "height_median_mm": 6.5,
+     "ignored": "",
+     "demo_type": "bolt",
+     "model_id": "",
+     "status": "observed",
+     "reason": "",
+     "observation_id": "physical-scene-1-obj-12"
+    },
+    {
+     "index": 13,
+     "area_px": 3097,
+     "centroid_px": [
+      761.7,
+      500.1
+     ],
+     "bbox_px": [
+      720,
+      470,
+      804,
+      531
+     ],
+     "centre_mm": [
+      65.71,
+      72.72,
+      529.37
+     ],
+     "axis_line": [
+      -0.92698,
+      0.3744,
+      0.02303
+     ],
+     "length_mm": 49.0,
+     "width_mm": 23.6,
+     "height_mm": 18.4,
+     "height_median_mm": 14.3,
+     "ignored": "",
+     "demo_type": "small_cylinder",
+     "model_id": "cylinder1",
+     "status": "observed",
+     "reason": "",
+     "observation_id": "physical-scene-1-obj-13"
+    },
+    {
+     "index": 14,
+     "area_px": 6145,
+     "centroid_px": [
+      45.9,
+      553.7
+     ],
+     "bbox_px": [
+      11,
+      489,
+      84,
+      621
+     ],
+     "centre_mm": [
+      -354.55,
+      105.37,
+      537.38
+     ],
+     "axis_line": [
+      0.31274,
+      -0.94957,
+      -0.02238
+     ],
+     "length_mm": 82.4,
+     "width_mm": 30.6,
+     "height_mm": 19.3,
+     "height_median_mm": 14.2,
+     "ignored": "inside a configured ignore region: lower-left corner of the bench: the small non-metal object kept there is not a workpiece and is out of scope for detection, synchronization and picking.",
+     "demo_type": "",
+     "model_id": "",
+     "status": "ignored",
+     "reason": "inside a configured ignore region: lower-left corner of the bench: the small non-metal object kept there is not a workpiece and is out of scope for detection, synchronization and picking.",
+     "observation_id": ""
+    },
+    {
+     "index": 15,
+     "area_px": 822,
+     "centroid_px": [
+      958.0,
+      522.0
+     ],
+     "bbox_px": [
+      924,
+      498,
+      996,
+      546
+     ],
+     "centre_mm": [
+      178.92,
+      85.14,
+      527.59
+     ],
+     "axis_line": [
+      -0.85259,
+      -0.52254,
+      0.00579
+     ],
+     "length_mm": 46.0,
+     "width_mm": 8.5,
+     "height_mm": 3.7,
+     "height_median_mm": 1.5,
+     "ignored": "",
+     "demo_type": "bolt",
+     "model_id": "",
+     "status": "observed",
+     "reason": "",
+     "observation_id": "physical-scene-1-obj-14"
+    },
+    {
+     "index": 16,
+     "area_px": 1203,
+     "centroid_px": [
+      680.2,
+      531.2
+     ],
+     "bbox_px": [
+      638,
+      505,
+      728,
+      557
+     ],
+     "centre_mm": [
+      18.52,
+      90.94,
+      530.53
+     ],
+     "axis_line": [
+      -0.90062,
+      -0.43453,
+      0.0082
+     ],
+     "length_mm": 55.5,
+     "width_mm": 11.6,
+     "height_mm": 4.8,
+     "height_median_mm": 1.5,
+     "ignored": "",
+     "demo_type": "bolt",
+     "model_id": "",
+     "status": "observed",
+     "reason": "",
+     "observation_id": "physical-scene-1-obj-15"
+    },
+    {
+     "index": 17,
+     "area_px": 9391,
+     "centroid_px": [
+      530.2,
+      580.6
+     ],
+     "bbox_px": [
+      460,
+      512,
+      599,
+      647
+     ],
+     "centre_mm": [
+      -68.9,
+      120.16,
+      532.59
+     ],
+     "axis_line": [
+      -0.72373,
+      0.68963,
+      0.02503
+     ],
+     "length_mm": 87.7,
+     "width_mm": 40.6,
+     "height_mm": 31.9,
+     "height_median_mm": 26.1,
+     "ignored": "",
+     "demo_type": "short_tube",
+     "model_id": "cylinder2",
+     "status": "observed",
+     "reason": "",
+     "observation_id": "physical-scene-1-obj-16"
+    },
+    {
+     "index": 18,
+     "area_px": 1332,
+     "centroid_px": [
+      961.4,
+      585.4
+     ],
+     "bbox_px": [
+      906,
+      573,
+      1010,
+      598
+     ],
+     "centre_mm": [
+      181.12,
+      121.91,
+      528.2
+     ],
+     "axis_line": [
+      -0.99982,
+      0.00628,
+      0.01778
+     ],
+     "length_mm": 59.2,
+     "width_mm": 14.0,
+     "height_mm": 7.9,
+     "height_median_mm": 4.7,
+     "ignored": "",
+     "demo_type": "bolt",
+     "model_id": "",
+     "status": "observed",
+     "reason": "",
+     "observation_id": "physical-scene-1-obj-17"
+    },
+    {
+     "index": 19,
+     "area_px": 1033,
+     "centroid_px": [
+      703.4,
+      588.0
+     ],
+     "bbox_px": [
+      668,
+      578,
+      746,
+      600
+     ],
+     "centre_mm": [
+      32.02,
+      124.04,
+      530.87
+     ],
+     "axis_line": [
+      -0.99903,
+      0.03992,
+      0.01837
+     ],
+     "length_mm": 44.9,
+     "width_mm": 12.3,
+     "height_mm": 3.6,
+     "height_median_mm": 1.4,
+     "ignored": "",
+     "demo_type": "bolt",
+     "model_id": "",
+     "status": "observed",
+     "reason": "",
+     "observation_id": "physical-scene-1-obj-18"
+    },
+    {
+     "index": 20,
+     "area_px": 419,
+     "centroid_px": [
+      1109.8,
+      626.9
+     ],
+     "bbox_px": [
+      1098,
+      614,
+      1120,
+      644
+     ],
+     "centre_mm": [
+      266.41,
+      145.7,
+      527.12
+     ],
+     "axis_line": [
+      -0.57948,
+      -0.81498,
+      -0.00423
+     ],
+     "length_mm": 18.7,
+     "width_mm": 11.0,
+     "height_mm": 6.2,
+     "height_median_mm": 5.2,
+     "ignored": "",
+     "demo_type": "",
+     "model_id": "",
+     "status": "unclassified",
+     "reason": "footprint 19 x 11 mm, height 6 mm matches no demo class",
+     "observation_id": ""
+    }
+   ],
+   "counts": {
+    "measured": 20,
+    "observed": 18,
+    "ignored": 1,
+    "unclassified": 1,
+    "excluded": 0
+   },
+   "frame_note": "pose in camera_color_optical_frame; the Isaac scene synchronizer applies the configured demo transform",
+   "placeability": {
+    "physical-scene-1-obj-1": {
+     "placeable": true,
+     "reason": "",
+     "workarea_mm": [
+      -27.7,
+      121.3,
+      31.9
+     ],
+     "table_mm": [
+      472.3,
+      121.3,
+      31.9
+     ],
+     "world_m": [
+      0.4723,
+      0.1213,
+      0.4319
+     ],
+     "transform_source": "configured_demo"
+    },
+    "physical-scene-1-obj-2": {
+     "placeable": true,
+     "reason": "",
+     "workarea_mm": [
+      141.8,
+      172.2,
+      22.3
+     ],
+     "table_mm": [
+      641.8,
+      172.2,
+      22.3
+     ],
+     "world_m": [
+      0.6418,
+      0.1722,
+      0.4223
+     ],
+     "transform_source": "configured_demo"
+    },
+    "physical-scene-1-obj-3": {
+     "placeable": true,
+     "reason": "",
+     "workarea_mm": [
+      -170.5,
+      13.8,
+      22.5
+     ],
+     "table_mm": [
+      329.5,
+      13.8,
+      22.5
+     ],
+     "world_m": [
+      0.3295,
+      0.0138,
+      0.4225
+     ],
+     "transform_source": "configured_demo"
+    },
+    "physical-scene-1-obj-4": {
+     "placeable": true,
+     "reason": "",
+     "workarea_mm": [
+      43.5,
+      141.2,
+      26.0
+     ],
+     "table_mm": [
+      543.5,
+      141.2,
+      26.0
+     ],
+     "world_m": [
+      0.5435,
+      0.1412,
+      0.426
+     ],
+     "transform_source": "configured_demo"
+    },
+    "physical-scene-1-obj-5": {
+     "placeable": true,
+     "reason": "",
+     "workarea_mm": [
+      169.3,
+      3.0,
+      28.3
+     ],
+     "table_mm": [
+      669.3,
+      3.0,
+      28.3
+     ],
+     "world_m": [
+      0.6693,
+      0.003,
+      0.4283
+     ],
+     "transform_source": "configured_demo"
+    },
+    "physical-scene-1-obj-6": {
+     "placeable": true,
+     "reason": "",
+     "workarea_mm": [
+      152.8,
+      104.9,
+      21.3
+     ],
+     "table_mm": [
+      652.8,
+      104.9,
+      21.3
+     ],
+     "world_m": [
+      0.6528,
+      0.1049,
+      0.4213
+     ],
+     "transform_source": "configured_demo"
+    },
+    "physical-scene-1-obj-7": {
+     "placeable": true,
+     "reason": "",
+     "workarea_mm": [
+      80.1,
+      90.2,
+      33.3
+     ],
+     "table_mm": [
+      580.1,
+      90.2,
+      33.3
+     ],
+     "world_m": [
+      0.5801,
+      0.0902,
+      0.4333
+     ],
+     "transform_source": "configured_demo"
+    },
+    "physical-scene-1-obj-8": {
+     "placeable": true,
+     "reason": "",
+     "workarea_mm": [
+      -105.5,
+      77.9,
+      29.8
+     ],
+     "table_mm": [
+      394.5,
+      77.9,
+      29.8
+     ],
+     "world_m": [
+      0.3945,
+      0.0779,
+      0.4298
+     ],
+     "transform_source": "configured_demo"
+    },
+    "physical-scene-1-obj-9": {
+     "placeable": true,
+     "reason": "",
+     "workarea_mm": [
+      232.8,
+      3.9,
+      20.9
+     ],
+     "table_mm": [
+      732.8,
+      3.9,
+      20.9
+     ],
+     "world_m": [
+      0.7328,
+      0.0039,
+      0.4209
+     ],
+     "transform_source": "configured_demo"
+    },
+    "physical-scene-1-obj-10": {
+     "placeable": true,
+     "reason": "",
+     "workarea_mm": [
+      113.0,
+      0.9,
+      24.8
+     ],
+     "table_mm": [
+      613.0,
+      0.9,
+      24.8
+     ],
+     "world_m": [
+      0.613,
+      0.0009,
+      0.4248
+     ],
+     "transform_source": "configured_demo"
+    },
+    "physical-scene-1-obj-11": {
+     "placeable": true,
+     "reason": "",
+     "workarea_mm": [
+      -16.7,
+      -21.2,
+      29.6
+     ],
+     "table_mm": [
+      483.3,
+      -21.2,
+      29.6
+     ],
+     "world_m": [
+      0.4833,
+      -0.0212,
+      0.4296
+     ],
+     "transform_source": "configured_demo"
+    },
+    "physical-scene-1-obj-12": {
+     "placeable": true,
+     "reason": "",
+     "workarea_mm": [
+      217.2,
+      -58.5,
+      18.6
+     ],
+     "table_mm": [
+      717.2,
+      -58.5,
+      18.6
+     ],
+     "world_m": [
+      0.7172,
+      -0.0585,
+      0.4186
+     ],
+     "transform_source": "configured_demo"
+    },
+    "physical-scene-1-obj-13": {
+     "placeable": true,
+     "reason": "",
+     "workarea_mm": [
+      65.5,
+      -72.9,
+      22.6
+     ],
+     "table_mm": [
+      565.5,
+      -72.9,
+      22.6
+     ],
+     "world_m": [
+      0.5655,
+      -0.0729,
+      0.4226
+     ],
+     "transform_source": "configured_demo"
+    },
+    "physical-scene-1-obj-14": {
+     "placeable": true,
+     "reason": "",
+     "workarea_mm": [
+      178.9,
+      -85.2,
+      17.4
+     ],
+     "table_mm": [
+      678.9,
+      -85.2,
+      17.4
+     ],
+     "world_m": [
+      0.6789,
+      -0.0852,
+      0.4174
+     ],
+     "transform_source": "configured_demo"
+    },
+    "physical-scene-1-obj-15": {
+     "placeable": true,
+     "reason": "",
+     "workarea_mm": [
+      18.5,
+      -91.0,
+      14.5
+     ],
+     "table_mm": [
+      518.5,
+      -91.0,
+      14.5
+     ],
+     "world_m": [
+      0.5185,
+      -0.091,
+      0.4145
+     ],
+     "transform_source": "configured_demo"
+    },
+    "physical-scene-1-obj-16": {
+     "placeable": true,
+     "reason": "",
+     "workarea_mm": [
+      -69.2,
+      -120.5,
+      26.9
+     ],
+     "table_mm": [
+      430.8,
+      -120.5,
+      26.9
+     ],
+     "world_m": [
+      0.4308,
+      -0.1205,
+      0.4269
+     ],
+     "transform_source": "configured_demo"
+    },
+    "physical-scene-1-obj-17": {
+     "placeable": true,
+     "reason": "",
+     "workarea_mm": [
+      181.1,
+      -122.0,
+      16.8
+     ],
+     "table_mm": [
+      681.1,
+      -122.0,
+      16.8
+     ],
+     "world_m": [
+      0.6811,
+      -0.122,
+      0.4168
+     ],
+     "transform_source": "configured_demo"
+    },
+    "physical-scene-1-obj-18": {
+     "placeable": true,
+     "reason": "",
+     "workarea_mm": [
+      32.0,
+      -124.1,
+      14.1
+     ],
+     "table_mm": [
+      532.0,
+      -124.1,
+      14.1
+     ],
+     "world_m": [
+      0.532,
+      -0.1241,
+      0.4141
+     ],
+     "transform_source": "configured_demo"
+    }
+   }
+  }
+ },
+ "images": {
+  "rgb": "/data/jarvis/wisepack/wisepack/.cache-perception/physical-scene/rgb.jpg",
+  "depth": "/data/jarvis/wisepack/wisepack/.cache-perception/physical-scene/depth_aligned.jpg",
+  "mask": "/data/jarvis/wisepack/wisepack/.cache-perception/physical-scene/mask_overlay.jpg",
+  "overlay": "/data/jarvis/wisepack/wisepack/.cache-perception/physical-scene/scene_overlay.jpg"
+ },
+ "identity_note": "object class assigned by FOOTPRINT SIZE against config/scene_demo_classes.yaml, not recognised.",
+ "pose_note": "planar pose on the fitted work plane: x, y, z and heading measured; tilt assumed zero (the part rests on the bench). No 6-DoF estimator and no CAD supplied to one.",
+ "accuracy_note": "No ground truth exists for the physical parts. Footprints are measured on the fitted plane; accuracy is NOT measured and is not claimed."
+}

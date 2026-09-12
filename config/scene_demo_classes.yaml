@@ -1,0 +1,84 @@
+# The DEMO OBJECT CLASSES the whole-scene RGB-D method assigns.
+#
+# WHAT THIS IS. The `rgbd_scene_depth_plane` perception method segments every
+# object standing on the fitted work plane, measures each one's FOOTPRINT
+# (length along its principal axis, width across it, height above the plane)
+# and matches that footprint against the classes below. The matched class names
+# the engineering CAD model (`config/perception_objects.yaml`) that is
+# instantiated in the Digital Twin / Isaac scene at the observed pose.
+#
+# WHAT THIS IS NOT. It is not object recognition: an object is identified by its
+# SIZE ON THE BENCH, and two parts with the same footprint are the same class
+# here. It is a demonstrator assumption, stated once, in this file, so it can be
+# replaced by a learned detector without touching the scene-synchronization
+# chain. An object whose footprint matches no class is reported as
+# `unclassified` and is NOT synchronized — nothing is guessed for it.
+#
+# RANGES ARE MEASURED FOOTPRINTS, NOT NOMINAL DIMENSIONS. A depth-plane mask
+# spreads a few millimetres beyond the metal, so a nominal 35 mm tube measures
+# 37-41 mm across. The ranges were set from the bench captures in
+# `.cache-perception/rgbd-captures/` and are deliberately wide.
+#
+# ORDER MATTERS. The first class whose ranges contain the footprint wins, so
+# classes that overlap in footprint are told apart by the height constraint
+# (a plate is flat; a short tube is not).
+
+schema: wisepack-scene-demo-classes/1.0
+provenance: configured_demo
+
+classes:
+  - demo_type: long_tube
+    model_id: cylinder5            # nominal D25 x L342, the reference part
+    length_mm: [340.0, 378.0]
+    width_mm: [18.0, 36.0]
+  - demo_type: long_tube
+    model_id: cylinder4            # nominal D25 x L316
+    length_mm: [292.0, 340.0]
+    width_mm: [18.0, 36.0]
+  - demo_type: medium_tube
+    model_id: cylinder3            # nominal D35 x L190
+    length_mm: [160.0, 230.0]
+    width_mm: [28.0, 48.0]
+  - demo_type: short_tube
+    model_id: cylinder2            # nominal D35 x L70
+    length_mm: [58.0, 100.0]
+    width_mm: [28.0, 48.0]
+    min_height_mm: 12.0            # a plate of the same footprint is flat
+  - demo_type: plate
+    model_id: plate2               # nominal 60 x 40 x 8
+    length_mm: [44.0, 88.0]
+    width_mm: [28.0, 50.0]
+    max_height_mm: 12.0
+  - demo_type: small_cylinder
+    model_id: cylinder1            # nominal D20 x L40
+    length_mm: [30.0, 58.0]
+    width_mm: [16.0, 27.0]
+    min_height_mm: 11.5            # a bolt head of the same width is lower
+  - demo_type: bolt
+    model_id: ""                   # no CAD in the registry: a measured proxy
+    proxy:
+      diameter_mm: 6
+    length_mm: [34.0, 66.0]
+    width_mm: [3.0, 17.0]
+    max_height_mm: 11.5
+
+# REGIONS OF THE COLOUR FRAME THAT ARE OUT OF SCOPE FOR THE DEMONSTRATION.
+# Anything whose mask centroid falls inside one of these pixel rectangles is
+# reported as `ignored` with the region's note, is never classified, never
+# synchronized into the Isaac scene and never becomes a pick candidate. This is
+# a demonstrator scope decision — stated here rather than hidden in a threshold
+# — for objects that are on the bench but are not workpieces of the picking
+# task (a marker pen, a USB stick, a tool left at the edge of the table).
+ignore_regions_px:
+  - rect: [0, 400, 150, 720]
+    note: >-
+      lower-left corner of the bench: the small non-metal object kept there is
+      not a workpiece and is out of scope for detection, synchronization and
+      picking.
+
+# THE PART OF THE COLOUR FRAME THAT IS THE BENCH. Everything outside this
+# rectangle is background for the whole-scene method: the right-hand edge of the
+# frame looks past the cork bench onto the desk edge and the floor, and a plate
+# lying against that edge would otherwise be welded to it by one connected
+# region. An operator ROI given at acquisition time replaces this.
+scene_roi_px: [0, 0, 1120, 720]

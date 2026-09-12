@@ -298,6 +298,36 @@ objects:
       interchangeable: a measured 180 deg rotation about z maps it onto itself.
       Do not report that end swap as resolved.
 
+  # --- the flat plate the whole-scene demo picks --------------------------- #
+  #
+  # A 60 x 40 x 8 mm rectangular steel plate. Registered for the whole-scene
+  # method, which identifies it by FOOTPRINT (see config/scene_demo_classes.yaml)
+  # and instantiates this mesh in the twin at the measured pose; it is not
+  # offered to the FoundationPose methods, which have not been validated on it.
+  # Packed by its conservative bounding box (WasteItem is length x diameter).
+  - model_id: plate2
+    object_type: plate
+    mesh_path: CAD-Models/STL-Files/Plate2.stl
+    mesh_units: mm
+    scale: 1.0
+    extents_mm: [60.0, 40.0, 8.0]       # measured from the mesh
+    diameter_mm: 40                     # the packing footprint across
+    length_mm: 60
+    model_center_mm: [0.0, 0.0, 4.0]    # measured AABB centre
+    symmetry:
+      type: discrete
+      axis: z
+      fold: 2
+    task_pose_equivalence: axis_line
+    task_axis: x
+    task_axis_vector: [1.0, 0.0, 0.0]
+    methods:
+      - rgbd_scene_depth_plane
+    description: >-
+      Flat rectangular plate, 60 x 40 x 8 mm. Its long edge is the task axis and
+      its thickness is along z, which the whole-scene method aligns with the
+      work-plane normal.
+
   # --- the WISEPACK proxy, once a mesh exists for it ---------------------- #
   #
   # DELIBERATELY LEFT WITHOUT A MESH. The physical proxies WISEPACK currently

@@ -290,3 +290,22 @@ def test_a_failed_batch_is_recorded_and_refused(session):
 def test_a_batch_is_required(session):
     with pytest.raises(ValueError, match="`batch` is required"):
         session.node._apply_command("submit_observation_batch", {})
+
+
+# --------------------------------------------------------------------------- #
+# E. A physical run has no synthetic arrivals
+# --------------------------------------------------------------------------- #
+
+def test_a_camera_run_carries_no_synthetic_dynamic_events(session):
+    """THE LATE-ARRIVAL EVENT INJECTS AN ITEM NOBODY OBSERVED. In a generated
+    run it is the Human-in-the-Loop re-plan demonstration; in a camera run the
+    scene is what the camera saw, and a fabricated 1200 mm component arriving
+    at the fourth pick derails a synchronized physical scene — which is exactly
+    what happened live before this was pinned."""
+    session.node._reset_run({"preset": "mixed_pipes_dense", "object_source": "sim"})
+    assert session.node.engine.config.dynamic_events, \
+        "a generated run keeps its demonstration event"
+    session.node._reset_run({"preset": "mixed_pipes_dense",
+                             "object_source": "camera", "detect": False})
+    assert session.node.engine.config.perception_source.is_physical
+    assert list(session.node.engine.config.dynamic_events) == []

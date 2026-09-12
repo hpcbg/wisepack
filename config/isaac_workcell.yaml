@@ -56,7 +56,7 @@ transforms:
     translation_mm: [0.0, 0.0, 542.0]
     rotation: {x: 1.0, y: 0.0, z: 0.0, w: 0.0}
     method: configured_demo
-    revision: demo-2026-09-11
+    revision: demo-2026-09-12
     notes: >-
       Fixed top-down mount assumed for the demonstrator. Height taken from one
       depth-plane fit on the bench, not from a calibration procedure. Replace
@@ -72,10 +72,10 @@ transforms:
   # clear of the container, which the layout places to the robot's left.
   - parent_frame: table
     child_frame: wisepack_workarea
-    translation_mm: [650.0, 0.0, 0.0]
+    translation_mm: [500.0, 0.0, 0.0]
     rotation: {x: 0.0, y: 0.0, z: 0.0, w: 1.0}
     method: configured_demo
-    revision: demo-2026-09-11
+    revision: demo-2026-09-12
     notes: >-
       Work-area origin placed in front of the robot by choice, not by
       measurement. The robot base itself is the `table` frame origin (0, 0, 0)

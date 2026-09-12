@@ -32,6 +32,8 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Optional, Tuple
 
+import os
+
 import numpy as np
 
 import isaacsim.core.experimental.utils.stage as stage_utils
@@ -270,12 +272,18 @@ class WisepackScene:
             pose = source_pose_for(scene, index, item, self.layout)
             position, orientation = pose_to_world(pose, self.layout)
             path = item_path(item.item_id)
-            if physical:
+            if physical and os.environ.get("WISEPACK_ISAAC_OBJECT_MARKERS", "1") != "0":
                 # The COMMANDED pose, drawn as a small frame so the settled body
-                # can be compared against it by eye.
+                # can be compared against it by eye. Smaller when the scene
+                # holds many objects, so a whole-bench scene stays readable
+                # rather than vanishing under a thicket of axes; off entirely
+                # with WISEPACK_ISAAC_OBJECT_MARKERS=0 for presentation media.
+                crowded = len(scenario.items) > 3
                 self._add_axes_marker(
                     f"{OBJECT_MARKERS_ROOT}/{item.item_id.replace('-', '_')}",
-                    position, orientation, length_m=0.08, width_m=0.004)
+                    position, orientation,
+                    length_m=0.03 if crowded else 0.08,
+                    width_m=0.002 if crowded else 0.004)
 
             # TWO GEOMETRY PATHS, and the item says which. Neither replaces the
             # other: a generated tube is a parametric cylinder and stays exactly

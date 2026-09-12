@@ -50,6 +50,9 @@ METHOD_ACQUISITIONS = {
     # operator's chosen RGB-D method when they switch physical <-> simulated,
     # since the method remains compatible across that change.
     "foundationpose_rgbd_model_free": (ACQUISITION_REALSENSE, ACQUISITION_ISAAC),
+    # THE PHYSICAL D435 ONLY. The whole-scene method segments a real bench; a
+    # simulated scene already knows every object it rendered.
+    "rgbd_scene_depth_plane": (ACQUISITION_REALSENSE,),
 }
 
 _LABELS = {

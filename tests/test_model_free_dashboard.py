@@ -96,7 +96,12 @@ def test_the_source_to_method_matrix_is_exactly_the_intended_one():
 def test_both_rgbd_methods_are_offered_for_both_rgbd_devices(device):
     offered = {m for m, sources in METHOD_ACQUISITIONS.items()
                if device in sources}
-    assert offered == {CAD, MODEL_FREE}
+    # The whole-scene method reads the PHYSICAL bench only; a simulated scene
+    # already knows every object it rendered.
+    expected = {CAD, MODEL_FREE}
+    if device == ACQUISITION_REALSENSE:
+        expected.add("rgbd_scene_depth_plane")
+    assert offered == expected
 
 
 def test_a_compatible_rgbd_method_survives_switching_physical_and_simulated():
